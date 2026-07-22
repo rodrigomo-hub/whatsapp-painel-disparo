@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Painel de Disparo WhatsApp</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #f4f4f7; margin: 0; padding: 20px; }
+  h1 { color: #1a1a2e; }
+  .cartao { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; }
+  th { color: #888; font-size: 13px; text-transform: uppercase; }
+  .barra { background: #eee; border-radius: 6px; height: 10px; overflow: hidden; width: 100px; }
+  .barra-preenchida { background: #25d366; height: 100%; }
+  .badge { padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .badge-ativo { background: #dcfce7; color: #16a34a; }
+  .badge-pausado { background: #fee2e2; color: #dc2626; }
+  .bolinha { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .bolinha-GREEN { background: #16a34a; }
+  .bolinha-YELLOW { background: #eab308; }
+  .bolinha-RED { background: #dc2626; }
+  .bolinha-UNKNOWN { background: #9ca3af; }
+  button { cursor: pointer; border: none; border-radius: 6px; padding: 6px 12px; font-size: 13px; margin-right: 4px; }
+  .btn-toggle { background: #1a1a2e; color: white; }
+  .btn-editar { background: #2563eb; color: white; }
+  .btn-remover { background: #fee2e2; color: #dc2626; }
+  .btn-disparar { background: #25d366; color: white; padding: 10px 20px; font-size: 14px; }
+  input, textarea { padding: 8px; border: 1px solid #ddd; border-radius: 6px; margin-right: 8px; font-family: inherit; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 15px; }
+  .status-sucesso { color: #16a34a; }
+  .status-erro { color: #dc2626; }
+  .status-pendente { color: #eab308; }
+  textarea { width: 100%; min-height: 100px; box-sizing: border-box; margin-bottom: 10px; }
+  .checkboxes-numeros { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 15px; }
+  .checkboxes-numeros label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
+  .modal-fundo { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); align-items: center; justify-content: center; z-index: 100; }
+  .modal-caixa { background: white; padding: 25px; border-radius: 10px; width: 400px; }
+  .modal-caixa h3 { margin-top: 0; }
+  .modal-caixa form { flex-direction: column; align-items: stretch; }
+  .modal-caixa input { margin-right: 0; margin-bottom: 10px; }
+  .resultado-lote { max-height: 200px; overflow-y: auto; margin-top: 10px; font-size: 13px; }
+  .aviso-info {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    background: linear-gradient(135deg, #eff6ff, #ffffff);
+    border: 1px solid #dbeafe;
+    border-radius: 12px;
+    padding: 16px 20px;
+    margin-bottom: 24px;
+  }
+  .aviso-info-icone { font-size: 22px; line-height: 1; }
+  .aviso-info-texto { font-size: 13px; color: #475569; line-height: 1.5; }
+  .aviso-info-texto strong { color: #1e3a8a; }
+</style>
+</head>
+<body>
+
+<div style="display:flex; justify-content:space-between; align-items:center;">
+  <h1>📱 Painel de Disparo WhatsApp</h1>
+  <a href="/logout" style="color:#dc2626; font-size:13px; text-decoration:none;">Sair</a>
+</div>
+
+<div class="aviso-info">
+  <div class="aviso-info-icone">💡</div>
+  <div class="aviso-info-texto">
+    <strong>Importante:</strong> Antes de cadastrar um número, verifique se há uma forma de pagamento ativa no Business Manager. Este painel registra apenas os envios aceitos pela Meta. Acompanhe as entregas no Gerenciador de Mensagens da Meta.
+  </div>
+</div>
+
+<div class="cartao" style="text-align:center; padding:24px;">
+  <div style="font-size:13px; color:#888; text-transform:uppercase; letter-spacing:0.5px;">Total enviado hoje</div>
+  <div id="total-hoje" style="font-size:42px; font-weight:700; color:#25d366; margin-top:6px;">-</div>
+  <div id="total-erro-hoje" style="font-size:13px; color:#dc2626; margin-top:4px;"></div>
+</div>
+
+<div class="cartao">
+  <h2>Números conectados <button class="btn-toggle" onclick="atualizarTodos()" style="font-size:12px;">🔄 Atualizar todos</button></h2>
+  <table>
+    <thead>
+      <tr><th>Nome</th><th>Template</th><th>Categoria</th><th>Qualidade</th><th>Hoje</th><th>Última hora</th><th>Status</th><th>Ações</th></tr>
+    </thead>
+    <tbody id="tabela-numeros"></tbody>
+  </table>
+
+  <form id="form-numero">
+    <input type="text" id="novo-nome" placeholder="Nome (ex: Empresa A - Num 1)" required>
+    <input type="text" id="novo-phone-id" placeholder="phone_number_id" required>
+    <input type="text" id="novo-token" placeholder="access_token" required>
+    <input type="text" id="novo-template" placeholder="Nome do template" required>
+    <input type="text" id="novo-waba-id" placeholder="WABA ID" required>
+    <input type="number" id="novo-limite" placeholder="Limite diário" value="250" required>
+    <input type="number" id="novo-limite-hora" placeholder="Limite por hora" value="20" required>
+    <button type="submit" class="btn-toggle">+ Adicionar número</button>
+  </form>
+</div>
+
+<div class="cartao">
+  <h2>📤 Disparo em lote</h2>
+  <p style="color:#888; font-size:13px;">Cole os números (um por linha, ou separados por vírgula) ou escolha um arquivo .txt</p>
+  <input type="file" id="arquivo-lote" accept=".txt,.csv"><br><br>
+  <textarea id="numeros-lote" placeholder="5511999999999&#10;5521988888888&#10;..."></textarea>
+
+  <p style="color:#888; font-size:13px;">Números a usar no rodízio (deixe tudo desmarcado para usar todos os ativos):</p>
+  <div class="checkboxes-numeros" id="checkboxes-numeros"></div>
+
+  <button class="btn-disparar" onclick="dispararLote()">Disparar para todos</button>
+  <div id="resultado-lote" class="resultado-lote"></div>
+</div>
+
+<div class="cartao">
+  <h2>Últimos disparos</h2>
+  <table>
+    <thead>
+      <tr><th>Quando</th><th>Número usado</th><th>Lead</th><th>Telefone</th><th>Status</th></tr>
+    </thead>
+    <tbody id="tabela-historico"></tbody>
+  </table>
+</div>
+
+<div class="modal-fundo" id="modal-editar">
+  <div class="modal-caixa">
+    <h3>Editar número</h3>
+    <form id="form-editar">
+      <input type="hidden" id="editar-id">
+      <label>Template</label>
+      <input type="text" id="editar-template">
+      <label>Limite diário</label>
+      <input type="number" id="editar-limite">
+      <label>Limite por hora</label>
+      <input type="number" id="editar-limite-hora">
+      <div>
+        <button type="submit" class="btn-toggle">Salvar</button>
+        <button type="button" class="btn-remover" onclick="fecharModal()">Cancelar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+let numerosCache = [];
+
+function traduzirCategoria(c) {
+  const mapa = {
+    'MARKETING': '📢 Marketing',
+    'UTILITY': '🔧 Utilitário',
+    'AUTHENTICATION': '🔐 Autenticação',
+    'UNKNOWN': 'Desconhecida'
+  };
+  return mapa[c] || c;
+}
+
+function traduzirQualidade(q) {
+  const mapa = {
+    'GREEN': 'Verde (alta)',
+    'YELLOW': 'Amarela (média)',
+    'RED': 'Vermelha (baixa)',
+    'UNKNOWN': 'Desconhecida'
+  };
+  return mapa[q] || q;
+}
+
+async function atualizarTodos() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '🔄 Atualizando...';
+
+  const res = await fetch('/api/atualizar-todos', {method: 'POST'});
+  const dados = await res.json();
+
+  let msg = `Atualizados: ${dados.total_atualizado} numero(s)\n\n`;
+  dados.resultados.forEach(r => {
+    msg += `${r.nome}: ${r.qualidade} / ${r.template_categoria}\n`;
+  });
+  alert(msg);
+
+  btn.disabled = false;
+  btn.textContent = '🔄 Atualizar todos';
+  carregarNumeros();
+}
+
+async function carregarTotalHoje() {
+  const res = await fetch('/api/total-hoje');
+  const dados = await res.json();
+  document.getElementById('total-hoje').textContent = dados.total_sucesso_hoje;
+  document.getElementById('total-erro-hoje').textContent =
+    dados.total_erro_hoje > 0 ? `${dados.total_erro_hoje} erro(s)` : '';
+}
+
+async function carregarNumeros() {
+  const res = await fetch('/api/numeros');
+  numerosCache = await res.json();
+  const tbody = document.getElementById('tabela-numeros');
+  tbody.innerHTML = '';
+  numerosCache.forEach(n => {
+    const pct = Math.min(100, (n.enviados_hoje / n.limite_diario) * 100);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${n.nome}</td>
+      <td>${n.template_nome}</td>
+      <td>${traduzirCategoria(n.template_categoria)}<br><small style="color:#888">${n.template_status}</small></td>
+      <td><span class="bolinha bolinha-${n.qualidade}"></span>${traduzirQualidade(n.qualidade)}</td>
+      <td>${n.enviados_hoje} / ${n.limite_diario}<br><div class="barra"><div class="barra-preenchida" style="width:${pct}%"></div></div></td>
+      <td>${n.enviados_hora} / ${n.limite_hora}</td>
+      <td><span class="badge ${n.ativo ? 'badge-ativo' : 'badge-pausado'}">${n.ativo ? 'Ativo' : 'Pausado'}</span></td>
+      <td>
+        <button class="btn-editar" onclick="abrirModal(${n.id})">Editar</button>
+        <button class="btn-toggle" onclick="toggleNumero(${n.id}, ${n.ativo ? 0 : 1})">${n.ativo ? 'Pausar' : 'Ativar'}</button>
+        <button class="btn-remover" onclick="removerNumero(${n.id})">Remover</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  const checkboxes = document.getElementById('checkboxes-numeros');
+  checkboxes.innerHTML = '';
+  numerosCache.filter(n => n.ativo).forEach(n => {
+    checkboxes.innerHTML += `<label><input type="checkbox" value="${n.id}" class="chk-numero-lote"> ${n.nome}</label>`;
+  });
+}
+
+async function carregarHistorico() {
+  const res = await fetch('/api/historico?limit=50');
+  const dados = await res.json();
+  const tbody = document.getElementById('tabela-historico');
+  tbody.innerHTML = '';
+  dados.forEach(d => {
+    const tr = document.createElement('tr');
+    const dataFmt = new Date(d.criado_em).toLocaleString('pt-BR');
+    tr.innerHTML = `
+      <td>${dataFmt}</td><td>${d.numero_nome}</td><td>${d.nome_lead || '-'}</td>
+      <td>${d.telefone_destino}</td>
+      <td class="status-${d.status}">${d.status === 'sucesso' ? '✅ Enviado' : '❌ Erro'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function toggleNumero(id, novoStatus) {
+  await fetch(`/api/numeros/${id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ativo: novoStatus})});
+  carregarNumeros();
+}
+
+async function removerNumero(id) {
+  if (!confirm('Remover esse número?')) return;
+  await fetch(`/api/numeros/${id}`, {method: 'DELETE'});
+  carregarNumeros();
+}
+
+function abrirModal(id) {
+  const n = numerosCache.find(x => x.id === id);
+  document.getElementById('editar-id').value = n.id;
+  document.getElementById('editar-template').value = n.template_nome;
+  document.getElementById('editar-limite').value = n.limite_diario;
+  document.getElementById('editar-limite-hora').value = n.limite_hora;
+  document.getElementById('modal-editar').style.display = 'flex';
+}
+
+function fecharModal() {
+  document.getElementById('modal-editar').style.display = 'none';
+}
+
+document.getElementById('form-editar').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('editar-id').value;
+  await fetch(`/api/numeros/${id}`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      template_nome: document.getElementById('editar-template').value,
+      limite_diario: parseInt(document.getElementById('editar-limite').value),
+      limite_hora: parseInt(document.getElementById('editar-limite-hora').value),
+    })
+  });
+  fecharModal();
+  carregarNumeros();
+});
+
+document.getElementById('form-numero').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  await fetch('/api/numeros', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      nome: document.getElementById('novo-nome').value,
+      phone_number_id: document.getElementById('novo-phone-id').value,
+      access_token: document.getElementById('novo-token').value,
+      template_nome: document.getElementById('novo-template').value,
+      waba_id: document.getElementById('novo-waba-id').value,
+      limite_diario: parseInt(document.getElementById('novo-limite').value),
+      limite_hora: parseInt(document.getElementById('novo-limite-hora').value),
+    })
+  });
+  e.target.reset();
+  carregarNumeros();
+});
+
+document.getElementById('arquivo-lote').addEventListener('change', (e) => {
+  const arquivo = e.target.files[0];
+  if (!arquivo) return;
+  const leitor = new FileReader();
+  leitor.onload = (ev) => {
+    document.getElementById('numeros-lote').value = ev.target.result;
+  };
+  leitor.readAsText(arquivo);
+});
+
+async function dispararLote() {
+  const texto = document.getElementById('numeros-lote').value;
+  if (!texto.trim()) { alert('Cole ou suba uma lista de números primeiro'); return; }
+
+  const selecionados = Array.from(document.querySelectorAll('.chk-numero-lote:checked')).map(el => parseInt(el.value));
+
+  document.getElementById('resultado-lote').innerHTML = 'Disparando... aguarde';
+
+  const res = await fetch('/api/disparo-lote', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({numeros_texto: texto, numeros_selecionados: selecionados})
+  });
+  const dados = await res.json();
+
+  let html = `<p><strong>Total processado: ${dados.total}</strong></p><ul>`;
+  (dados.resultados || []).forEach(r => {
+    const cor = r.status === 'sucesso' ? 'status-sucesso' : (r.status === 'erro' || r.status === 'invalido' ? 'status-erro' : 'status-pendente');
+    html += `<li class="${cor}">${r.telefone} - ${r.status} ${r.numero_usado ? '(' + r.numero_usado + ')' : ''} ${r.motivo || ''}</li>`;
+  });
+  html += '</ul>';
+  document.getElementById('resultado-lote').innerHTML = html;
+
+  carregarNumeros();
+  carregarHistorico();
+}
+
+carregarTotalHoje();
+carregarNumeros();
+carregarHistorico();
+setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); }, 10000);
+</script>
+
+</body>
+</html>

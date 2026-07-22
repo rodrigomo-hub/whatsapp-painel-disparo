@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Login - Painel WhatsApp</title>
+<style>
+  body {
+    font-family: -apple-system, sans-serif;
+    background: linear-gradient(135deg, #1a1a2e, #16213e);
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .caixa-login {
+    background: white;
+    border-radius: 14px;
+    padding: 40px;
+    width: 320px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+    text-align: center;
+  }
+  .caixa-login h1 { font-size: 22px; color: #1a1a2e; margin-bottom: 4px; }
+  .caixa-login p { color: #888; font-size: 13px; margin-bottom: 24px; }
+  input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    box-sizing: border-box;
+    font-size: 14px;
+  }
+  button {
+    width: 100%;
+    padding: 12px;
+    background: #25d366;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .erro {
+    background: #fee2e2;
+    color: #dc2626;
+    padding: 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+</style>
+</head>
+<body>
+
+<div class="caixa-login">
+  <h1>📱 Painel WhatsApp</h1>
+  <p>Faça login para continuar</p>
+
+  {% if erro %}
+  <div class="erro">{{ erro }}</div>
+  {% endif %}
+
+  <form method="POST" action="/login">
+    <input type="text" name="usuario" placeholder="Usuário" required autofocus>
+    <input type="password" name="senha" placeholder="Senha" required>
+    <button type="submit">Entrar</button>
+  </form>
+</div>
+
+</body>
+</html>

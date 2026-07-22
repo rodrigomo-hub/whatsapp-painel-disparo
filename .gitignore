@@ -1,0 +1,6 @@
+# Credenciais e dados sensiveis - NUNCA subir
+.env
+painel.db
+venv/
+__pycache__/
+*.pyc
