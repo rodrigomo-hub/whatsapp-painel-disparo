@@ -84,11 +84,18 @@
   </table>
 
   <form id="form-numero">
-    <input type="text" id="novo-nome" placeholder="Nome (ex: Empresa A - Num 1)" required>
-    <input type="text" id="novo-phone-id" placeholder="phone_number_id" required>
     <input type="text" id="novo-token" placeholder="access_token" required>
-    <input type="text" id="novo-template" placeholder="Nome do template" required>
     <input type="text" id="novo-waba-id" placeholder="WABA ID" required>
+    <button type="button" class="btn-editar" onclick="buscarNumerosNovo()">🔍 Buscar números</button>
+    <select id="novo-phone-id" required onchange="preencherNomeENumero()">
+      <option value="">Selecione um número...</option>
+    </select>
+    <input type="text" id="novo-nome" placeholder="Nome (ex: Empresa A - Num 1)" required>
+    <button type="button" class="btn-editar" onclick="buscarTemplatesNovo()">🔍 Buscar templates</button>
+    <select id="novo-template" required onchange="mostrarPreview('novo-template', 'preview-novo')">
+      <option value="">Selecione um template...</option>
+    </select>
+    <div id="preview-novo" style="width:100%; background:#f8f9fa; border:1px solid #eee; border-radius:8px; padding:12px; margin-top:8px; font-size:13px; white-space:pre-wrap; display:none;"></div>
     <input type="number" id="novo-limite" placeholder="Limite diário" value="250" required>
     <input type="number" id="novo-limite-hora" placeholder="Limite por hora" value="20" required>
     <button type="submit" class="btn-toggle">+ Adicionar número</button>
@@ -124,7 +131,11 @@
     <form id="form-editar">
       <input type="hidden" id="editar-id">
       <label>Template</label>
-      <input type="text" id="editar-template">
+      <button type="button" class="btn-editar" onclick="buscarTemplatesEditar()" style="margin-bottom:8px;">🔍 Buscar templates</button>
+      <select id="editar-template" onchange="mostrarPreview('editar-template', 'preview-editar')">
+        <option value="">Selecione um template...</option>
+      </select>
+      <div id="preview-editar" style="background:#f8f9fa; border:1px solid #eee; border-radius:8px; padding:12px; margin-bottom:10px; font-size:13px; white-space:pre-wrap; display:none;"></div>
       <label>Limite diário</label>
       <input type="number" id="editar-limite">
       <label>Limite por hora</label>
@@ -139,6 +150,113 @@
 
 <script>
 let numerosCache = [];
+
+let templatesEncontrados = {};
+
+async function popularSelectTemplates(selectId, accessToken, wabaId) {
+  const select = document.getElementById(selectId);
+  select.innerHTML = '<option value="">Buscando...</option>';
+
+  try {
+    const res = await fetch('/api/buscar-templates', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({access_token: accessToken, waba_id: wabaId})
+    });
+    const dados = await res.json();
+
+    if (!dados.templates || dados.templates.length === 0) {
+      select.innerHTML = '<option value="">Nenhum template encontrado</option>';
+      return;
+    }
+
+    select.innerHTML = '<option value="">Selecione um template...</option>';
+    dados.templates.forEach(t => {
+      const cat = {'MARKETING': '📢 Marketing', 'UTILITY': '🔧 Utilitário', 'AUTHENTICATION': '🔐 Autenticação'}[t.categoria] || t.categoria;
+      const opt = document.createElement('option');
+      opt.value = t.nome;
+      opt.textContent = `${t.nome} — ${cat} — ${t.status}`;
+      select.appendChild(opt);
+      templatesEncontrados[t.nome] = t.texto;
+    });
+  } catch (e) {
+    select.innerHTML = '<option value="">Erro ao buscar - confira token/WABA ID</option>';
+  }
+}
+
+function mostrarPreview(selectId, previewId) {
+  const select = document.getElementById(selectId);
+  const preview = document.getElementById(previewId);
+  const texto = templatesEncontrados[select.value];
+
+  if (texto) {
+    preview.textContent = texto;
+    preview.style.display = 'block';
+  } else {
+    preview.style.display = 'none';
+  }
+}
+
+let numerosEncontrados = {};
+
+async function buscarNumerosNovo() {
+  const token = document.getElementById('novo-token').value;
+  const waba = document.getElementById('novo-waba-id').value;
+  if (!token || !waba) { alert('Preencha o access_token e o WABA ID primeiro'); return; }
+
+  const select = document.getElementById('novo-phone-id');
+  select.innerHTML = '<option value="">Buscando...</option>';
+
+  try {
+    const res = await fetch('/api/buscar-numeros', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({access_token: token, waba_id: waba})
+    });
+    const dados = await res.json();
+
+    if (!dados.numeros || dados.numeros.length === 0) {
+      select.innerHTML = '<option value="">Nenhum numero encontrado</option>';
+      return;
+    }
+
+    select.innerHTML = '<option value="">Selecione um número...</option>';
+    dados.numeros.forEach(n => {
+      const opt = document.createElement('option');
+      opt.value = n.id;
+      opt.textContent = `${n.numero_exibicao} — ${n.nome_verificado || 'sem nome'}`;
+      select.appendChild(opt);
+      numerosEncontrados[n.id] = n;
+    });
+  } catch (e) {
+    select.innerHTML = '<option value="">Erro ao buscar - confira token/WABA ID</option>';
+  }
+}
+
+function preencherNomeENumero() {
+  const select = document.getElementById('novo-phone-id');
+  const n = numerosEncontrados[select.value];
+  if (n) {
+    document.getElementById('novo-nome').value = `${n.nome_verificado || ''} ${n.numero_exibicao}`.trim();
+  }
+}
+
+function buscarTemplatesNovo() {
+  const token = document.getElementById('novo-token').value;
+  const waba = document.getElementById('novo-waba-id').value;
+  if (!token || !waba) { alert('Preencha o access_token e o WABA ID primeiro'); return; }
+  popularSelectTemplates('novo-template', token, waba);
+}
+
+function buscarTemplatesEditar() {
+  const id = document.getElementById('editar-id').value;
+  const n = numerosCache.find(x => x.id === parseInt(id));
+  if (!n) return;
+  // usa o access_token completo do numero (nao o truncado do cache)
+  fetch(`/api/numero-token/${id}`).then(r => r.json()).then(dados => {
+    popularSelectTemplates('editar-template', dados.access_token, n.waba_id);
+  });
+}
 
 function traduzirCategoria(c) {
   const mapa = {

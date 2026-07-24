@@ -531,6 +531,81 @@ def total_hoje():
     return {"total_sucesso_hoje": row["c"], "total_erro_hoje": total_erros["c"]}
 
 
+@app.post("/api/buscar-templates")
+async def buscar_templates(request: Request):
+    body = await request.json()
+    access_token = body.get("access_token", "")
+    waba_id = body.get("waba_id", "")
+
+    if not access_token or not waba_id:
+        raise HTTPException(400, "access_token e waba_id sao obrigatorios")
+
+    try:
+        r = requests.get(
+            f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
+            params={"limit": 100},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        dados = r.json().get("data", [])
+        templates = []
+        for t in dados:
+            corpo = ""
+            for comp in t.get("components", []):
+                if comp.get("type") == "BODY":
+                    corpo = comp.get("text", "")
+                    break
+            templates.append({
+                "nome": t.get("name"),
+                "categoria": t.get("category"),
+                "status": t.get("status"),
+                "texto": corpo,
+            })
+        return {"templates": templates}
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao buscar templates: {e}")
+
+
+@app.get("/api/numero-token/{numero_id}")
+def numero_token(numero_id: int):
+    conn = get_db()
+    n = conn.execute("SELECT access_token FROM numeros WHERE id = ?", (numero_id,)).fetchone()
+    conn.close()
+    if n is None:
+        raise HTTPException(404, "Numero nao encontrado")
+    return {"access_token": n["access_token"]}
+
+
+@app.post("/api/buscar-numeros")
+async def buscar_numeros(request: Request):
+    body = await request.json()
+    access_token = body.get("access_token", "")
+    waba_id = body.get("waba_id", "")
+
+    if not access_token or not waba_id:
+        raise HTTPException(400, "access_token e waba_id sao obrigatorios")
+
+    try:
+        r = requests.get(
+            f"https://graph.facebook.com/v21.0/{waba_id}/phone_numbers",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        dados = r.json().get("data", [])
+        numeros = [
+            {
+                "id": n.get("id"),
+                "numero_exibicao": n.get("display_phone_number"),
+                "nome_verificado": n.get("verified_name"),
+                "status_qualidade": n.get("quality_rating"),
+            }
+            for n in dados
+        ]
+        return {"numeros": numeros}
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao buscar numeros: {e}")
+
+
 @app.get("/api/numeros")
 def listar_numeros():
     conn = get_db()
