@@ -1,4 +1,5 @@
 import re
+import os
 import asyncio
 import sqlite3
 import requests
@@ -12,7 +13,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.templating import Jinja2Templates
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_FILE = BASE_DIR / "painel.db"
+# Permite apontar pra um volume persistente fora do diretório do código
+# (produção, Docker) — sem isso, o banco fica dentro de /app e é perdido
+# a cada rebuild da imagem. Em dev local, sem essa env var, continua
+# funcionando igual sempre (arquivo ao lado do main.py).
+DB_FILE = Path(os.environ.get("DB_PATH", str(BASE_DIR / "painel.db")))
 ENV_FILE = BASE_DIR / ".env"
 
 
@@ -32,8 +37,11 @@ env = load_env(ENV_FILE)
 TZ = ZoneInfo("America/Sao_Paulo")
 INTERVALO_CHECAGEM_QUALIDADE = 900  # 15 minutos
 
-ADMIN_USER = env.get("ADMIN_USER", "admin")
-ADMIN_PASSWORD = env.get("ADMIN_PASSWORD", "")
+# Em produção (Docker), a credencial vem de variável de ambiente real
+# (docker service --env-file), não do arquivo .env local — os.environ
+# tem prioridade, o .env continua funcionando igual em dev local.
+ADMIN_USER = os.environ.get("ADMIN_USER", env.get("ADMIN_USER", "admin"))
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", env.get("ADMIN_PASSWORD", ""))
 sessoes_ativas = set()
 
 app = FastAPI()
@@ -59,6 +67,7 @@ app.add_middleware(AuthMiddleware)
 
 
 def get_db():
+    DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
