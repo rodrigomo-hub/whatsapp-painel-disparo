@@ -278,11 +278,17 @@ def verificar_qualidade(numero) -> str:
 
 
 def verificar_template_info(numero) -> tuple:
-    """Busca categoria/status do template usando o waba_id cadastrado."""
+    """
+    Busca categoria/status/idioma do template usando o waba_id cadastrado.
+    Um mesmo nome de template pode ter mais de uma variante de idioma
+    aprovada na Meta (pt_BR, pt_PT, en_US...) - nesse caso prioriza uma
+    aprovada em pt_BR; se nao achar, pega a primeira aprovada; se nenhuma
+    estiver aprovada, pega a primeira que vier mesmo assim.
+    """
     headers = {"Authorization": f"Bearer {numero['access_token']}"}
     waba_id = numero["waba_id"]
     if not waba_id:
-        return "UNKNOWN", "UNKNOWN"
+        return "UNKNOWN", "UNKNOWN", None
     try:
         r2 = requests.get(
             f"https://graph.facebook.com/v21.0/{waba_id}/message_templates",
@@ -291,10 +297,34 @@ def verificar_template_info(numero) -> tuple:
         )
         dados = r2.json().get("data", [])
         if not dados:
-            return "UNKNOWN", "UNKNOWN"
-        return dados[0].get("category", "UNKNOWN"), dados[0].get("status", "UNKNOWN")
+            return "UNKNOWN", "UNKNOWN", None
+
+        aprovados = [d for d in dados if d.get("status") == "APPROVED"]
+        candidatos = aprovados or dados
+        escolhido = next((d for d in candidatos if d.get("language") == "pt_BR"), candidatos[0])
+
+        return escolhido.get("category", "UNKNOWN"), escolhido.get("status", "UNKNOWN"), escolhido.get("language")
     except Exception:
-        return "UNKNOWN", "UNKNOWN"
+        return "UNKNOWN", "UNKNOWN", None
+
+
+def sincronizar_idioma_template(numero_id, numero_nome, idioma_atual, idioma_encontrado):
+    """
+    Atualiza numeros.template_idioma com o valor real vindo da Meta, se
+    vier preenchido e for diferente do que esta salvo. Registra evento pra
+    ficar rastreavel quando o idioma muda sozinho (ex: template reaprovado
+    em outro idioma).
+    """
+    if not idioma_encontrado or idioma_encontrado == idioma_atual:
+        return
+    conn = get_db()
+    conn.execute("UPDATE numeros SET template_idioma = ? WHERE id = ?", (idioma_encontrado, numero_id))
+    conn.commit()
+    conn.close()
+    registrar_evento(
+        numero_id, "idioma_template_sincronizado",
+        f"Numero '{numero_nome}': idioma do template atualizado de '{idioma_atual}' para '{idioma_encontrado}' (buscado automaticamente na Meta)",
+    )
 
 
 def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro="", wamid=""):
@@ -376,7 +406,7 @@ async def loop_verificar_qualidade():
 
             for n in numeros:
                 qualidade = verificar_qualidade(n)
-                categoria, status_template = verificar_template_info(n)
+                categoria, status_template, idioma = verificar_template_info(n)
                 conn = get_db()
                 conn.execute(
                     "UPDATE numeros SET qualidade = ?, template_categoria = ?, template_status = ? WHERE id = ?",
@@ -384,6 +414,7 @@ async def loop_verificar_qualidade():
                 )
                 conn.commit()
                 conn.close()
+                sincronizar_idioma_template(n["id"], n["nome"], n["template_idioma"], idioma)
 
                 if qualidade == "RED":
                     conn = get_db()
@@ -532,7 +563,7 @@ def atualizar_status_numero(numero_id: int):
         raise HTTPException(404, "Numero nao encontrado")
 
     qualidade = verificar_qualidade(n)
-    categoria, status_template = verificar_template_info(n)
+    categoria, status_template, idioma = verificar_template_info(n)
 
     conn = get_db()
     conn.execute(
@@ -541,6 +572,7 @@ def atualizar_status_numero(numero_id: int):
     )
     conn.commit()
     conn.close()
+    sincronizar_idioma_template(numero_id, n["nome"], n["template_idioma"], idioma)
 
     if qualidade == "RED":
         conn = get_db()
@@ -561,7 +593,7 @@ def atualizar_todos_status():
     resultados = []
     for n in numeros:
         qualidade = verificar_qualidade(n)
-        categoria, status_template = verificar_template_info(n)
+        categoria, status_template, idioma = verificar_template_info(n)
 
         conn = get_db()
         conn.execute(
@@ -570,6 +602,7 @@ def atualizar_todos_status():
         )
         conn.commit()
         conn.close()
+        sincronizar_idioma_template(n["id"], n["nome"], n["template_idioma"], idioma)
 
         if qualidade == "RED":
             conn = get_db()
