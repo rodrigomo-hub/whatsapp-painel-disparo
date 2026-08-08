@@ -8,7 +8,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 import secrets
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.templating import Jinja2Templates
 
@@ -42,6 +42,9 @@ INTERVALO_CHECAGEM_QUALIDADE = 900  # 15 minutos
 # tem prioridade, o .env continua funcionando igual em dev local.
 ADMIN_USER = os.environ.get("ADMIN_USER", env.get("ADMIN_USER", "admin"))
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", env.get("ADMIN_PASSWORD", ""))
+# Token que a Meta manda de volta na verificacao do webhook (GET /webhook).
+# Precisa ser o mesmo valor cadastrado no App da Meta (Configuracao > Webhooks).
+WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN", env.get("WEBHOOK_VERIFY_TOKEN", ""))
 sessoes_ativas = set()
 
 app = FastAPI()
@@ -50,7 +53,9 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        caminhos_livres = ["/login", "/static"]
+        # /webhook precisa ficar livre: quem chama e a Meta, nao um usuario logado
+        # no painel, entao nao existe cookie de sessao nessas chamadas.
+        caminhos_livres = ["/login", "/static", "/webhook"]
         if any(request.url.path.startswith(c) for c in caminhos_livres):
             return await call_next(request)
 
@@ -125,6 +130,18 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN template_status TEXT NOT NULL DEFAULT 'UNKNOWN'")
     if "waba_id" not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN waba_id TEXT NOT NULL DEFAULT ''")
+
+    colunas_disparos = [r["name"] for r in conn.execute("PRAGMA table_info(disparos)").fetchall()]
+    if "wamid" not in colunas_disparos:
+        # id da mensagem devolvido pela Meta no envio - usado pra casar
+        # com as atualizacoes de status que chegam depois via webhook.
+        conn.execute("ALTER TABLE disparos ADD COLUMN wamid TEXT")
+    if "status_entrega" not in colunas_disparos:
+        # enviado / entregue / lido / falhou - preenchido pelo webhook.
+        # Diferente de "status", que so indica se a chamada da API deu certo.
+        conn.execute("ALTER TABLE disparos ADD COLUMN status_entrega TEXT")
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_wamid ON disparos(wamid)")
     conn.commit()
     conn.close()
 
@@ -219,10 +236,15 @@ def enviar_whatsapp(numero, telefone_destino, variaveis_template):
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=15)
         if resp.status_code == 200:
-            return True, ""
-        return False, resp.text[:500]
+            wamid = ""
+            try:
+                wamid = resp.json().get("messages", [{}])[0].get("id", "")
+            except (ValueError, IndexError, KeyError):
+                pass
+            return True, "", wamid
+        return False, resp.text[:500], ""
     except requests.RequestException as e:
-        return False, str(e)
+        return False, str(e), ""
 
 
 def verificar_qualidade(numero) -> str:
@@ -256,11 +278,11 @@ def verificar_template_info(numero) -> tuple:
         return "UNKNOWN", "UNKNOWN"
 
 
-def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro=""):
+def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro="", wamid=""):
     conn = get_db()
     conn.execute(
-        "INSERT INTO disparos (numero_id, cpf, nome_lead, telefone_destino, status, erro, criado_em) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (numero_id, cpf, nome_lead, telefone, status, erro, agora_iso()),
+        "INSERT INTO disparos (numero_id, cpf, nome_lead, telefone_destino, status, erro, criado_em, wamid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (numero_id, cpf, nome_lead, telefone, status, erro, agora_iso(), wamid or None),
     )
     conn.commit()
     conn.close()
@@ -374,10 +396,10 @@ async def disparar(request: Request):
     if numero is None:
         return {"status": "erro", "motivo": "Nenhum numero disponivel (todos pausados ou limite atingido)"}
 
-    sucesso, erro = enviar_whatsapp(numero, telefone, variaveis)
+    sucesso, erro, wamid = enviar_whatsapp(numero, telefone, variaveis)
     _ultimo_usado["id"] = numero["id"]
 
-    registrar_disparo(numero["id"], cpf, nome_lead, telefone, "sucesso" if sucesso else "erro", erro)
+    registrar_disparo(numero["id"], cpf, nome_lead, telefone, "sucesso" if sucesso else "erro", erro, wamid)
 
     return {
         "status": "sucesso" if sucesso else "erro",
@@ -431,8 +453,8 @@ async def disparo_lote(request: Request):
             candidato = pool[idx_rr % len(pool)]
             idx_rr += 1
             if disponivel_agora(candidato):
-                sucesso, erro = enviar_whatsapp(candidato, telefone, [])
-                registrar_disparo(candidato["id"], "", "Disparo em lote", telefone, "sucesso" if sucesso else "erro", erro)
+                sucesso, erro, wamid = enviar_whatsapp(candidato, telefone, [])
+                registrar_disparo(candidato["id"], "", "Disparo em lote", telefone, "sucesso" if sucesso else "erro", erro, wamid)
                 resultados.append({"telefone": telefone, "status": "sucesso" if sucesso else "erro", "numero_usado": candidato["nome"]})
                 enviado = True
                 break
@@ -502,23 +524,85 @@ def atualizar_todos_status():
     return {"total_atualizado": len(resultados), "resultados": resultados}
 
 
-@app.post("/api/webhook-status")
-async def webhook_status(request: Request):
-    body = await request.json()
-    status_recebido = body.get("status_recebido", [])
+@app.get("/webhook")
+def verificar_webhook(request: Request):
+    """
+    A Meta chama isso UMA vez, na hora que voce salva a config do webhook
+    no App (Meta for Developers > WhatsApp > Configuration). Ela manda
+    hub.mode=subscribe, hub.verify_token e hub.challenge; se o token bater
+    com o nosso, devolvemos o challenge de volta (como texto puro) e ela
+    considera o endpoint verificado.
+    """
+    modo = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
 
-    for s in status_recebido:
-        status = s.get("status")
-        recipient = s.get("recipient_id", "")
-        erros = s.get("errors", [])
+    if modo == "subscribe" and token == WEBHOOK_VERIFY_TOKEN and WEBHOOK_VERIFY_TOKEN:
+        return PlainTextResponse(challenge)
 
-        codigo_erro = erros[0].get("code") if erros else None
-        mensagem_erro = erros[0].get("message", "") if erros else ""
+    raise HTTPException(403, "Token de verificacao invalido")
 
-        registrar_evento(None, f"webhook_{status}", f"Para {recipient}: {mensagem_erro} (codigo {codigo_erro})" if erros else f"Para {recipient}")
 
-        if codigo_erro == 131042:
-            registrar_evento(None, "sem_pagamento", f"Detectado erro de pagamento (131042) para {recipient} - verifique qual numero e pause manualmente se necessario")
+def _processar_status(numero_id_meta_ignorado, status_obj):
+    """Processa um item de value.statuses[] vindo do webhook da Meta."""
+    wamid = status_obj.get("id", "")
+    status = status_obj.get("status", "")  # sent | delivered | read | failed
+    recipient = status_obj.get("recipient_id", "")
+    erros = status_obj.get("errors", [])
+    codigo_erro = erros[0].get("code") if erros else None
+    mensagem_erro = erros[0].get("message", "") if erros else ""
+
+    conn = get_db()
+    disparo = conn.execute("SELECT * FROM disparos WHERE wamid = ?", (wamid,)).fetchone()
+    numero_id = disparo["numero_id"] if disparo else None
+
+    if disparo:
+        conn.execute("UPDATE disparos SET status_entrega = ? WHERE wamid = ?", (status, wamid))
+        conn.commit()
+    conn.close()
+
+    detalhe = f"Para {recipient}"
+    if erros:
+        detalhe += f": {mensagem_erro} (codigo {codigo_erro})"
+    registrar_evento(numero_id, f"webhook_{status}", detalhe)
+
+    if codigo_erro == 131042:
+        registrar_evento(
+            numero_id, "sem_pagamento",
+            f"Detectado erro de pagamento (131042) para {recipient} - verifique qual numero e pause manualmente se necessario",
+        )
+
+
+@app.post("/webhook")
+async def receber_webhook(request: Request):
+    """
+    Endpoint que recebe os eventos de fato (status de entrega, e mensagens
+    recebidas do lead se ele responder). Formato oficial da Meta:
+    entry[].changes[].value.{statuses[] | messages[]}.
+    Sempre responde 200 rapido - se a Meta nao recebe 200 em poucos
+    segundos ela reenvia o mesmo evento e tenta de novo depois.
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        return {"status": "ignorado"}
+
+    for entry in body.get("entry", []):
+        for change in entry.get("changes", []):
+            valor = change.get("value", {})
+
+            for status_obj in valor.get("statuses", []):
+                try:
+                    _processar_status(None, status_obj)
+                except Exception as e:
+                    registrar_evento(None, "erro_processar_webhook", str(e))
+
+            for msg in valor.get("messages", []):
+                # Lead respondeu a mensagem - so registramos o evento por enquanto,
+                # o painel nao tem fluxo de conversa/resposta.
+                remetente = msg.get("from", "")
+                tipo_msg = msg.get("type", "")
+                registrar_evento(None, "mensagem_recebida", f"De {remetente} ({tipo_msg})")
 
     return {"status": "recebido"}
 
