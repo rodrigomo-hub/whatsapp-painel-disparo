@@ -45,6 +45,11 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", env.get("ADMIN_PASSWORD", ""))
 # Token que a Meta manda de volta na verificacao do webhook (GET /webhook).
 # Precisa ser o mesmo valor cadastrado no App da Meta (Configuracao > Webhooks).
 WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN", env.get("WEBHOOK_VERIFY_TOKEN", ""))
+# Chave fixa pra chamadas automatizadas (n8n, outros sistemas) que nao tem
+# como manter cookie de sessao. So vale para as rotas em ROTAS_API_KEY -
+# nao da acesso a cadastro/exclusao de numeros nem a mais nada do painel.
+API_KEY = os.environ.get("API_KEY", env.get("API_KEY", ""))
+ROTAS_API_KEY = {"/disparar", "/api/disparo-lote"}
 sessoes_ativas = set()
 
 app = FastAPI()
@@ -58,6 +63,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         caminhos_livres = ["/login", "/static", "/webhook"]
         if any(request.url.path.startswith(c) for c in caminhos_livres):
             return await call_next(request)
+
+        # Chamadas automatizadas (n8n etc): aceita X-API-Key valida nas
+        # rotas de disparo, sem precisar de login/cookie.
+        if request.url.path in ROTAS_API_KEY and API_KEY:
+            chave_recebida = request.headers.get("X-API-Key", "")
+            if secrets.compare_digest(chave_recebida, API_KEY):
+                return await call_next(request)
 
         token = request.cookies.get("session_token")
         if token not in sessoes_ativas:
