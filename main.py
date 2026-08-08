@@ -153,6 +153,13 @@ def init_db():
         # Diferente de "status", que so indica se a chamada da API deu certo.
         conn.execute("ALTER TABLE disparos ADD COLUMN status_entrega TEXT")
 
+    if "template_idioma" not in colunas_existentes:
+        # Codigo do idioma do template aprovado na Meta (ex: pt_BR, pt_PT, en_US).
+        # Precisa bater EXATAMENTE com o idioma que o template foi aprovado -
+        # a Meta rejeita o envio (132001) se mandar pt_BR pra um template
+        # aprovado como pt_PT, por exemplo.
+        conn.execute("ALTER TABLE numeros ADD COLUMN template_idioma TEXT NOT NULL DEFAULT 'pt_BR'")
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_wamid ON disparos(wamid)")
     conn.commit()
     conn.close()
@@ -236,7 +243,7 @@ def enviar_whatsapp(numero, telefone_destino, variaveis_template):
         "type": "template",
         "template": {
             "name": numero["template_nome"],
-            "language": {"code": "pt_BR"},
+            "language": {"code": numero["template_idioma"] if numero["template_idioma"] else "pt_BR"},
             "components": [
                 {
                     "type": "body",
@@ -308,6 +315,37 @@ def registrar_evento(numero_id, tipo, detalhe):
     )
     conn.commit()
     conn.close()
+
+
+def verificar_qualidade_pos_envio(numero):
+    """
+    Confere a qualidade do numero logo depois de um envio, e pausa na hora
+    se caiu pra RED - sem esperar o loop de fundo (que roda a cada
+    INTERVALO_CHECAGEM_QUALIDADE). Isso fecha a janela de risco de
+    continuar mandando mensagem com a qualidade ja degradada.
+    Roda "best effort": qualquer erro aqui e so logado, nunca derruba o
+    disparo que ja foi feito.
+    """
+    try:
+        qualidade = verificar_qualidade(numero)
+        conn = get_db()
+        conn.execute("UPDATE numeros SET qualidade = ? WHERE id = ?", (qualidade, numero["id"]))
+        conn.commit()
+        conn.close()
+
+        if qualidade == "RED":
+            conn = get_db()
+            conn.execute("UPDATE numeros SET ativo = 0 WHERE id = ?", (numero["id"],))
+            conn.commit()
+            conn.close()
+            registrar_evento(
+                numero["id"], "pausado_qualidade",
+                f"Numero '{numero['nome']}' pausado automaticamente (checagem pos-envio) - qualidade RED",
+            )
+    except Exception as e:
+        registrar_evento(numero["id"], "erro_checagem_pos_envio", str(e))
+        return "UNKNOWN"
+    return qualidade
 
 
 DIAS_RETER_HISTORICO = 30
@@ -412,6 +450,7 @@ async def disparar(request: Request):
     _ultimo_usado["id"] = numero["id"]
 
     registrar_disparo(numero["id"], cpf, nome_lead, telefone, "sucesso" if sucesso else "erro", erro, wamid)
+    verificar_qualidade_pos_envio(numero)
 
     return {
         "status": "sucesso" if sucesso else "erro",
@@ -442,11 +481,11 @@ async def disparo_lote(request: Request):
     conn = get_db()
     if numeros_selecionados:
         placeholders = ",".join("?" * len(numeros_selecionados))
-        pool = conn.execute(
+        pool = [dict(r) for r in conn.execute(
             f"SELECT * FROM numeros WHERE id IN ({placeholders}) AND ativo = 1", numeros_selecionados
-        ).fetchall()
+        ).fetchall()]
     else:
-        pool = conn.execute("SELECT * FROM numeros WHERE ativo = 1").fetchall()
+        pool = [dict(r) for r in conn.execute("SELECT * FROM numeros WHERE ativo = 1").fetchall()]
     conn.close()
 
     if not pool:
@@ -469,6 +508,14 @@ async def disparo_lote(request: Request):
                 registrar_disparo(candidato["id"], "", "Disparo em lote", telefone, "sucesso" if sucesso else "erro", erro, wamid)
                 resultados.append({"telefone": telefone, "status": "sucesso" if sucesso else "erro", "numero_usado": candidato["nome"]})
                 enviado = True
+
+                # atualiza o candidato (que fica em memoria durante todo o lote) com
+                # o resultado da checagem - sem isso, um numero pausado no meio do
+                # lote continuaria sendo considerado disponivel pro resto do loop.
+                qualidade = verificar_qualidade_pos_envio(candidato)
+                candidato["qualidade"] = qualidade
+                if qualidade == "RED":
+                    candidato["ativo"] = 0
                 break
         if not enviado:
             resultados.append({"telefone": telefone, "status": "pendente", "motivo": "Sem numero disponivel no momento"})
@@ -732,10 +779,11 @@ async def adicionar_numero(request: Request):
     body = await request.json()
     conn = get_db()
     conn.execute(
-        "INSERT INTO numeros (nome, phone_number_id, access_token, template_nome, limite_diario, limite_hora, ativo, qualidade, waba_id) VALUES (?, ?, ?, ?, ?, ?, 1, 'UNKNOWN', ?)",
+        "INSERT INTO numeros (nome, phone_number_id, access_token, template_nome, template_idioma, limite_diario, limite_hora, ativo, qualidade, waba_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'UNKNOWN', ?)",
         (
             body["nome"], body["phone_number_id"], body["access_token"],
             body.get("template_nome", "oferta_credito"),
+            body.get("template_idioma", "pt_BR"),
             body.get("limite_diario", 250),
             body.get("limite_hora", 20),
             body.get("waba_id", ""),
@@ -758,6 +806,8 @@ async def atualizar_numero(numero_id: int, request: Request):
         conn.execute("UPDATE numeros SET limite_hora = ? WHERE id = ?", (body["limite_hora"], numero_id))
     if "template_nome" in body:
         conn.execute("UPDATE numeros SET template_nome = ? WHERE id = ?", (body["template_nome"], numero_id))
+    if "template_idioma" in body:
+        conn.execute("UPDATE numeros SET template_idioma = ? WHERE id = ?", (body["template_idioma"], numero_id))
     conn.commit()
     conn.close()
     return {"status": "ok"}
