@@ -103,6 +103,24 @@
 </div>
 
 <div class="cartao">
+  <h2>⏰ Horário de funcionamento</h2>
+  <p style="color:#888; font-size:13px;">No modo "respeita horário", disparos feitos fora da janela configurada (via painel ou API/n8n) são recusados automaticamente.</p>
+  <form id="form-horario" onsubmit="salvarHorario(event)">
+    <select id="horario-modo">
+      <option value="automatico">🟢 Automático (envia a qualquer hora)</option>
+      <option value="horario">🕐 Respeita horário configurado</option>
+    </select>
+    <label style="font-size:13px;">Das</label>
+    <input type="time" id="horario-inicio" style="width:100px;">
+    <label style="font-size:13px;">até</label>
+    <input type="time" id="horario-fim" style="width:100px;">
+    <div class="checkboxes-numeros" id="horario-dias" style="width:100%; margin-top:8px;"></div>
+    <button type="submit" class="btn-toggle">Salvar configuração</button>
+    <span id="horario-salvo" style="color:#16a34a; font-size:13px; display:none;">✅ Salvo</span>
+  </form>
+</div>
+
+<div class="cartao">
   <h2>📤 Disparo em lote</h2>
   <p style="color:#888; font-size:13px;">Cole os números (um por linha, ou separados por vírgula) ou escolha um arquivo .txt</p>
   <input type="file" id="arquivo-lote" accept=".txt,.csv"><br><br>
@@ -297,6 +315,58 @@ async function atualizarTodos() {
   carregarNumeros();
 }
 
+const NOMES_DIAS = [
+  {v: 1, l: 'Seg'}, {v: 2, l: 'Ter'}, {v: 3, l: 'Qua'}, {v: 4, l: 'Qui'},
+  {v: 5, l: 'Sex'}, {v: 6, l: 'Sáb'}, {v: 7, l: 'Dom'},
+];
+
+async function carregarHorario() {
+  const res = await fetch('/api/configuracao');
+  const cfg = await res.json();
+
+  document.getElementById('horario-modo').value = cfg.modo;
+  document.getElementById('horario-inicio').value = cfg.hora_inicio;
+  document.getElementById('horario-fim').value = cfg.hora_fim;
+
+  const diasDiv = document.getElementById('horario-dias');
+  diasDiv.innerHTML = NOMES_DIAS.map(d => `
+    <label>
+      <input type="checkbox" class="horario-dia-checkbox" value="${d.v}" ${cfg.dias_semana.includes(d.v) ? 'checked' : ''}>
+      ${d.l}
+    </label>
+  `).join('');
+}
+
+async function salvarHorario(ev) {
+  ev.preventDefault();
+  const dias = Array.from(document.querySelectorAll('.horario-dia-checkbox:checked')).map(el => parseInt(el.value));
+
+  if (dias.length === 0) {
+    alert('Selecione pelo menos um dia da semana.');
+    return;
+  }
+
+  const res = await fetch('/api/configuracao', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      modo: document.getElementById('horario-modo').value,
+      hora_inicio: document.getElementById('horario-inicio').value,
+      hora_fim: document.getElementById('horario-fim').value,
+      dias_semana: dias,
+    })
+  });
+
+  if (res.ok) {
+    const aviso = document.getElementById('horario-salvo');
+    aviso.style.display = 'inline';
+    setTimeout(() => { aviso.style.display = 'none'; }, 2000);
+  } else {
+    const erro = await res.json();
+    alert('Erro ao salvar: ' + (erro.detail || 'erro desconhecido'));
+  }
+}
+
 async function carregarTotalHoje() {
   const res = await fetch('/api/total-hoje');
   const dados = await res.json();
@@ -453,6 +523,7 @@ async function dispararLote() {
 carregarTotalHoje();
 carregarNumeros();
 carregarHistorico();
+carregarHorario();
 setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); }, 10000);
 </script>
 

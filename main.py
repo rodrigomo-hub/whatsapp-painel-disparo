@@ -130,6 +130,17 @@ def init_db():
             criado_em TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS configuracao (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            modo TEXT NOT NULL DEFAULT 'automatico',
+            hora_inicio TEXT NOT NULL DEFAULT '08:00',
+            hora_fim TEXT NOT NULL DEFAULT '20:00',
+            dias_semana TEXT NOT NULL DEFAULT '1,2,3,4,5,6,7'
+        )
+    """)
+    # linha unica de configuracao (id sempre 1) - cria com os defaults se ainda nao existir
+    conn.execute("INSERT OR IGNORE INTO configuracao (id, modo, hora_inicio, hora_fim, dias_semana) VALUES (1, 'automatico', '08:00', '20:00', '1,2,3,4,5,6,7')")
     # migra bancos antigos que nao tinham essas colunas
     colunas_existentes = [r["name"] for r in conn.execute("PRAGMA table_info(numeros)").fetchall()]
     if "limite_hora" not in colunas_existentes:
@@ -202,6 +213,46 @@ def disponivel_agora(numero: sqlite3.Row) -> bool:
     if contagem_ultima_hora(numero["id"]) >= numero["limite_hora"]:
         return False
     return True
+
+
+def carregar_configuracao() -> dict:
+    conn = get_db()
+    row = conn.execute("SELECT * FROM configuracao WHERE id = 1").fetchone()
+    conn.close()
+    cfg = dict(row)
+    cfg["dias_semana"] = [int(d) for d in cfg["dias_semana"].split(",") if d]
+    return cfg
+
+
+def dentro_do_horario_permitido() -> tuple:
+    """
+    Confere se o horario global de funcionamento permite disparo agora.
+    Retorna (permitido: bool, motivo: str | None).
+    Modo 'automatico' sempre permite (comportamento de sempre, 24/7).
+    Modo 'horario' so permite dentro da janela hora_inicio-hora_fim E no
+    dia da semana configurado (1=segunda ... 7=domingo, ISO).
+    Nao suporta janela que cruza a meia-noite (ex: 22:00-06:00) - pensado
+    pra horario comercial dentro do mesmo dia.
+    """
+    cfg = carregar_configuracao()
+    if cfg["modo"] != "horario":
+        return True, None
+
+    agora = datetime.now(TZ)
+    dia_semana_hoje = agora.isoweekday()  # 1=segunda ... 7=domingo
+
+    if dia_semana_hoje not in cfg["dias_semana"]:
+        nomes_dias = {1: "segunda", 2: "terca", 3: "quarta", 4: "quinta", 5: "sexta", 6: "sabado", 7: "domingo"}
+        return False, f"Fora do horario de funcionamento (hoje, {nomes_dias[dia_semana_hoje]}, nao esta configurado como dia ativo)"
+
+    hora_inicio = datetime.strptime(cfg["hora_inicio"], "%H:%M").time()
+    hora_fim = datetime.strptime(cfg["hora_fim"], "%H:%M").time()
+    hora_agora = agora.time()
+
+    if not (hora_inicio <= hora_agora <= hora_fim):
+        return False, f"Fora do horario de funcionamento (permitido das {cfg['hora_inicio']} as {cfg['hora_fim']}, agora sao {agora.strftime('%H:%M')})"
+
+    return True, None
 
 
 def proximo_numero_disponivel(ultimo_usado_id, pool=None):
@@ -473,6 +524,10 @@ async def disparar(request: Request):
     if not telefone:
         raise HTTPException(400, "Campo 'whatsapp' ou 'telefone' obrigatorio")
 
+    permitido, motivo_horario = dentro_do_horario_permitido()
+    if not permitido:
+        return {"status": "erro", "motivo": motivo_horario, "motivo_codigo": "fora_do_horario"}
+
     numero = proximo_numero_disponivel(_ultimo_usado["id"])
     if numero is None:
         return {"status": "erro", "motivo": "Nenhum numero disponivel (todos pausados ou limite atingido)"}
@@ -508,6 +563,14 @@ async def disparo_lote(request: Request):
         if limpo not in vistos:
             vistos.add(limpo)
             formatados.append(limpo)
+
+    permitido, motivo_horario = dentro_do_horario_permitido()
+    if not permitido:
+        return {
+            "total": len(formatados),
+            "resultados": [{"telefone": t, "status": "pendente", "motivo": motivo_horario} for t in formatados],
+            "erro_geral": motivo_horario,
+        }
 
     conn = get_db()
     if numeros_selecionados:
@@ -714,6 +777,46 @@ def total_hoje():
     ).fetchone()
     conn.close()
     return {"total_sucesso_hoje": row["c"], "total_erro_hoje": total_erros["c"]}
+
+
+@app.get("/api/configuracao")
+def obter_configuracao():
+    return carregar_configuracao()
+
+
+@app.patch("/api/configuracao")
+async def atualizar_configuracao(request: Request):
+    body = await request.json()
+
+    if "modo" in body and body["modo"] not in ("automatico", "horario"):
+        raise HTTPException(400, "modo deve ser 'automatico' ou 'horario'")
+
+    for campo in ("hora_inicio", "hora_fim"):
+        if campo in body:
+            try:
+                datetime.strptime(body[campo], "%H:%M")
+            except ValueError:
+                raise HTTPException(400, f"{campo} deve estar no formato HH:MM")
+
+    if "dias_semana" in body:
+        dias = body["dias_semana"]
+        if not isinstance(dias, list) or not all(isinstance(d, int) and 1 <= d <= 7 for d in dias) or not dias:
+            raise HTTPException(400, "dias_semana deve ser uma lista de inteiros de 1 (segunda) a 7 (domingo), nao vazia")
+        body["dias_semana"] = ",".join(str(d) for d in sorted(set(dias)))
+
+    campos_validos = {"modo", "hora_inicio", "hora_fim", "dias_semana"}
+    atualizacoes = {k: v for k, v in body.items() if k in campos_validos}
+    if not atualizacoes:
+        raise HTTPException(400, "Nenhum campo valido informado")
+
+    conn = get_db()
+    set_clause = ", ".join(f"{k} = ?" for k in atualizacoes)
+    conn.execute(f"UPDATE configuracao SET {set_clause} WHERE id = 1", list(atualizacoes.values()))
+    conn.commit()
+    conn.close()
+
+    registrar_evento(None, "configuracao_atualizada", f"Configuracao de horario atualizada: {atualizacoes}")
+    return carregar_configuracao()
 
 
 @app.post("/api/buscar-templates")
