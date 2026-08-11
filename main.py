@@ -49,7 +49,7 @@ WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN", env.get("WEBHOOK_V
 # como manter cookie de sessao. So vale para as rotas em ROTAS_API_KEY -
 # nao da acesso a cadastro/exclusao de numeros nem a mais nada do painel.
 API_KEY = os.environ.get("API_KEY", env.get("API_KEY", ""))
-ROTAS_API_KEY = {"/disparar", "/api/disparo-lote"}
+ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar"}
 sessoes_ativas = set()
 
 app = FastAPI()
@@ -511,6 +511,47 @@ def fazer_logout(request: Request):
     resposta = RedirectResponse("/login")
     resposta.delete_cookie("session_token")
     return resposta
+
+
+@app.get("/api/pode-disparar")
+def pode_disparar():
+    """
+    Checagem rapida e SEM CUSTO (so consulta o banco local, nao chama a
+    Meta nem nenhuma API paga) pra saber se vale a pena seguir com uma
+    consulta paga antes de tentar o disparo de verdade. Pensado pra ser
+    chamado pelo n8n logo antes da consulta de CPF (ou qualquer consulta
+    que tenha custo), evitando gastar a consulta a toa quando o disparo
+    ja sabidamente vai falhar (fora do horario ou sem numero disponivel).
+    """
+    permitido, motivo_horario = dentro_do_horario_permitido()
+    if not permitido:
+        return {
+            "pode_disparar": False,
+            "motivo": motivo_horario,
+            "motivo_codigo": "fora_do_horario",
+            "numeros_disponiveis": 0,
+        }
+
+    conn = get_db()
+    numeros = conn.execute("SELECT * FROM numeros WHERE ativo = 1").fetchall()
+    conn.close()
+
+    disponiveis = [n for n in numeros if disponivel_agora(n)]
+
+    if not disponiveis:
+        return {
+            "pode_disparar": False,
+            "motivo": "Nenhum numero disponivel no momento (todos pausados, com qualidade baixa, ou no limite diario/hora)",
+            "motivo_codigo": "nenhum_numero_disponivel",
+            "numeros_disponiveis": 0,
+        }
+
+    return {
+        "pode_disparar": True,
+        "motivo": None,
+        "motivo_codigo": None,
+        "numeros_disponiveis": len(disponiveis),
+    }
 
 
 @app.post("/disparar")
