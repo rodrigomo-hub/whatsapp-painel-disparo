@@ -559,6 +559,30 @@ def gerar_link_curto(disparo_id, telefone) -> str | None:
     return f"{base}/o/{codigo}"
 
 
+def _parsear_valor_monetario(bruto):
+    """
+    A GTI SMS devolve o saldo formatado como moeda (ex: 'R$0', 'R$ 1.234,56',
+    as vezes com caracteres invisiveis de direcao de texto tipo \u200e no
+    meio). Extrai o numero de qualquer formato assim, sem quebrar.
+    """
+    if bruto is None:
+        return None
+    texto = "".join(c for c in str(bruto) if c.isprintable()).strip()
+    limpo = re.sub(r"[^\d,.\-]", "", texto)
+    if not limpo:
+        return None
+    if "," in limpo and "." in limpo:
+        # formato BR tipo 1.234,56 - ponto e milhar, virgula e decimal
+        limpo = limpo.replace(".", "").replace(",", ".")
+    elif "," in limpo:
+        # so virgula - assume decimal BR (ex: 0,50)
+        limpo = limpo.replace(",", ".")
+    try:
+        return float(limpo)
+    except ValueError:
+        return None
+
+
 def consultar_saldo_sms(forcar=False) -> dict:
     """
     Consulta o saldo de creditos da GTI SMS, com cache de alguns minutos
@@ -585,13 +609,7 @@ def consultar_saldo_sms(forcar=False) -> dict:
         )
         corpo = resp.json()
         dados = corpo.get("data") or {}
-        valor_bruto = dados.get("remaining_balance")
-        valor = None
-        if valor_bruto is not None:
-            try:
-                valor = float(valor_bruto)
-            except (TypeError, ValueError):
-                valor = None
+        valor = _parsear_valor_monetario(dados.get("remaining_balance"))
 
         if valor is None:
             _cache_saldo_sms.update({
