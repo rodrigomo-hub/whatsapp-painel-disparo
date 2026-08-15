@@ -152,15 +152,9 @@ def init_db():
             link_base_url TEXT NOT NULL DEFAULT ''
         )
     """)
-    # linha unica de configuracao (id sempre 1) - cria com os defaults se ainda nao existir
-    conn.execute("""
-        INSERT OR IGNORE INTO configuracao
-        (id, modo, hora_inicio, hora_fim, dias_semana, sms_habilitado, sms_modo, sms_template, whatsapp_destino, whatsapp_mensagem_template, link_base_url)
-        VALUES (1, 'automatico', '08:00', '20:00', '1,2,3,4,5,6,7', 0, 'fallback',
-                'Oi {1}! Voce tem uma oferta disponivel. Fale com a gente: {link}',
-                '', 'Ola, recebi um SMS sobre uma oferta.', '')
-    """)
-    # migra bancos que ja existiam antes do fallback de SMS existir
+    # migra bancos que ja existiam antes do fallback de SMS existir - PRECISA
+    # rodar antes do INSERT OR IGNORE abaixo, senao a tabela antiga (que ja
+    # existia sem essas colunas) faz o INSERT falhar com "no column named X".
     colunas_config = [r["name"] for r in conn.execute("PRAGMA table_info(configuracao)").fetchall()]
     if "sms_habilitado" not in colunas_config:
         conn.execute("ALTER TABLE configuracao ADD COLUMN sms_habilitado INTEGER NOT NULL DEFAULT 0")
@@ -176,6 +170,16 @@ def init_db():
         conn.execute("ALTER TABLE configuracao ADD COLUMN whatsapp_mensagem_template TEXT NOT NULL DEFAULT 'Ola, recebi um SMS sobre uma oferta.'")
     if "link_base_url" not in colunas_config:
         conn.execute("ALTER TABLE configuracao ADD COLUMN link_base_url TEXT NOT NULL DEFAULT ''")
+
+    # linha unica de configuracao (id sempre 1) - cria com os defaults se ainda nao existir.
+    # So roda depois das migracoes acima, garantindo que todas as colunas ja existem.
+    conn.execute("""
+        INSERT OR IGNORE INTO configuracao
+        (id, modo, hora_inicio, hora_fim, dias_semana, sms_habilitado, sms_modo, sms_template, whatsapp_destino, whatsapp_mensagem_template, link_base_url)
+        VALUES (1, 'automatico', '08:00', '20:00', '1,2,3,4,5,6,7', 0, 'fallback',
+                'Oi {1}! Voce tem uma oferta disponivel. Fale com a gente: {link}',
+                '', 'Ola, recebi um SMS sobre uma oferta.', '')
+    """)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS links_curtos (
