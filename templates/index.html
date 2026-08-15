@@ -172,6 +172,23 @@
 </div>
 
 <div class="cartao">
+  <h2>🔗 Links curtos gerados</h2>
+  <p style="color:#888; font-size:13px;">Links criados pelos SMS de fallback, com contagem de clique (atualiza a cada 10s).</p>
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <thead>
+      <tr style="text-align:left; color:#888; border-bottom:1px solid #eee;">
+        <th style="padding:6px 4px;">Link</th>
+        <th style="padding:6px 4px;">Telefone</th>
+        <th style="padding:6px 4px;">Criado em</th>
+        <th style="padding:6px 4px;">Cliques</th>
+        <th style="padding:6px 4px;">Último clique</th>
+      </tr>
+    </thead>
+    <tbody id="tabela-links-curtos"></tbody>
+  </table>
+</div>
+
+<div class="cartao">
   <h2>📤 Disparo em lote</h2>
   <p style="color:#888; font-size:13px;">Cole os números (um por linha, ou separados por vírgula) ou escolha um arquivo .txt</p>
   <input type="file" id="arquivo-lote" accept=".txt,.csv"><br><br>
@@ -492,6 +509,35 @@ async function salvarSms(ev) {
   }
 }
 
+function formatarDataHora(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleString('pt-BR', {day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'});
+}
+
+async function carregarLinksCurtos() {
+  const res = await fetch('/api/links-curtos');
+  const links = await res.json();
+  const corpo = document.getElementById('tabela-links-curtos');
+
+  if (links.length === 0) {
+    corpo.innerHTML = '<tr><td colspan="5" style="padding:12px 4px; color:#888;">Nenhum link gerado ainda.</td></tr>';
+    return;
+  }
+
+  corpo.innerHTML = links.map(l => `
+    <tr style="border-bottom:1px solid #f5f5f5;">
+      <td style="padding:6px 4px; font-family:monospace;">/o/${l.codigo}</td>
+      <td style="padding:6px 4px;">${l.telefone || '—'}</td>
+      <td style="padding:6px 4px;">${formatarDataHora(l.criado_em)}</td>
+      <td style="padding:6px 4px;">
+        <span style="${l.cliques > 0 ? 'color:#16a34a; font-weight:600;' : 'color:#888;'}">${l.cliques}</span>
+      </td>
+      <td style="padding:6px 4px;">${formatarDataHora(l.ultimo_clique_em)}</td>
+    </tr>
+  `).join('');
+}
+
 async function carregarTotalHoje() {
   const res = await fetch('/api/total-hoje');
   const dados = await res.json();
@@ -650,7 +696,8 @@ carregarNumeros();
 carregarHistorico();
 carregarHorario();
 carregarSms();
-setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); }, 10000);
+carregarLinksCurtos();
+setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarLinksCurtos(); }, 10000);
 </script>
 
 </body>
