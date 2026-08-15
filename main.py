@@ -58,6 +58,12 @@ ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar"}
 SMS_GTI_TOKEN = os.environ.get("SMS_GTI_TOKEN", env.get("SMS_GTI_TOKEN", ""))
 sessoes_ativas = set()
 
+# Cache do saldo de creditos da GTI SMS - consultado no maximo a cada
+# CACHE_SALDO_TTL_SEGUNDOS, pra nao bater na API deles a cada disparo
+# (mais lento e arriscado se a API deles cair no meio de um lote grande).
+_cache_saldo_sms = {"valor": None, "expira_em": None, "atualizado_em": None, "erro": None}
+CACHE_SALDO_TTL_SEGUNDOS = 300  # 5 minutos
+
 app = FastAPI()
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -553,6 +559,58 @@ def gerar_link_curto(disparo_id, telefone) -> str | None:
     return f"{base}/o/{codigo}"
 
 
+def consultar_saldo_sms(forcar=False) -> dict:
+    """
+    Consulta o saldo de creditos da GTI SMS, com cache de alguns minutos
+    (CACHE_SALDO_TTL_SEGUNDOS) pra nao bater na API deles a cada disparo.
+    Sempre devolve o mesmo formato de dict, mesmo em erro - nesse caso
+    'valor' fica None e 'erro' explica o motivo (usado tanto pela tela
+    quanto pela checagem antes de enviar).
+    """
+    agora = datetime.now(TZ)
+    if not forcar and _cache_saldo_sms["atualizado_em"] is not None:
+        idade = (agora - _cache_saldo_sms["atualizado_em"]).total_seconds()
+        if idade < CACHE_SALDO_TTL_SEGUNDOS:
+            return _cache_saldo_sms
+
+    if not SMS_GTI_TOKEN:
+        _cache_saldo_sms.update({"valor": None, "expira_em": None, "atualizado_em": agora, "erro": "SMS_GTI_TOKEN nao configurado"})
+        return _cache_saldo_sms
+
+    try:
+        resp = requests.get(
+            "https://sms.gtisms.com/api/v3/balance",
+            headers={"Authorization": f"Bearer {SMS_GTI_TOKEN}", "Accept": "application/json"},
+            timeout=10,
+        )
+        corpo = resp.json()
+        dados = corpo.get("data") or {}
+        valor_bruto = dados.get("remaining_balance")
+        valor = None
+        if valor_bruto is not None:
+            try:
+                valor = float(valor_bruto)
+            except (TypeError, ValueError):
+                valor = None
+
+        if valor is None:
+            _cache_saldo_sms.update({
+                "valor": None, "expira_em": None, "atualizado_em": agora,
+                "erro": f"Resposta inesperada da GTI SMS (HTTP {resp.status_code}): {resp.text[:300]}",
+            })
+        else:
+            _cache_saldo_sms.update({
+                "valor": valor, "expira_em": dados.get("expired_on"),
+                "atualizado_em": agora, "erro": None,
+            })
+    except requests.RequestException as e:
+        _cache_saldo_sms.update({"valor": None, "expira_em": None, "atualizado_em": agora, "erro": str(e)})
+    except ValueError:
+        _cache_saldo_sms.update({"valor": None, "expira_em": None, "atualizado_em": agora, "erro": f"Resposta nao-JSON da GTI SMS: {resp.text[:300]}"})
+
+    return _cache_saldo_sms
+
+
 def enviar_sms(telefone_destino: str, mensagem: str):
     """
     Envia SMS via GTI SMS. Retorna (sucesso: bool, erro: str, uid: str).
@@ -611,6 +669,22 @@ def tentar_fallback_sms(cpf, nome_lead, telefone, variaveis):
     cfg = carregar_configuracao()
     if not cfg["sms_habilitado"] or not SMS_GTI_TOKEN:
         return None
+
+    saldo = consultar_saldo_sms()
+    if saldo["valor"] is not None and saldo["valor"] <= 0:
+        registrar_disparo(
+            NUMERO_ID_SMS_FALLBACK, cpf, nome_lead, telefone, "erro",
+            erro="SEM SALDO: saldo de creditos GTI SMS zerado - envio nao foi tentado",
+            canal="sms",
+        )
+        registrar_evento(None, "sms_sem_saldo", f"Fallback de SMS pulado - saldo GTI SMS zerado ({saldo['valor']})")
+        return {
+            "status": "erro",
+            "numero_usado": "SMS (fallback)",
+            "canal": "sms",
+            "erro": "Sem saldo de creditos SMS disponivel",
+            "erro_codigo": "sms_sem_saldo",
+        }
 
     disparo_id = registrar_disparo(NUMERO_ID_SMS_FALLBACK, cpf, nome_lead, telefone, "pendente", canal="sms")
     link = gerar_link_curto(disparo_id, telefone)
@@ -1140,24 +1214,16 @@ def abrir_link_curto(codigo: str):
 
 @app.get("/api/sms/saldo")
 def saldo_sms():
-    """Consulta o saldo de creditos disponivel na GTI SMS."""
+    """Consulta o saldo de creditos disponivel na GTI SMS (com cache de alguns minutos)."""
     if not SMS_GTI_TOKEN:
-        return {"configurado": False, "saldo": None, "expira_em": None}
-    try:
-        resp = requests.get(
-            "https://sms.gtisms.com/api/v3/balance",
-            headers={"Authorization": f"Bearer {SMS_GTI_TOKEN}", "Accept": "application/json"},
-            timeout=10,
-        )
-        corpo = resp.json()
-        dados = corpo.get("data", {})
-        return {
-            "configurado": True,
-            "saldo": dados.get("remaining_balance"),
-            "expira_em": dados.get("expired_on"),
-        }
-    except Exception as e:
-        return {"configurado": True, "saldo": None, "expira_em": None, "erro": str(e)}
+        return {"configurado": False, "saldo": None, "expira_em": None, "erro": None}
+    info = consultar_saldo_sms()
+    return {
+        "configurado": True,
+        "saldo": info["valor"],
+        "expira_em": info["expira_em"],
+        "erro": info["erro"],
+    }
 
 
 @app.get("/api/links-curtos")

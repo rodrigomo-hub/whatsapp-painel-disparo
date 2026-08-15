@@ -446,7 +446,10 @@ async function carregarSaldoSms() {
   if (!dados.configurado) {
     el.textContent = 'token GTI SMS não configurado no servidor';
   } else if (dados.saldo === null) {
-    el.textContent = 'não foi possível consultar';
+    el.textContent = `não foi possível consultar${dados.erro ? ' (' + dados.erro + ')' : ''}`;
+    el.title = dados.erro || '';
+  } else if (dados.saldo <= 0) {
+    el.innerHTML = `<span style="color:#dc2626;">0 créditos - fallback pausado ate recarregar</span>`;
   } else {
     el.textContent = `${dados.saldo} créditos (expira em ${dados.expira_em})`;
   }
@@ -540,10 +543,21 @@ async function carregarHistorico() {
   dados.forEach(d => {
     const tr = document.createElement('tr');
     const dataFmt = new Date(d.criado_em).toLocaleString('pt-BR');
+
+    let statusHtml;
+    if (d.status === 'sucesso') {
+      statusHtml = '<span class="status-sucesso">✅ Enviado</span>';
+    } else if (d.erro && d.erro.startsWith('SEM SALDO')) {
+      statusHtml = '<span style="color:#d97706;">💰 Sem saldo SMS</span>';
+    } else {
+      statusHtml = '<span class="status-erro">❌ Erro</span>';
+    }
+    const motivo = (d.status !== 'sucesso' && d.erro) ? `<div style="font-size:11px; color:#999; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(d.erro || '').replace(/"/g, '&quot;')}">${d.erro}</div>` : '';
+
     tr.innerHTML = `
       <td>${dataFmt}</td><td>${d.numero_nome}</td><td>${d.nome_lead || '-'}</td>
       <td>${d.telefone_destino}</td>
-      <td class="status-${d.status}">${d.status === 'sucesso' ? '✅ Enviado' : '❌ Erro'}</td>
+      <td>${statusHtml}${motivo}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -650,7 +664,7 @@ carregarNumeros();
 carregarHistorico();
 carregarHorario();
 carregarSms();
-setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); }, 10000);
+setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarSaldoSms(); }, 10000);
 </script>
 
 </body>
