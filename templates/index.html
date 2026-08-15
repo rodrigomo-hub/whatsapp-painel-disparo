@@ -121,6 +121,57 @@
 </div>
 
 <div class="cartao">
+  <h2>📱 SMS de fallback (GTI SMS)</h2>
+  <p style="color:#888; font-size:13px;">
+    Usado quando não há número de WhatsApp disponível, ou o envio falha.
+    Saldo atual: <strong id="sms-saldo">carregando...</strong>
+  </p>
+  <form id="form-sms" onsubmit="salvarSms(event)">
+    <label style="font-size:13px;">
+      <input type="checkbox" id="sms-habilitado"> Fallback de SMS habilitado
+    </label>
+
+    <div style="margin-top:8px;">
+      <label style="font-size:13px; display:block; margin-bottom:4px;">Quando enviar</label>
+      <select id="sms-modo">
+        <option value="fallback">Só quando o WhatsApp falhar/não tiver número (recomendado)</option>
+        <option value="sempre">Sempre, mesmo quando o WhatsApp der certo (custa mais)</option>
+      </select>
+    </div>
+
+    <div style="margin-top:12px;">
+      <label style="font-size:13px; display:block; margin-bottom:4px;">
+        Mensagem do SMS — use <code>{1}</code> <code>{2}</code> <code>{3}</code> para as variáveis (mesma ordem do WhatsApp) e <code>{link}</code> para o link curto.
+        Sem acentos (removidos automaticamente). Máx. 160 caracteres.
+      </label>
+      <textarea id="sms-template" rows="3" style="width:100%; font-family:inherit;" oninput="atualizarPreviewSms()"></textarea>
+      <div style="font-size:12px; color:#888; margin-top:4px;">
+        Preview real (sem acento): <span id="sms-preview" style="font-style:italic;"></span>
+        — <span id="sms-contador">0</span>/160 caracteres
+      </div>
+    </div>
+
+    <div style="margin-top:12px;">
+      <label style="font-size:13px; display:block; margin-bottom:4px;">Link base (domínio do encurtador) — deixe vazio para enviar SMS sem link</label>
+      <input type="text" id="sms-link-base" placeholder="https://seudominio.com.br" style="width:100%;">
+    </div>
+
+    <div style="margin-top:12px;">
+      <label style="font-size:13px; display:block; margin-bottom:4px;">WhatsApp de destino do link (número completo, com DDI)</label>
+      <input type="text" id="sms-whatsapp-destino" placeholder="5511988887777" style="width:100%;">
+    </div>
+
+    <div style="margin-top:12px;">
+      <label style="font-size:13px; display:block; margin-bottom:4px;">Mensagem pré-preenchida ao abrir o WhatsApp</label>
+      <input type="text" id="sms-whatsapp-mensagem" style="width:100%;">
+    </div>
+
+    <button type="submit" class="btn-toggle" style="margin-top:12px;">Salvar configuração de SMS</button>
+    <span id="sms-salvo" style="color:#16a34a; font-size:13px; display:none;">✅ Salvo</span>
+  </form>
+</div>
+
+<div class="cartao">
   <h2>📤 Disparo em lote</h2>
   <p style="color:#888; font-size:13px;">Cole os números (um por linha, ou separados por vírgula) ou escolha um arquivo .txt</p>
   <input type="file" id="arquivo-lote" accept=".txt,.csv"><br><br>
@@ -367,6 +418,80 @@ async function salvarHorario(ev) {
   }
 }
 
+function normalizarPreviewSms(texto) {
+  // Mesma logica do backend (unicodedata NFKD + filtro ascii), replicada
+  // aqui so pra dar feedback visual imediato - o backend sempre normaliza
+  // de novo antes de enviar de verdade, entao isso e so preview.
+  const semAcento = texto.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+  return semAcento.replace(/[^\x20-\x7E]/g, ' ');
+}
+
+function atualizarPreviewSms() {
+  const texto = document.getElementById('sms-template').value;
+  const exemploSubstituido = texto
+    .replace(/\{1\}/g, 'Maria')
+    .replace(/\{2\}/g, 'exemplo')
+    .replace(/\{3\}/g, 'exemplo')
+    .replace(/\{link\}/g, 'https://seudominio.com.br/o/aB3x9k');
+  const limpo = normalizarPreviewSms(exemploSubstituido);
+  document.getElementById('sms-preview').textContent = limpo;
+  document.getElementById('sms-contador').textContent = limpo.length;
+  document.getElementById('sms-contador').style.color = limpo.length > 160 ? '#dc2626' : '#888';
+}
+
+async function carregarSaldoSms() {
+  const res = await fetch('/api/sms/saldo');
+  const dados = await res.json();
+  const el = document.getElementById('sms-saldo');
+  if (!dados.configurado) {
+    el.textContent = 'token GTI SMS não configurado no servidor';
+  } else if (dados.saldo === null) {
+    el.textContent = 'não foi possível consultar';
+  } else {
+    el.textContent = `${dados.saldo} créditos (expira em ${dados.expira_em})`;
+  }
+}
+
+async function carregarSms() {
+  const res = await fetch('/api/configuracao');
+  const cfg = await res.json();
+
+  document.getElementById('sms-habilitado').checked = cfg.sms_habilitado;
+  document.getElementById('sms-modo').value = cfg.sms_modo;
+  document.getElementById('sms-template').value = cfg.sms_template;
+  document.getElementById('sms-link-base').value = cfg.link_base_url;
+  document.getElementById('sms-whatsapp-destino').value = cfg.whatsapp_destino;
+  document.getElementById('sms-whatsapp-mensagem').value = cfg.whatsapp_mensagem_template;
+  atualizarPreviewSms();
+  carregarSaldoSms();
+}
+
+async function salvarSms(ev) {
+  ev.preventDefault();
+
+  const res = await fetch('/api/configuracao', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      sms_habilitado: document.getElementById('sms-habilitado').checked,
+      sms_modo: document.getElementById('sms-modo').value,
+      sms_template: document.getElementById('sms-template').value,
+      link_base_url: document.getElementById('sms-link-base').value,
+      whatsapp_destino: document.getElementById('sms-whatsapp-destino').value,
+      whatsapp_mensagem_template: document.getElementById('sms-whatsapp-mensagem').value,
+    })
+  });
+
+  if (res.ok) {
+    const aviso = document.getElementById('sms-salvo');
+    aviso.style.display = 'inline';
+    setTimeout(() => { aviso.style.display = 'none'; }, 2000);
+  } else {
+    const erro = await res.json();
+    alert('Erro ao salvar: ' + (erro.detail || 'erro desconhecido'));
+  }
+}
+
 async function carregarTotalHoje() {
   const res = await fetch('/api/total-hoje');
   const dados = await res.json();
@@ -524,6 +649,7 @@ carregarTotalHoje();
 carregarNumeros();
 carregarHistorico();
 carregarHorario();
+carregarSms();
 setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); }, 10000);
 </script>
 

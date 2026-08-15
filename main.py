@@ -2,6 +2,7 @@ import re
 import os
 import asyncio
 import sqlite3
+import unicodedata
 import requests
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -50,6 +51,10 @@ WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN", env.get("WEBHOOK_V
 # nao da acesso a cadastro/exclusao de numeros nem a mais nada do painel.
 API_KEY = os.environ.get("API_KEY", env.get("API_KEY", ""))
 ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar"}
+# Token da GTI SMS - fallback quando nao ha numero de WhatsApp disponivel
+# ou o envio via Meta falha. Sem esse token configurado, o fallback fica
+# desligado e o comportamento continua identico a hoje (so WhatsApp).
+SMS_GTI_TOKEN = os.environ.get("SMS_GTI_TOKEN", env.get("SMS_GTI_TOKEN", ""))
 sessoes_ativas = set()
 
 app = FastAPI()
@@ -60,7 +65,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # /webhook precisa ficar livre: quem chama e a Meta, nao um usuario logado
         # no painel, entao nao existe cookie de sessao nessas chamadas.
-        caminhos_livres = ["/login", "/static", "/webhook"]
+        # /webhook: chamado pela Meta. /o/: link curto que o lead abre pelo SMS.
+        # Nenhum dos dois tem cookie de sessao, entao ficam fora da autenticacao.
+        caminhos_livres = ["/login", "/static", "/webhook", "/o/"]
         if any(request.url.path.startswith(c) for c in caminhos_livres):
             return await call_next(request)
 
@@ -136,11 +143,50 @@ def init_db():
             modo TEXT NOT NULL DEFAULT 'automatico',
             hora_inicio TEXT NOT NULL DEFAULT '08:00',
             hora_fim TEXT NOT NULL DEFAULT '20:00',
-            dias_semana TEXT NOT NULL DEFAULT '1,2,3,4,5,6,7'
+            dias_semana TEXT NOT NULL DEFAULT '1,2,3,4,5,6,7',
+            sms_habilitado INTEGER NOT NULL DEFAULT 0,
+            sms_modo TEXT NOT NULL DEFAULT 'fallback',
+            sms_template TEXT NOT NULL DEFAULT 'Oi {1}! Voce tem uma oferta disponivel. Fale com a gente: {link}',
+            whatsapp_destino TEXT NOT NULL DEFAULT '',
+            whatsapp_mensagem_template TEXT NOT NULL DEFAULT 'Ola, recebi um SMS sobre uma oferta.',
+            link_base_url TEXT NOT NULL DEFAULT ''
         )
     """)
     # linha unica de configuracao (id sempre 1) - cria com os defaults se ainda nao existir
-    conn.execute("INSERT OR IGNORE INTO configuracao (id, modo, hora_inicio, hora_fim, dias_semana) VALUES (1, 'automatico', '08:00', '20:00', '1,2,3,4,5,6,7')")
+    conn.execute("""
+        INSERT OR IGNORE INTO configuracao
+        (id, modo, hora_inicio, hora_fim, dias_semana, sms_habilitado, sms_modo, sms_template, whatsapp_destino, whatsapp_mensagem_template, link_base_url)
+        VALUES (1, 'automatico', '08:00', '20:00', '1,2,3,4,5,6,7', 0, 'fallback',
+                'Oi {1}! Voce tem uma oferta disponivel. Fale com a gente: {link}',
+                '', 'Ola, recebi um SMS sobre uma oferta.', '')
+    """)
+    # migra bancos que ja existiam antes do fallback de SMS existir
+    colunas_config = [r["name"] for r in conn.execute("PRAGMA table_info(configuracao)").fetchall()]
+    if "sms_habilitado" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN sms_habilitado INTEGER NOT NULL DEFAULT 0")
+    if "sms_modo" not in colunas_config:
+        # 'fallback' = so envia SMS quando o WhatsApp falhar/nao tiver numero.
+        # 'sempre' = envia SMS em todo disparo, mesmo quando o WhatsApp da certo (custa mais).
+        conn.execute("ALTER TABLE configuracao ADD COLUMN sms_modo TEXT NOT NULL DEFAULT 'fallback'")
+    if "sms_template" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN sms_template TEXT NOT NULL DEFAULT 'Oi {1}! Voce tem uma oferta disponivel. Fale com a gente: {link}'")
+    if "whatsapp_destino" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN whatsapp_destino TEXT NOT NULL DEFAULT ''")
+    if "whatsapp_mensagem_template" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN whatsapp_mensagem_template TEXT NOT NULL DEFAULT 'Ola, recebi um SMS sobre uma oferta.'")
+    if "link_base_url" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN link_base_url TEXT NOT NULL DEFAULT ''")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS links_curtos (
+            codigo TEXT PRIMARY KEY,
+            disparo_id INTEGER,
+            telefone TEXT NOT NULL,
+            cliques INTEGER NOT NULL DEFAULT 0,
+            criado_em TEXT NOT NULL,
+            ultimo_clique_em TEXT
+        )
+    """)
     # migra bancos antigos que nao tinham essas colunas
     colunas_existentes = [r["name"] for r in conn.execute("PRAGMA table_info(numeros)").fetchall()]
     if "limite_hora" not in colunas_existentes:
@@ -163,6 +209,14 @@ def init_db():
         # enviado / entregue / lido / falhou - preenchido pelo webhook.
         # Diferente de "status", que so indica se a chamada da API deu certo.
         conn.execute("ALTER TABLE disparos ADD COLUMN status_entrega TEXT")
+    if "canal" not in colunas_disparos:
+        # whatsapp ou sms - qual canal foi de fato usado nesse disparo
+        # (sms so aparece quando o whatsapp falhou/nao tinha numero e o
+        # fallback estava habilitado).
+        conn.execute("ALTER TABLE disparos ADD COLUMN canal TEXT NOT NULL DEFAULT 'whatsapp'")
+    if "sms_uid" not in colunas_disparos:
+        # uid retornado pela GTI SMS - usado pra consultar status (DLR) depois.
+        conn.execute("ALTER TABLE disparos ADD COLUMN sms_uid TEXT")
 
     if "template_idioma" not in colunas_existentes:
         # Codigo do idioma do template aprovado na Meta (ex: pt_BR, pt_PT, en_US).
@@ -221,6 +275,7 @@ def carregar_configuracao() -> dict:
     conn.close()
     cfg = dict(row)
     cfg["dias_semana"] = [int(d) for d in cfg["dias_semana"].split(",") if d]
+    cfg["sms_habilitado"] = bool(cfg["sms_habilitado"])
     return cfg
 
 
@@ -378,14 +433,16 @@ def sincronizar_idioma_template(numero_id, numero_nome, idioma_atual, idioma_enc
     )
 
 
-def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro="", wamid=""):
+def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro="", wamid="", canal="whatsapp", sms_uid=""):
     conn = get_db()
-    conn.execute(
-        "INSERT INTO disparos (numero_id, cpf, nome_lead, telefone_destino, status, erro, criado_em, wamid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (numero_id, cpf, nome_lead, telefone, status, erro, agora_iso(), wamid or None),
+    cursor = conn.execute(
+        "INSERT INTO disparos (numero_id, cpf, nome_lead, telefone_destino, status, erro, criado_em, wamid, canal, sms_uid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (numero_id, cpf, nome_lead, telefone, status, erro, agora_iso(), wamid or None, canal, sms_uid or None),
     )
     conn.commit()
+    disparo_id = cursor.lastrowid
     conn.close()
+    return disparo_id
 
 
 def registrar_evento(numero_id, tipo, detalhe):
@@ -427,6 +484,134 @@ def verificar_qualidade_pos_envio(numero):
         registrar_evento(numero["id"], "erro_checagem_pos_envio", str(e))
         return "UNKNOWN"
     return qualidade
+
+
+def normalizar_texto_sms(texto: str) -> str:
+    """
+    A GTI SMS so aceita GSM-7 puro: sem acento, sem cedilha, sem emoji.
+    Remove acentuacao (NFKD decompoe 'ç' em 'c' + marca, 'ã' em 'a' + til
+    etc, e o encode/decode descarta as marcas) e troca qualquer caractere
+    fora do ASCII basico por espaco, pra nunca quebrar o envio.
+    """
+    sem_acento = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^\x20-\x7E]", " ", sem_acento)
+
+
+def gerar_codigo_curto(tamanho=6) -> str:
+    alfabeto = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sem 0/O/1/l/I pra evitar confusao visual
+    return "".join(secrets.choice(alfabeto) for _ in range(tamanho))
+
+
+def gerar_link_curto(disparo_id, telefone) -> str | None:
+    """
+    Cria um link curto novo (redireciona pro WhatsApp de destino
+    configurado) e devolve a URL completa pronta pra colar na mensagem.
+    Devolve None se link_base_url nao estiver configurada ainda -
+    nesse caso, quem chamou deve mandar o SMS sem link.
+    """
+    cfg = carregar_configuracao()
+    base = cfg["link_base_url"].rstrip("/")
+    if not base:
+        return None
+
+    conn = get_db()
+    for _ in range(5):  # tenta ate 5x se colidir com um codigo existente (extremamente raro)
+        codigo = gerar_codigo_curto()
+        existe = conn.execute("SELECT 1 FROM links_curtos WHERE codigo = ?", (codigo,)).fetchone()
+        if not existe:
+            break
+    else:
+        conn.close()
+        return None
+
+    conn.execute(
+        "INSERT INTO links_curtos (codigo, disparo_id, telefone, cliques, criado_em) VALUES (?, ?, ?, 0, ?)",
+        (codigo, disparo_id, telefone, agora_iso()),
+    )
+    conn.commit()
+    conn.close()
+    return f"{base}/o/{codigo}"
+
+
+def enviar_sms(telefone_destino: str, mensagem: str):
+    """
+    Envia SMS via GTI SMS. Retorna (sucesso: bool, erro: str, uid: str).
+    Normaliza a mensagem (remove acento) automaticamente antes de mandar -
+    quem chama nao precisa se preocupar com isso.
+    """
+    if not SMS_GTI_TOKEN:
+        return False, "SMS_GTI_TOKEN nao configurado", ""
+
+    mensagem_limpa = normalizar_texto_sms(mensagem)[:160]
+
+    try:
+        resp = requests.post(
+            "https://sms.gtisms.com/api/v3/sms/send",
+            headers={
+                "Authorization": f"Bearer {SMS_GTI_TOKEN}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            json={"recipient": telefone_destino, "message": mensagem_limpa},
+            timeout=15,
+        )
+        corpo = resp.json()
+        if resp.status_code == 200 and corpo.get("status") == "success":
+            return True, "", corpo.get("data", {}).get("uid", "")
+        return False, corpo.get("message", resp.text[:300]), ""
+    except requests.RequestException as e:
+        return False, str(e), ""
+    except ValueError:
+        return False, f"Resposta invalida da GTI SMS: {resp.text[:300]}", ""
+
+
+def montar_mensagem_sms(template: str, variaveis: list, link: str | None) -> str:
+    """Substitui {1} {2} {3}... e {link} no template configurado."""
+    msg = template
+    for i, v in enumerate(variaveis, start=1):
+        msg = msg.replace(f"{{{i}}}", str(v))
+    msg = msg.replace("{link}", link or "")
+    return msg
+
+
+NUMERO_ID_SMS_FALLBACK = 0  # sentinela: disparo que nao usou nenhum numero de WhatsApp (numero_id e NOT NULL)
+
+
+def tentar_fallback_sms(cpf, nome_lead, telefone, variaveis):
+    """
+    Tenta o fallback de SMS. So dispara de fato se sms_habilitado estiver
+    ligado na configuracao E SMS_GTI_TOKEN estiver setado no ambiente.
+    Gera um link curto (se link_base_url estiver configurada) apontando
+    pro WhatsApp de destino, monta a mensagem a partir do template salvo,
+    envia, e registra no historico com canal='sms'.
+    Retorna o dict de resposta pronto pra devolver em /disparar, ou None
+    se o fallback nao estiver disponivel (nesse caso quem chamou decide
+    o que responder).
+    """
+    cfg = carregar_configuracao()
+    if not cfg["sms_habilitado"] or not SMS_GTI_TOKEN:
+        return None
+
+    disparo_id = registrar_disparo(NUMERO_ID_SMS_FALLBACK, cpf, nome_lead, telefone, "pendente", canal="sms")
+    link = gerar_link_curto(disparo_id, telefone)
+    mensagem = montar_mensagem_sms(cfg["sms_template"], variaveis, link)
+
+    sucesso, erro, sms_uid = enviar_sms(telefone, mensagem)
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE disparos SET status = ?, erro = ?, sms_uid = ? WHERE id = ?",
+        ("sucesso" if sucesso else "erro", erro, sms_uid or None, disparo_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "sucesso" if sucesso else "erro",
+        "numero_usado": "SMS (fallback)",
+        "canal": "sms",
+        "erro": erro if not sucesso else None,
+    }
 
 
 DIAS_RETER_HISTORICO = 30
@@ -522,6 +707,10 @@ def pode_disparar():
     chamado pelo n8n logo antes da consulta de CPF (ou qualquer consulta
     que tenha custo), evitando gastar a consulta a toa quando o disparo
     ja sabidamente vai falhar (fora do horario ou sem numero disponivel).
+
+    Considera o fallback de SMS: se nao ha WhatsApp disponivel mas o
+    fallback esta habilitado, ainda responde pode_disparar=true (o
+    disparo vai sair por SMS).
     """
     permitido, motivo_horario = dentro_do_horario_permitido()
     if not permitido:
@@ -530,6 +719,7 @@ def pode_disparar():
             "motivo": motivo_horario,
             "motivo_codigo": "fora_do_horario",
             "numeros_disponiveis": 0,
+            "canal_provavel": None,
         }
 
     conn = get_db()
@@ -537,13 +727,16 @@ def pode_disparar():
     conn.close()
 
     disponiveis = [n for n in numeros if disponivel_agora(n)]
+    cfg = carregar_configuracao()
+    sms_disponivel = cfg["sms_habilitado"] and bool(SMS_GTI_TOKEN)
 
-    if not disponiveis:
+    if not disponiveis and not sms_disponivel:
         return {
             "pode_disparar": False,
-            "motivo": "Nenhum numero disponivel no momento (todos pausados, com qualidade baixa, ou no limite diario/hora)",
+            "motivo": "Nenhum numero disponivel no momento (todos pausados, com qualidade baixa, ou no limite diario/hora) e fallback de SMS desligado",
             "motivo_codigo": "nenhum_numero_disponivel",
             "numeros_disponiveis": 0,
+            "canal_provavel": None,
         }
 
     return {
@@ -551,6 +744,7 @@ def pode_disparar():
         "motivo": None,
         "motivo_codigo": None,
         "numeros_disponiveis": len(disponiveis),
+        "canal_provavel": "whatsapp" if disponiveis else "sms",
     }
 
 
@@ -571,6 +765,9 @@ async def disparar(request: Request):
 
     numero = proximo_numero_disponivel(_ultimo_usado["id"])
     if numero is None:
+        resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis)
+        if resultado_sms is not None:
+            return resultado_sms
         return {"status": "erro", "motivo": "Nenhum numero disponivel (todos pausados ou limite atingido)"}
 
     sucesso, erro, wamid = enviar_whatsapp(numero, telefone, variaveis)
@@ -579,10 +776,30 @@ async def disparar(request: Request):
     registrar_disparo(numero["id"], cpf, nome_lead, telefone, "sucesso" if sucesso else "erro", erro, wamid)
     verificar_qualidade_pos_envio(numero)
 
+    if not sucesso:
+        resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis)
+        if resultado_sms is not None:
+            return resultado_sms
+        return {
+            "status": "erro",
+            "numero_usado": numero["nome"],
+            "canal": "whatsapp",
+            "erro": erro,
+        }
+
+    # WhatsApp deu certo. No modo "sempre", manda SMS tambem, alem do
+    # WhatsApp (custa mais - e uma escolha explicita de quem configurou).
+    cfg = carregar_configuracao()
+    sms_extra = None
+    if cfg["sms_habilitado"] and cfg["sms_modo"] == "sempre":
+        sms_extra = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis)
+
     return {
-        "status": "sucesso" if sucesso else "erro",
+        "status": "sucesso",
         "numero_usado": numero["nome"],
-        "erro": erro if not sucesso else None,
+        "canal": "whatsapp",
+        "erro": None,
+        "sms_extra": sms_extra,
     }
 
 
@@ -845,7 +1062,20 @@ async def atualizar_configuracao(request: Request):
             raise HTTPException(400, "dias_semana deve ser uma lista de inteiros de 1 (segunda) a 7 (domingo), nao vazia")
         body["dias_semana"] = ",".join(str(d) for d in sorted(set(dias)))
 
-    campos_validos = {"modo", "hora_inicio", "hora_fim", "dias_semana"}
+    if "sms_habilitado" in body:
+        body["sms_habilitado"] = 1 if body["sms_habilitado"] else 0
+
+    if "sms_modo" in body and body["sms_modo"] not in ("fallback", "sempre"):
+        raise HTTPException(400, "sms_modo deve ser 'fallback' ou 'sempre'")
+
+    if "link_base_url" in body and body["link_base_url"] and not body["link_base_url"].startswith(("http://", "https://")):
+        raise HTTPException(400, "link_base_url deve comecar com http:// ou https://")
+
+    campos_validos = {
+        "modo", "hora_inicio", "hora_fim", "dias_semana",
+        "sms_habilitado", "sms_modo", "sms_template", "whatsapp_destino",
+        "whatsapp_mensagem_template", "link_base_url",
+    }
     atualizacoes = {k: v for k, v in body.items() if k in campos_validos}
     if not atualizacoes:
         raise HTTPException(400, "Nenhum campo valido informado")
@@ -858,6 +1088,68 @@ async def atualizar_configuracao(request: Request):
 
     registrar_evento(None, "configuracao_atualizada", f"Configuracao de horario atualizada: {atualizacoes}")
     return carregar_configuracao()
+
+
+@app.get("/o/{codigo}")
+def abrir_link_curto(codigo: str):
+    """
+    Redireciona pro WhatsApp de destino configurado, e conta o clique.
+    Publico (sem autenticacao) - e o link que o lead recebe por SMS.
+    """
+    conn = get_db()
+    link = conn.execute("SELECT * FROM links_curtos WHERE codigo = ?", (codigo,)).fetchone()
+    if link is None:
+        conn.close()
+        raise HTTPException(404, "Link nao encontrado")
+
+    conn.execute(
+        "UPDATE links_curtos SET cliques = cliques + 1, ultimo_clique_em = ? WHERE codigo = ?",
+        (agora_iso(), codigo),
+    )
+    conn.commit()
+    conn.close()
+
+    cfg = carregar_configuracao()
+    destino = re.sub(r"\D", "", cfg["whatsapp_destino"])
+    if not destino:
+        raise HTTPException(503, "Nenhum WhatsApp de destino configurado")
+
+    from urllib.parse import quote
+    mensagem = quote(cfg["whatsapp_mensagem_template"])
+    return RedirectResponse(f"https://wa.me/{destino}?text={mensagem}", status_code=302)
+
+
+@app.get("/api/sms/saldo")
+def saldo_sms():
+    """Consulta o saldo de creditos disponivel na GTI SMS."""
+    if not SMS_GTI_TOKEN:
+        return {"configurado": False, "saldo": None, "expira_em": None}
+    try:
+        resp = requests.get(
+            "https://sms.gtisms.com/api/v3/balance",
+            headers={"Authorization": f"Bearer {SMS_GTI_TOKEN}", "Accept": "application/json"},
+            timeout=10,
+        )
+        corpo = resp.json()
+        dados = corpo.get("data", {})
+        return {
+            "configurado": True,
+            "saldo": dados.get("remaining_balance"),
+            "expira_em": dados.get("expired_on"),
+        }
+    except Exception as e:
+        return {"configurado": True, "saldo": None, "expira_em": None, "erro": str(e)}
+
+
+@app.get("/api/links-curtos")
+def listar_links_curtos(limit: int = 50):
+    """Lista os links curtos gerados, mais recentes primeiro, com contagem de cliques."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM links_curtos ORDER BY criado_em DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 @app.post("/api/buscar-templates")
@@ -1003,8 +1295,8 @@ def remover_numero(numero_id: int):
 def historico(limit: int = 100):
     conn = get_db()
     rows = conn.execute(
-        """SELECT d.*, n.nome as numero_nome FROM disparos d
-           JOIN numeros n ON n.id = d.numero_id
+        """SELECT d.*, COALESCE(n.nome, 'SMS (sem numero WhatsApp)') as numero_nome FROM disparos d
+           LEFT JOIN numeros n ON n.id = d.numero_id
            ORDER BY d.id DESC LIMIT ?""",
         (limit,),
     ).fetchall()
