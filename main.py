@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 import unicodedata
 import requests
+from urllib.parse import urlparse, quote
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -63,6 +64,21 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        # Se a requisicao veio pelo dominio configurado como link_base_url
+        # (o encurtador de SMS), esse dominio SO deve responder em /o/{codigo}.
+        # Qualquer outra rota (incluindo a raiz "/") devolve 404 puro, sem
+        # revelar que existe um painel/login por tras - o cliente que recebe
+        # o SMS nunca deve ver nada alem do redirecionamento pro WhatsApp.
+        if not request.url.path.startswith("/o/"):
+            host_requisicao = request.headers.get("host", "").split(":")[0].lower()
+            if host_requisicao:
+                cfg = carregar_configuracao()
+                link_base = cfg.get("link_base_url", "")
+                if link_base:
+                    host_configurado = urlparse(link_base).hostname
+                    if host_configurado and host_requisicao == host_configurado.lower():
+                        return JSONResponse({"detail": "Not Found"}, status_code=404)
+
         # /webhook precisa ficar livre: quem chama e a Meta, nao um usuario logado
         # no painel, entao nao existe cookie de sessao nessas chamadas.
         # /webhook: chamado pela Meta. /o/: link curto que o lead abre pelo SMS.
@@ -1118,7 +1134,6 @@ def abrir_link_curto(codigo: str):
     if not destino:
         raise HTTPException(503, "Nenhum WhatsApp de destino configurado")
 
-    from urllib.parse import quote
     mensagem = quote(cfg["whatsapp_mensagem_template"])
     return RedirectResponse(f"https://wa.me/{destino}?text={mensagem}", status_code=302)
 
