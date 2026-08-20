@@ -225,6 +225,12 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN template_status TEXT NOT NULL DEFAULT 'UNKNOWN'")
     if "waba_id" not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN waba_id TEXT NOT NULL DEFAULT ''")
+    if "pausado_por_qualidade" not in colunas_existentes:
+        # Marca numeros pausados AUTOMATICAMENTE por qualidade RED (distinto de pausa manual).
+        # Sem essa distincao, o loop de checagem (que so olha ativo=1) nunca mais
+        # re-verifica um numero pausado por qualidade, entao ele nunca volta sozinho
+        # mesmo que a qualidade tenha melhorado na Meta.
+        conn.execute("ALTER TABLE numeros ADD COLUMN pausado_por_qualidade INTEGER NOT NULL DEFAULT 0")
 
     colunas_disparos = [r["name"] for r in conn.execute("PRAGMA table_info(disparos)").fetchall()]
     if "wamid" not in colunas_disparos:
@@ -481,6 +487,33 @@ def registrar_evento(numero_id, tipo, detalhe):
     conn.close()
 
 
+def _aplicar_pausa_ou_reativacao_qualidade(numero_id, numero_nome, ativo_atual, pausado_por_qualidade_atual, qualidade):
+    """
+    Centraliza a decisao de pausar/reativar um numero com base na qualidade.
+
+    - Se a qualidade caiu pra RED e o numero estava ativo: pausa e marca
+      pausado_por_qualidade=1 (pausa automatica, distinta de pausa manual).
+    - Se a qualidade nao esta mais RED e o numero estava pausado POR QUALIDADE
+      (nao manualmente): reativa sozinho.
+    - Numeros pausados manualmente (ativo=0, pausado_por_qualidade=0) nunca sao
+      mexidos aqui - so o usuario reativa esses.
+    """
+    if qualidade == "RED":
+        if ativo_atual:
+            conn = get_db()
+            conn.execute("UPDATE numeros SET ativo = 0, pausado_por_qualidade = 1 WHERE id = ?", (numero_id,))
+            conn.commit()
+            conn.close()
+            registrar_evento(numero_id, "pausado_qualidade", f"Numero '{numero_nome}' pausado automaticamente - qualidade RED")
+    else:
+        if not ativo_atual and pausado_por_qualidade_atual:
+            conn = get_db()
+            conn.execute("UPDATE numeros SET ativo = 1, pausado_por_qualidade = 0 WHERE id = ?", (numero_id,))
+            conn.commit()
+            conn.close()
+            registrar_evento(numero_id, "reativado_qualidade", f"Numero '{numero_nome}' reativado automaticamente - qualidade voltou a {qualidade}")
+
+
 def verificar_qualidade_pos_envio(numero):
     """
     Confere a qualidade do numero logo depois de um envio, e pausa na hora
@@ -498,14 +531,7 @@ def verificar_qualidade_pos_envio(numero):
         conn.close()
 
         if qualidade == "RED":
-            conn = get_db()
-            conn.execute("UPDATE numeros SET ativo = 0 WHERE id = ?", (numero["id"],))
-            conn.commit()
-            conn.close()
-            registrar_evento(
-                numero["id"], "pausado_qualidade",
-                f"Numero '{numero['nome']}' pausado automaticamente (checagem pos-envio) - qualidade RED",
-            )
+            _aplicar_pausa_ou_reativacao_qualidade(numero["id"], numero["nome"], numero["ativo"], numero["pausado_por_qualidade"], qualidade)
     except Exception as e:
         registrar_evento(numero["id"], "erro_checagem_pos_envio", str(e))
         return "UNKNOWN"
@@ -749,7 +775,12 @@ async def loop_verificar_qualidade():
         try:
             limpar_historico_antigo()
             conn = get_db()
-            numeros = conn.execute("SELECT * FROM numeros WHERE ativo = 1").fetchall()
+            # Inclui tambem numeros pausados automaticamente por qualidade (nao so os
+            # ativos) - senao um numero que caiu pra RED nunca mais eh reconferido e
+            # fica pausado pra sempre, mesmo que a qualidade tenha melhorado na Meta.
+            # Numeros pausados MANUALMENTE (pausado_por_qualidade=0) ficam de fora,
+            # como deveria - so o usuario reativa esses.
+            numeros = conn.execute("SELECT * FROM numeros WHERE ativo = 1 OR pausado_por_qualidade = 1").fetchall()
             conn.close()
 
             for n in numeros:
@@ -764,12 +795,7 @@ async def loop_verificar_qualidade():
                 conn.close()
                 sincronizar_idioma_template(n["id"], n["nome"], n["template_idioma"], idioma)
 
-                if qualidade == "RED":
-                    conn = get_db()
-                    conn.execute("UPDATE numeros SET ativo = 0 WHERE id = ?", (n["id"],))
-                    conn.commit()
-                    conn.close()
-                    registrar_evento(n["id"], "pausado_qualidade", f"Numero '{n['nome']}' pausado automaticamente - qualidade RED")
+                _aplicar_pausa_ou_reativacao_qualidade(n["id"], n["nome"], n["ativo"], n["pausado_por_qualidade"], qualidade)
         except Exception as e:
             registrar_evento(None, "erro_checagem_qualidade", str(e))
 
@@ -1008,11 +1034,7 @@ def atualizar_status_numero(numero_id: int):
     sincronizar_idioma_template(numero_id, n["nome"], n["template_idioma"], idioma)
 
     if qualidade == "RED":
-        conn = get_db()
-        conn.execute("UPDATE numeros SET ativo = 0 WHERE id = ?", (numero_id,))
-        conn.commit()
-        conn.close()
-        registrar_evento(numero_id, "pausado_qualidade", f"Numero '{n['nome']}' pausado automaticamente - qualidade RED")
+        _aplicar_pausa_ou_reativacao_qualidade(numero_id, n["nome"], n["ativo"], n["pausado_por_qualidade"], qualidade)
 
     return {"qualidade": qualidade, "template_categoria": categoria, "template_status": status_template}
 
@@ -1020,7 +1042,7 @@ def atualizar_status_numero(numero_id: int):
 @app.post("/api/atualizar-todos")
 def atualizar_todos_status():
     conn = get_db()
-    numeros = conn.execute("SELECT * FROM numeros WHERE ativo = 1").fetchall()
+    numeros = conn.execute("SELECT * FROM numeros WHERE ativo = 1 OR pausado_por_qualidade = 1").fetchall()
     conn.close()
 
     resultados = []
@@ -1037,12 +1059,7 @@ def atualizar_todos_status():
         conn.close()
         sincronizar_idioma_template(n["id"], n["nome"], n["template_idioma"], idioma)
 
-        if qualidade == "RED":
-            conn = get_db()
-            conn.execute("UPDATE numeros SET ativo = 0 WHERE id = ?", (n["id"],))
-            conn.commit()
-            conn.close()
-            registrar_evento(n["id"], "pausado_qualidade", f"Numero '{n['nome']}' pausado automaticamente - qualidade RED")
+        _aplicar_pausa_ou_reativacao_qualidade(n["id"], n["nome"], n["ativo"], n["pausado_por_qualidade"], qualidade)
 
         resultados.append({"nome": n["nome"], "qualidade": qualidade, "template_categoria": categoria})
 
@@ -1371,7 +1388,10 @@ async def atualizar_numero(numero_id: int, request: Request):
     body = await request.json()
     conn = get_db()
     if "ativo" in body:
-        conn.execute("UPDATE numeros SET ativo = ? WHERE id = ?", (int(body["ativo"]), numero_id))
+        # Toggle manual (usuario) - sempre limpa a flag de pausa automatica: se o
+        # usuario esta mexendo aqui, o numero passa a ser controlado manualmente,
+        # seja ativando ou pausando de proposito.
+        conn.execute("UPDATE numeros SET ativo = ?, pausado_por_qualidade = 0 WHERE id = ?", (int(body["ativo"]), numero_id))
     if "limite_diario" in body:
         conn.execute("UPDATE numeros SET limite_diario = ? WHERE id = ?", (body["limite_diario"], numero_id))
     if "limite_hora" in body:
