@@ -780,7 +780,13 @@ async def loop_verificar_qualidade():
             # fica pausado pra sempre, mesmo que a qualidade tenha melhorado na Meta.
             # Numeros pausados MANUALMENTE (pausado_por_qualidade=0) ficam de fora,
             # como deveria - so o usuario reativa esses.
-            numeros = conn.execute("SELECT * FROM numeros WHERE ativo = 1 OR pausado_por_qualidade = 1").fetchall()
+            # Confere TODOS os numeros, inclusive os pausados manualmente - a checagem
+            # so LE a qualidade na Meta (nao manda mensagem nenhuma), entao nao ha risco;
+            # o beneficio e sempre ter a qualidade em dia pra qualquer numero, mesmo os
+            # que estao pausados na mao. A pausa manual continua protegida: so reativa
+            # sozinho quem foi pausado automaticamente (pausado_por_qualidade=1), nunca
+            # quem o usuario pausou de proposito.
+            numeros = conn.execute("SELECT * FROM numeros").fetchall()
             conn.close()
 
             for n in numeros:
@@ -1042,7 +1048,9 @@ def atualizar_status_numero(numero_id: int):
 @app.post("/api/atualizar-todos")
 def atualizar_todos_status():
     conn = get_db()
-    numeros = conn.execute("SELECT * FROM numeros WHERE ativo = 1 OR pausado_por_qualidade = 1").fetchall()
+    # Idem ao loop de 15min: confere todos, a pausa manual fica protegida pela
+    # logica de _aplicar_pausa_ou_reativacao_qualidade.
+    numeros = conn.execute("SELECT * FROM numeros").fetchall()
     conn.close()
 
     resultados = []
