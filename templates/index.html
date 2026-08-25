@@ -86,6 +86,9 @@
 
 <div class="cartao">
   <h2>Números conectados <button class="btn-toggle" onclick="atualizarTodos()" style="font-size:12px;">🔄 Atualizar todos</button></h2>
+
+  <div id="resumo-numeros" style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid #eee;"></div>
+
   <table>
     <thead>
       <tr><th>Nome</th><th>Template</th><th>Categoria</th><th>Qualidade</th><th>Hoje</th><th>Última hora</th><th>Status</th><th>Ações</th></tr>
@@ -518,6 +521,17 @@ async function carregarTotalHoje() {
 async function carregarNumeros() {
   const res = await fetch('/api/numeros');
   numerosCache = await res.json();
+
+  const totalAtivos = numerosCache.filter(n => n.ativo).length;
+  const totalPausados = numerosCache.filter(n => !n.ativo).length;
+  const totalQualidadeBaixa = numerosCache.filter(n => n.qualidade === 'RED').length;
+  document.getElementById('resumo-numeros').innerHTML = `
+    <div><span style="font-size:22px; font-weight:700; color:#16a34a;">${totalAtivos}</span> <span style="font-size:13px; color:#888;">ativos</span></div>
+    <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalPausados}</span> <span style="font-size:13px; color:#888;">pausados</span></div>
+    <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalQualidadeBaixa}</span> <span style="font-size:13px; color:#888;">com qualidade baixa</span></div>
+    <div><span style="font-size:22px; font-weight:700; color:#1a1a2e;">${numerosCache.length}</span> <span style="font-size:13px; color:#888;">total cadastrados</span></div>
+  `;
+
   const tbody = document.getElementById('tabela-numeros');
   tbody.innerHTML = '';
   numerosCache.forEach(n => {
