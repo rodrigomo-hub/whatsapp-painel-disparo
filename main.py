@@ -51,7 +51,7 @@ WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN", env.get("WEBHOOK_V
 # como manter cookie de sessao. So vale para as rotas em ROTAS_API_KEY -
 # nao da acesso a cadastro/exclusao de numeros nem a mais nada do painel.
 API_KEY = os.environ.get("API_KEY", env.get("API_KEY", ""))
-ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar"}
+ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar", "/api/resposta-lead"}
 # Token da GTI SMS - fallback quando nao ha numero de WhatsApp disponivel
 # ou o envio via Meta falha. Sem esse token configurado, o fallback fica
 # desligado e o comportamento continua identico a hoje (so WhatsApp).
@@ -249,6 +249,13 @@ def init_db():
     if "sms_uid" not in colunas_disparos:
         # uid retornado pela GTI SMS - usado pra consultar status (DLR) depois.
         conn.execute("ALTER TABLE disparos ADD COLUMN sms_uid TEXT")
+    if "resposta_lead" not in colunas_disparos:
+        # positivo / negativo - preenchido pelo CRM via POST /api/resposta-lead
+        # quando o lead responde de verdade a conversa (que acontece no CRM,
+        # nao aqui). NULL = ainda sem resposta classificada.
+        conn.execute("ALTER TABLE disparos ADD COLUMN resposta_lead TEXT")
+    if "resposta_recebida_em" not in colunas_disparos:
+        conn.execute("ALTER TABLE disparos ADD COLUMN resposta_recebida_em TEXT")
 
     if "template_idioma" not in colunas_existentes:
         # Codigo do idioma do template aprovado na Meta (ex: pt_BR, pt_PT, en_US).
@@ -892,6 +899,44 @@ def pode_disparar():
     }
 
 
+@app.post("/api/resposta-lead")
+async def resposta_lead(request: Request):
+    """
+    Endpoint pro CRM chamar quando um lead responde de verdade a
+    conversa (a conversa em si acontece no CRM, nao aqui - esse painel
+    so dispara a mensagem inicial). Casa a resposta com o disparo mais
+    recente feito pra aquele telefone, e classifica como positivo/negativo.
+    Protegido por X-API-Key, igual /disparar.
+    """
+    body = await request.json()
+    telefone = re.sub(r"\D", "", str(body.get("telefone", "")))
+    resposta = body.get("resposta", "")
+
+    if not telefone:
+        raise HTTPException(400, "Campo 'telefone' obrigatorio")
+    if resposta not in ("positivo", "negativo"):
+        raise HTTPException(400, "Campo 'resposta' deve ser 'positivo' ou 'negativo'")
+
+    conn = get_db()
+    disparo = conn.execute(
+        "SELECT id FROM disparos WHERE telefone_destino = ? ORDER BY id DESC LIMIT 1",
+        (telefone,),
+    ).fetchone()
+
+    if disparo is None:
+        conn.close()
+        raise HTTPException(404, f"Nenhum disparo encontrado pro telefone {telefone}")
+
+    conn.execute(
+        "UPDATE disparos SET resposta_lead = ?, resposta_recebida_em = ? WHERE id = ?",
+        (resposta, agora_iso(), disparo["id"]),
+    )
+    conn.commit()
+    conn.close()
+
+    return {"status": "ok", "disparo_id": disparo["id"], "resposta_lead": resposta}
+
+
 @app.post("/disparar")
 async def disparar(request: Request):
     body = await request.json()
@@ -1170,8 +1215,21 @@ def total_hoje():
         "SELECT COUNT(*) as c FROM disparos WHERE status = 'erro' AND criado_em >= ?",
         (inicio_dia,),
     ).fetchone()
+    total_positivos = conn.execute(
+        "SELECT COUNT(*) as c FROM disparos WHERE resposta_lead = 'positivo' AND criado_em >= ?",
+        (inicio_dia,),
+    ).fetchone()
+    total_negativos = conn.execute(
+        "SELECT COUNT(*) as c FROM disparos WHERE resposta_lead = 'negativo' AND criado_em >= ?",
+        (inicio_dia,),
+    ).fetchone()
     conn.close()
-    return {"total_sucesso_hoje": row["c"], "total_erro_hoje": total_erros["c"]}
+    return {
+        "total_sucesso_hoje": row["c"],
+        "total_erro_hoje": total_erros["c"],
+        "total_positivos_hoje": total_positivos["c"],
+        "total_negativos_hoje": total_negativos["c"],
+    }
 
 
 @app.get("/api/configuracao")

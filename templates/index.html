@@ -72,6 +72,16 @@
   <div style="font-size:13px; color:#888; text-transform:uppercase; letter-spacing:0.5px;">Total enviado hoje</div>
   <div id="total-hoje" style="font-size:42px; font-weight:700; color:#25d366; margin-top:6px;">-</div>
   <div id="total-erro-hoje" style="font-size:13px; color:#dc2626; margin-top:4px;"></div>
+  <div style="display:flex; justify-content:center; gap:24px; margin-top:16px; padding-top:16px; border-top:1px solid #eee;">
+    <div>
+      <div style="font-size:24px; font-weight:700; color:#16a34a;" id="total-positivos-hoje">-</div>
+      <div style="font-size:12px; color:#888;">Respostas positivas</div>
+    </div>
+    <div>
+      <div style="font-size:24px; font-weight:700; color:#dc2626;" id="total-negativos-hoje">-</div>
+      <div style="font-size:12px; color:#888;">Respostas negativas</div>
+    </div>
+  </div>
 </div>
 
 <div class="cartao">
@@ -501,6 +511,8 @@ async function carregarTotalHoje() {
   document.getElementById('total-hoje').textContent = dados.total_sucesso_hoje;
   document.getElementById('total-erro-hoje').textContent =
     dados.total_erro_hoje > 0 ? `${dados.total_erro_hoje} erro(s)` : '';
+  document.getElementById('total-positivos-hoje').textContent = dados.total_positivos_hoje;
+  document.getElementById('total-negativos-hoje').textContent = dados.total_negativos_hoje;
 }
 
 async function carregarNumeros() {
