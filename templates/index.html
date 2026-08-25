@@ -524,10 +524,12 @@ async function carregarNumeros() {
 
   const totalAtivos = numerosCache.filter(n => n.ativo).length;
   const totalPausados = numerosCache.filter(n => !n.ativo).length;
+  const totalQualidadeAlta = numerosCache.filter(n => n.qualidade === 'GREEN').length;
   const totalQualidadeBaixa = numerosCache.filter(n => n.qualidade === 'RED').length;
   document.getElementById('resumo-numeros').innerHTML = `
     <div><span style="font-size:22px; font-weight:700; color:#16a34a;">${totalAtivos}</span> <span style="font-size:13px; color:#888;">ativos</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalPausados}</span> <span style="font-size:13px; color:#888;">pausados</span></div>
+    <div><span style="font-size:22px; font-weight:700; color:#16a34a;">${totalQualidadeAlta}</span> <span style="font-size:13px; color:#888;">com qualidade alta</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalQualidadeBaixa}</span> <span style="font-size:13px; color:#888;">com qualidade baixa</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#1a1a2e;">${numerosCache.length}</span> <span style="font-size:13px; color:#888;">total cadastrados</span></div>
   `;
