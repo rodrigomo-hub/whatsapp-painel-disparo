@@ -1232,6 +1232,53 @@ def total_hoje():
     }
 
 
+@app.get("/api/estatisticas-diarias")
+def estatisticas_diarias(dias: int = 30):
+    """
+    Resumo diario (enviados, erros, positivos, negativos) dos ultimos N
+    dias, agrupado por dia local (TZ America/Sao_Paulo). Usado pela
+    pagina /estatisticas pro grafico historico.
+    """
+    dias = max(1, min(dias, 365))
+    conn = get_db()
+    agora = datetime.now(TZ)
+    inicio = (agora - timedelta(days=dias - 1)).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+    rows = conn.execute(
+        """
+        SELECT
+            substr(criado_em, 1, 10) as dia,
+            SUM(CASE WHEN status = 'sucesso' THEN 1 ELSE 0 END) as total_sucesso,
+            SUM(CASE WHEN status = 'erro' THEN 1 ELSE 0 END) as total_erro,
+            SUM(CASE WHEN resposta_lead = 'positivo' THEN 1 ELSE 0 END) as total_positivos,
+            SUM(CASE WHEN resposta_lead = 'negativo' THEN 1 ELSE 0 END) as total_negativos
+        FROM disparos
+        WHERE criado_em >= ?
+        GROUP BY dia
+        ORDER BY dia ASC
+        """,
+        (inicio,),
+    ).fetchall()
+    conn.close()
+
+    # preenche os dias sem nenhum disparo com zero, pra o grafico nao ter buracos
+    por_dia = {r["dia"]: dict(r) for r in rows}
+    resultado = []
+    for i in range(dias):
+        d = (agora - timedelta(days=dias - 1 - i)).strftime("%Y-%m-%d")
+        if d in por_dia:
+            resultado.append(por_dia[d])
+        else:
+            resultado.append({"dia": d, "total_sucesso": 0, "total_erro": 0, "total_positivos": 0, "total_negativos": 0})
+
+    return resultado
+
+
+@app.get("/estatisticas", response_class=HTMLResponse)
+def pagina_estatisticas(request: Request):
+    return templates.TemplateResponse(request, "estatisticas.html", {})
+
+
 @app.get("/api/configuracao")
 def obter_configuracao():
     return carregar_configuracao()

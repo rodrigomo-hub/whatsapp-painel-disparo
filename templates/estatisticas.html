@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Estatísticas - Painel de Disparo WhatsApp</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #f4f4f7; margin: 0; padding: 20px; }
+  h1 { color: #1a1a2e; margin-bottom: 4px; }
+  .cartao { background: white; border-radius: 10px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+  .voltar { color: #2563eb; text-decoration: none; font-size: 14px; }
+  .voltar:hover { text-decoration: underline; }
+  select { padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; font-size: 14px; }
+  .resumo { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 16px; }
+  .resumo-item { text-align: center; min-width: 100px; }
+  .resumo-valor { font-size: 28px; font-weight: 700; }
+  .resumo-label { font-size: 12px; color: #888; margin-top: 2px; }
+  #grafico-container { position: relative; height: 400px; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+</head>
+<body>
+
+<a href="/" class="voltar">← Voltar pro painel</a>
+<h1>📊 Estatísticas históricas</h1>
+<p style="color:#888; font-size:14px; margin-top:0;">Disparos e respostas dos leads ao longo do tempo.</p>
+
+<div class="cartao">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+    <select id="seletor-periodo" onchange="carregarEstatisticas()">
+      <option value="7">Últimos 7 dias</option>
+      <option value="30" selected>Últimos 30 dias</option>
+      <option value="90">Últimos 90 dias</option>
+    </select>
+    <div class="resumo" id="resumo-periodo"></div>
+  </div>
+
+  <div id="grafico-container" style="margin-top:20px;">
+    <canvas id="grafico-historico"></canvas>
+  </div>
+</div>
+
+<script>
+let grafico = null;
+
+async function carregarEstatisticas() {
+  const dias = document.getElementById('seletor-periodo').value;
+  const res = await fetch(`/api/estatisticas-diarias?dias=${dias}`);
+  const dados = await res.json();
+
+  const labels = dados.map(d => {
+    const [ano, mes, dia] = d.dia.split('-');
+    return `${dia}/${mes}`;
+  });
+
+  const totalEnviado = dados.reduce((soma, d) => soma + d.total_sucesso, 0);
+  const totalErro = dados.reduce((soma, d) => soma + d.total_erro, 0);
+  const totalPositivos = dados.reduce((soma, d) => soma + d.total_positivos, 0);
+  const totalNegativos = dados.reduce((soma, d) => soma + d.total_negativos, 0);
+
+  document.getElementById('resumo-periodo').innerHTML = `
+    <div class="resumo-item"><div class="resumo-valor" style="color:#25d366;">${totalEnviado}</div><div class="resumo-label">Enviados</div></div>
+    <div class="resumo-item"><div class="resumo-valor" style="color:#dc2626;">${totalErro}</div><div class="resumo-label">Erros</div></div>
+    <div class="resumo-item"><div class="resumo-valor" style="color:#16a34a;">${totalPositivos}</div><div class="resumo-label">Positivas</div></div>
+    <div class="resumo-item"><div class="resumo-valor" style="color:#b91c1c;">${totalNegativos}</div><div class="resumo-label">Negativas</div></div>
+  `;
+
+  const ctx = document.getElementById('grafico-historico').getContext('2d');
+  const datasets = [
+    { label: 'Enviados', data: dados.map(d => d.total_sucesso), borderColor: '#25d366', backgroundColor: '#25d36622', tension: 0.2 },
+    { label: 'Erros', data: dados.map(d => d.total_erro), borderColor: '#dc2626', backgroundColor: '#dc262622', tension: 0.2 },
+    { label: 'Respostas positivas', data: dados.map(d => d.total_positivos), borderColor: '#16a34a', backgroundColor: '#16a34a22', tension: 0.2 },
+    { label: 'Respostas negativas', data: dados.map(d => d.total_negativos), borderColor: '#b91c1c', backgroundColor: '#b91c1c22', tension: 0.2 },
+  ];
+
+  if (grafico) {
+    grafico.data.labels = labels;
+    grafico.data.datasets = datasets;
+    grafico.update();
+  } else {
+    grafico = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+        plugins: { legend: { position: 'bottom' } },
+      },
+    });
+  }
+}
+
+carregarEstatisticas();
+</script>
+
+</body>
+</html>
