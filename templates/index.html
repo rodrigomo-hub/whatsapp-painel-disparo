@@ -198,10 +198,10 @@
 </div>
 
 <div class="cartao">
-  <h2>Últimos disparos</h2>
+  <h2>Últimos disparos <button class="btn-toggle" onclick="baixarCsv('positivo')" style="font-size:12px; background:#16a34a;">⬇️ Baixar positivos</button> <button class="btn-toggle" onclick="baixarCsv('negativo')" style="font-size:12px; background:#dc2626;">⬇️ Baixar negativos</button></h2>
   <table>
     <thead>
-      <tr><th>Quando</th><th>Número usado</th><th>Lead</th><th>Telefone</th><th>Status</th></tr>
+      <tr><th>Quando</th><th>Número usado</th><th>Lead</th><th>Telefone</th><th>Status</th><th>Resposta</th></tr>
     </thead>
     <tbody id="tabela-historico"></tbody>
   </table>
@@ -582,13 +582,22 @@ async function carregarHistorico() {
     }
     const motivo = (d.status !== 'sucesso' && d.erro) ? `<div style="font-size:11px; color:#999; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${(d.erro || '').replace(/"/g, '&quot;')}">${d.erro}</div>` : '';
 
+    let respostaHtml = '<span style="color:#ccc;">—</span>';
+    if (d.resposta_lead === 'positivo') respostaHtml = '<span style="color:#16a34a; font-weight:600;">✅ Positivo</span>';
+    else if (d.resposta_lead === 'negativo') respostaHtml = '<span style="color:#dc2626; font-weight:600;">❌ Negativo</span>';
+
     tr.innerHTML = `
       <td>${dataFmt}</td><td>${d.numero_nome}</td><td>${d.nome_lead || '-'}</td>
       <td>${d.telefone_destino}</td>
       <td>${statusHtml}${motivo}</td>
+      <td>${respostaHtml}</td>
     `;
     tbody.appendChild(tr);
   });
+}
+
+function baixarCsv(tipo) {
+  window.location.href = `/api/exportar-respostas?tipo=${tipo}`;
 }
 
 async function toggleNumero(id, novoStatus) {

@@ -1,5 +1,7 @@
 import re
 import os
+import csv
+import io
 import asyncio
 import sqlite3
 import unicodedata
@@ -10,7 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 import secrets
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.templating import Jinja2Templates
 
@@ -948,6 +950,14 @@ async def disparar(request: Request):
     if not telefone:
         raise HTTPException(400, "Campo 'whatsapp' ou 'telefone' obrigatorio")
 
+    if variaveis and any(not str(v).strip() for v in variaveis):
+        indices_vazios = [i for i, v in enumerate(variaveis, start=1) if not str(v).strip()]
+        return {
+            "status": "erro",
+            "motivo": f"variaveis_template com valor vazio no(s) indice(s) {indices_vazios} - a Meta rejeita template com variavel vazia (erro 131008). Verifique os dados de origem (ex: nome do lead ausente).",
+            "motivo_codigo": "variavel_vazia",
+        }
+
     permitido, motivo_horario = dentro_do_horario_permitido()
     if not permitido:
         return {"status": "erro", "motivo": motivo_horario, "motivo_codigo": "fora_do_horario"}
@@ -1538,6 +1548,52 @@ def historico(limit: int = 100):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+@app.get("/api/exportar-respostas")
+def exportar_respostas(tipo: str = "todos"):
+    """
+    Exporta em CSV os disparos filtrados por resposta_lead. tipo pode ser
+    'positivo', 'negativo' ou 'todos' (todos os que tem alguma resposta
+    classificada, positiva ou negativa - nao inclui os sem resposta).
+    """
+    if tipo not in ("positivo", "negativo", "todos"):
+        raise HTTPException(400, "tipo deve ser 'positivo', 'negativo' ou 'todos'")
+
+    conn = get_db()
+    if tipo == "todos":
+        rows = conn.execute(
+            """SELECT d.*, COALESCE(n.nome, 'SMS (sem numero WhatsApp)') as numero_nome FROM disparos d
+               LEFT JOIN numeros n ON n.id = d.numero_id
+               WHERE d.resposta_lead IS NOT NULL
+               ORDER BY d.resposta_recebida_em DESC""",
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT d.*, COALESCE(n.nome, 'SMS (sem numero WhatsApp)') as numero_nome FROM disparos d
+               LEFT JOIN numeros n ON n.id = d.numero_id
+               WHERE d.resposta_lead = ?
+               ORDER BY d.resposta_recebida_em DESC""",
+            (tipo,),
+        ).fetchall()
+    conn.close()
+
+    saida = io.StringIO()
+    escritor = csv.writer(saida, delimiter=";")
+    escritor.writerow(["telefone", "nome_lead", "cpf", "numero_usado", "canal", "status_envio", "resposta", "disparado_em", "resposta_em"])
+    for r in rows:
+        escritor.writerow([
+            r["telefone_destino"], r["nome_lead"] or "", r["cpf"] or "",
+            r["numero_nome"], r["canal"], r["status"],
+            r["resposta_lead"] or "", r["criado_em"], r["resposta_recebida_em"] or "",
+        ])
+
+    nome_arquivo = f"respostas_{tipo}_{datetime.now(TZ).strftime('%Y%m%d_%H%M')}.csv"
+    return Response(
+        content=saida.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{nome_arquivo}"'},
+    )
 
 
 @app.get("/api/eventos")
