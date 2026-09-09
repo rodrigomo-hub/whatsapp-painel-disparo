@@ -547,6 +547,25 @@ def verificar_qualidade_pos_envio(numero):
     return qualidade
 
 
+def normalizar_telefone_br(numero: str) -> str:
+    """
+    Adiciona o 9o digito quando falta em celular brasileiro antigo
+    (numeros de antes de 2012, formato DDD + 8 digitos, sem o 9 que
+    virou obrigatorio pra celular). So mexe em numeros de 12 digitos
+    (55 + DDD + 8) cujo primeiro digito local seja 6/7/8/9 (padrao de
+    celular) - fixo (comeca com 2-5) fica como esta, ja que nao recebe
+    SMS/WhatsApp mesmo e nao faz sentido "consertar".
+    """
+    limpo = re.sub(r"\D", "", numero or "")
+    if not limpo.startswith("55") or len(limpo) != 12:
+        return limpo
+    ddd = limpo[2:4]
+    local = limpo[4:]
+    if local and local[0] in "6789":
+        return f"55{ddd}9{local}"
+    return limpo
+
+
 def normalizar_texto_sms(texto: str) -> str:
     """
     A GTI SMS so aceita GSM-7 puro: sem acento, sem cedilha, sem emoji.
@@ -950,6 +969,8 @@ async def disparar(request: Request):
     if not telefone:
         raise HTTPException(400, "Campo 'whatsapp' ou 'telefone' obrigatorio")
 
+    telefone = normalizar_telefone_br(telefone)
+
     if variaveis and any(not str(v).strip() for v in variaveis):
         indices_vazios = [i for i, v in enumerate(variaveis, start=1) if not str(v).strip()]
         return {
@@ -1017,6 +1038,7 @@ async def disparo_lote(request: Request):
             continue
         if not limpo.startswith("55"):
             limpo = "55" + limpo
+        limpo = normalizar_telefone_br(limpo)
         if limpo not in vistos:
             vistos.add(limpo)
             formatados.append(limpo)
