@@ -73,25 +73,29 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Se a requisicao veio pelo dominio configurado como link_base_url
-        # (o encurtador de SMS), esse dominio SO deve responder em /o/{codigo}.
-        # Qualquer outra rota (incluindo a raiz "/") devolve 404 puro, sem
-        # revelar que existe um painel/login por tras - o cliente que recebe
-        # o SMS nunca deve ver nada alem do redirecionamento pro WhatsApp.
-        if not request.url.path.startswith("/o/"):
-            host_requisicao = request.headers.get("host", "").split(":")[0].lower()
-            if host_requisicao:
-                cfg = carregar_configuracao()
-                link_base = cfg.get("link_base_url", "")
-                if link_base:
-                    host_configurado = urlparse(link_base).hostname
-                    if host_configurado and host_requisicao == host_configurado.lower():
-                        return JSONResponse({"detail": "Not Found"}, status_code=404)
+        # (o link que vai no SMS), QUALQUER caminho nesse dominio - raiz,
+        # /o/algo, /qualquercoisa - redireciona direto pro WhatsApp
+        # configurado. Sem consulta a banco, sem lookup de codigo: e
+        # estruturalmente impossivel dar 404 aqui, porque nao ha nada
+        # que possa "nao ser encontrado" - e so montar a URL e redirecionar.
+        host_requisicao = request.headers.get("host", "").split(":")[0].lower()
+        if host_requisicao:
+            cfg = carregar_configuracao()
+            link_base = cfg.get("link_base_url", "")
+            if link_base:
+                host_configurado = urlparse(link_base).hostname
+                if host_configurado and host_requisicao == host_configurado.lower():
+                    destino = re.sub(r"\D", "", cfg.get("whatsapp_destino", ""))
+                    if not destino:
+                        # sem destino configurado - unico caso que nao da pra redirecionar,
+                        # mas isso e erro de configuracao do admin, nao do cliente clicando
+                        return JSONResponse({"detail": "WhatsApp de destino nao configurado"}, status_code=503)
+                    mensagem = quote(cfg.get("whatsapp_mensagem_template", ""))
+                    return RedirectResponse(f"https://wa.me/{destino}?text={mensagem}", status_code=302)
 
         # /webhook precisa ficar livre: quem chama e a Meta, nao um usuario logado
         # no painel, entao nao existe cookie de sessao nessas chamadas.
-        # /webhook: chamado pela Meta. /o/: link curto que o lead abre pelo SMS.
-        # Nenhum dos dois tem cookie de sessao, entao ficam fora da autenticacao.
-        caminhos_livres = ["/login", "/static", "/webhook", "/o/"]
+        caminhos_livres = ["/login", "/static", "/webhook"]
         if any(request.url.path.startswith(c) for c in caminhos_livres):
             return await call_next(request)
 
@@ -577,40 +581,21 @@ def normalizar_texto_sms(texto: str) -> str:
     return re.sub(r"[^\x20-\x7E]", " ", sem_acento)
 
 
-def gerar_codigo_curto(tamanho=6) -> str:
-    alfabeto = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sem 0/O/1/l/I pra evitar confusao visual
-    return "".join(secrets.choice(alfabeto) for _ in range(tamanho))
-
-
 def gerar_link_curto(disparo_id, telefone) -> str | None:
     """
-    Cria um link curto novo (redireciona pro WhatsApp de destino
-    configurado) e devolve a URL completa pronta pra colar na mensagem.
-    Devolve None se link_base_url nao estiver configurada ainda -
-    nesse caso, quem chamou deve mandar o SMS sem link.
+    Devolve o link fixo (link_base_url), sem gerar codigo nem consultar
+    banco - o mesmo link pra todo mundo. Isso garante que o link nunca
+    pode dar 404: o dominio redireciona direto pro WhatsApp configurado
+    pra QUALQUER caminho (ver AuthMiddleware), entao nao ha "codigo" pra
+    "nao encontrar". A troca e nao dar mais pra saber qual telefone
+    especifico clicou - so que o link chegou a existir.
+    Devolve None se link_base_url nao estiver configurada ainda.
     """
     cfg = carregar_configuracao()
     base = cfg["link_base_url"].rstrip("/")
     if not base:
         return None
-
-    conn = get_db()
-    for _ in range(5):  # tenta ate 5x se colidir com um codigo existente (extremamente raro)
-        codigo = gerar_codigo_curto()
-        existe = conn.execute("SELECT 1 FROM links_curtos WHERE codigo = ?", (codigo,)).fetchone()
-        if not existe:
-            break
-    else:
-        conn.close()
-        return None
-
-    conn.execute(
-        "INSERT INTO links_curtos (codigo, disparo_id, telefone, cliques, criado_em) VALUES (?, ?, ?, 0, ?)",
-        (codigo, disparo_id, telefone, agora_iso()),
-    )
-    conn.commit()
-    conn.close()
-    return f"{base}/o/{codigo}"
+    return base
 
 
 def _parsear_valor_monetario(bruto):
@@ -1364,34 +1349,6 @@ async def atualizar_configuracao(request: Request):
     return carregar_configuracao()
 
 
-@app.get("/o/{codigo}")
-def abrir_link_curto(codigo: str):
-    """
-    Redireciona pro WhatsApp de destino configurado, e conta o clique.
-    Publico (sem autenticacao) - e o link que o lead recebe por SMS.
-    """
-    conn = get_db()
-    link = conn.execute("SELECT * FROM links_curtos WHERE codigo = ?", (codigo,)).fetchone()
-    if link is None:
-        conn.close()
-        raise HTTPException(404, "Link nao encontrado")
-
-    conn.execute(
-        "UPDATE links_curtos SET cliques = cliques + 1, ultimo_clique_em = ? WHERE codigo = ?",
-        (agora_iso(), codigo),
-    )
-    conn.commit()
-    conn.close()
-
-    cfg = carregar_configuracao()
-    destino = re.sub(r"\D", "", cfg["whatsapp_destino"])
-    if not destino:
-        raise HTTPException(503, "Nenhum WhatsApp de destino configurado")
-
-    mensagem = quote(cfg["whatsapp_mensagem_template"])
-    return RedirectResponse(f"https://wa.me/{destino}?text={mensagem}", status_code=302)
-
-
 @app.get("/api/sms/saldo")
 def saldo_sms():
     """Consulta o saldo de creditos disponivel na GTI SMS (com cache de alguns minutos)."""
@@ -1404,17 +1361,6 @@ def saldo_sms():
         "expira_em": info["expira_em"],
         "erro": info["erro"],
     }
-
-
-@app.get("/api/links-curtos")
-def listar_links_curtos(limit: int = 50):
-    """Lista os links curtos gerados, mais recentes primeiro, com contagem de cliques."""
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM links_curtos ORDER BY criado_em DESC LIMIT ?", (limit,)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
 
 
 @app.post("/api/buscar-templates")
