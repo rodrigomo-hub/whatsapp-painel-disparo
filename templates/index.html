@@ -585,6 +585,9 @@ async function carregarHistorico() {
     let respostaHtml = '<span style="color:#ccc;">—</span>';
     if (d.resposta_lead === 'positivo') respostaHtml = '<span style="color:#16a34a; font-weight:600;">✅ Positivo</span>';
     else if (d.resposta_lead === 'negativo') respostaHtml = '<span style="color:#dc2626; font-weight:600;">❌ Negativo</span>';
+    if (d.link_conversa) {
+      respostaHtml += ` <a href="${d.link_conversa}" target="_blank" rel="noopener" style="font-size:11px; color:#2563eb; text-decoration:none;">💬 abrir conversa</a>`;
+    }
 
     tr.innerHTML = `
       <td>${dataFmt}</td><td>${d.numero_nome}</td><td>${d.nome_lead || '-'}</td>

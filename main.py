@@ -262,6 +262,10 @@ def init_db():
         conn.execute("ALTER TABLE disparos ADD COLUMN resposta_lead TEXT")
     if "resposta_recebida_em" not in colunas_disparos:
         conn.execute("ALTER TABLE disparos ADD COLUMN resposta_recebida_em TEXT")
+    if "link_conversa" not in colunas_disparos:
+        # URL opcional pro CRM mandar junto com a resposta - link direto
+        # pra conversa la no CRM, pra clicar no painel e ir direto nela.
+        conn.execute("ALTER TABLE disparos ADD COLUMN link_conversa TEXT")
 
     if "template_idioma" not in colunas_existentes:
         # Codigo do idioma do template aprovado na Meta (ex: pt_BR, pt_PT, en_US).
@@ -912,16 +916,21 @@ async def resposta_lead(request: Request):
     conversa (a conversa em si acontece no CRM, nao aqui - esse painel
     so dispara a mensagem inicial). Casa a resposta com o disparo mais
     recente feito pra aquele telefone, e classifica como positivo/negativo.
+    Aceita opcionalmente link_conversa - URL da conversa no CRM, pra
+    dar pra clicar e ir direto nela pelo painel.
     Protegido por X-API-Key, igual /disparar.
     """
     body = await request.json()
     telefone = re.sub(r"\D", "", str(body.get("telefone", "")))
     resposta = body.get("resposta", "")
+    link_conversa = str(body.get("link_conversa", "")).strip() or None
 
     if not telefone:
         raise HTTPException(400, "Campo 'telefone' obrigatorio")
     if resposta not in ("positivo", "negativo"):
         raise HTTPException(400, "Campo 'resposta' deve ser 'positivo' ou 'negativo'")
+    if link_conversa and not link_conversa.startswith(("http://", "https://")):
+        raise HTTPException(400, "link_conversa deve comecar com http:// ou https://")
 
     conn = get_db()
     disparo = conn.execute(
@@ -934,13 +943,13 @@ async def resposta_lead(request: Request):
         raise HTTPException(404, f"Nenhum disparo encontrado pro telefone {telefone}")
 
     conn.execute(
-        "UPDATE disparos SET resposta_lead = ?, resposta_recebida_em = ? WHERE id = ?",
-        (resposta, agora_iso(), disparo["id"]),
+        "UPDATE disparos SET resposta_lead = ?, resposta_recebida_em = ?, link_conversa = ? WHERE id = ?",
+        (resposta, agora_iso(), link_conversa, disparo["id"]),
     )
     conn.commit()
     conn.close()
 
-    return {"status": "ok", "disparo_id": disparo["id"], "resposta_lead": resposta}
+    return {"status": "ok", "disparo_id": disparo["id"], "resposta_lead": resposta, "link_conversa": link_conversa}
 
 
 @app.post("/disparar")
@@ -1548,12 +1557,13 @@ def exportar_respostas(tipo: str = "todos"):
 
     saida = io.StringIO()
     escritor = csv.writer(saida, delimiter=";")
-    escritor.writerow(["telefone", "nome_lead", "cpf", "numero_usado", "canal", "status_envio", "resposta", "disparado_em", "resposta_em"])
+    escritor.writerow(["telefone", "nome_lead", "cpf", "numero_usado", "canal", "status_envio", "resposta", "disparado_em", "resposta_em", "link_conversa"])
     for r in rows:
         escritor.writerow([
             r["telefone_destino"], r["nome_lead"] or "", r["cpf"] or "",
             r["numero_nome"], r["canal"], r["status"],
             r["resposta_lead"] or "", r["criado_em"], r["resposta_recebida_em"] or "",
+            r["link_conversa"] or "",
         ])
 
     nome_arquivo = f"respostas_{tipo}_{datetime.now(TZ).strftime('%Y%m%d_%H%M')}.csv"
