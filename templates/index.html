@@ -199,6 +199,12 @@
 
 <div class="cartao">
   <h2>Últimos disparos <button class="btn-toggle" onclick="baixarCsv('positivo')" style="font-size:12px; background:#16a34a;">⬇️ Baixar positivos</button> <button class="btn-toggle" onclick="baixarCsv('negativo')" style="font-size:12px; background:#dc2626;">⬇️ Baixar negativos</button></h2>
+  <select id="filtro-resposta" onchange="carregarHistorico()" style="margin-bottom:12px; padding:6px; border:1px solid #ddd; border-radius:6px; font-family:inherit;">
+    <option value="todos">Todos</option>
+    <option value="positivo">Só positivos</option>
+    <option value="negativo">Só negativos</option>
+    <option value="sem_resposta">Sem resposta ainda</option>
+  </select>
   <table>
     <thead>
       <tr><th>Quando</th><th>Número usado</th><th>Lead</th><th>Telefone</th><th>Status</th><th>Resposta</th></tr>
@@ -564,7 +570,8 @@ async function carregarNumeros() {
 }
 
 async function carregarHistorico() {
-  const res = await fetch('/api/historico?limit=50');
+  const filtro = document.getElementById('filtro-resposta')?.value || 'todos';
+  const res = await fetch(`/api/historico?limit=50&resposta=${filtro}`);
   const dados = await res.json();
   const tbody = document.getElementById('tabela-historico');
   tbody.innerHTML = '';

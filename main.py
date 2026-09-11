@@ -1515,14 +1515,26 @@ def remover_numero(numero_id: int):
 
 
 @app.get("/api/historico")
-def historico(limit: int = 100):
+def historico(limit: int = 100, resposta: str = "todos"):
+    """
+    resposta filtra por classificacao: 'todos' (padrao), 'positivo',
+    'negativo', ou 'sem_resposta' (disparos que ainda nao tem
+    resposta_lead classificada).
+    """
+    if resposta not in ("todos", "positivo", "negativo", "sem_resposta"):
+        raise HTTPException(400, "resposta deve ser 'todos', 'positivo', 'negativo' ou 'sem_resposta'")
+
     conn = get_db()
-    rows = conn.execute(
-        """SELECT d.*, COALESCE(n.nome, 'SMS (sem numero WhatsApp)') as numero_nome FROM disparos d
-           LEFT JOIN numeros n ON n.id = d.numero_id
-           ORDER BY d.id DESC LIMIT ?""",
-        (limit,),
-    ).fetchall()
+    base_query = """SELECT d.*, COALESCE(n.nome, 'SMS (sem numero WhatsApp)') as numero_nome FROM disparos d
+           LEFT JOIN numeros n ON n.id = d.numero_id"""
+
+    if resposta == "todos":
+        rows = conn.execute(f"{base_query} ORDER BY d.id DESC LIMIT ?", (limit,)).fetchall()
+    elif resposta == "sem_resposta":
+        rows = conn.execute(f"{base_query} WHERE d.resposta_lead IS NULL ORDER BY d.id DESC LIMIT ?", (limit,)).fetchall()
+    else:
+        rows = conn.execute(f"{base_query} WHERE d.resposta_lead = ? ORDER BY d.id DESC LIMIT ?", (resposta, limit)).fetchall()
+
     conn.close()
     return [dict(r) for r in rows]
 
