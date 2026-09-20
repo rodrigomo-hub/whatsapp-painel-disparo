@@ -1,5 +1,6 @@
 """Cadastro de campanha documentado pela VendeAI; sem efeitos de envio de mensagens."""
 import re
+import secrets
 import time
 from datetime import datetime
 
@@ -69,7 +70,7 @@ def preparar_lead(body, cfg):
         "cpf": texto(body, "cpf"),
         "name": texto(body, "nome", "name"),
         "birth_date": nascimento,
-        "email": texto(body, "email") or texto(extra, "email"),
+        "email": texto(body, "email") or texto(extra, "email") or f"lead{secrets.token_hex(12)}@gmail.com",
         "campaign": texto(body, "campanha", "campaign") or cfg["vendeai_campanha_padrao"],
     }
     lead.update({k: v for k, v in opcionais.items() if v})
