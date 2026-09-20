@@ -185,6 +185,38 @@
 </div>
 
 <div class="cartao">
+  <h2>🤝 CRM VendeAí (Chatwoot)</h2>
+  <p style="color:#888; font-size:13px;">
+    Cria/atualiza automaticamente o contato na VendeAí a cada disparo (nome, telefone, CPF),
+    pra IA/atendente de lá não precisar perguntar de novo pro lead.
+  </p>
+  <form id="form-vendeai" onsubmit="salvarVendeai(event)">
+    <label style="font-size:13px;">
+      <input type="checkbox" id="vendeai-habilitado"> Sincronização com VendeAí habilitada
+    </label>
+
+    <div style="margin-top:12px;">
+      <label style="font-size:13px; display:block; margin-bottom:4px;">URL base da VendeAí</label>
+      <input type="text" id="vendeai-url" placeholder="https://crm.vendeaitecnologia.com.br" style="width:100%;">
+    </div>
+
+    <div style="display:flex; gap:12px; margin-top:12px;">
+      <div style="flex:1;">
+        <label style="font-size:13px; display:block; margin-bottom:4px;">Account ID</label>
+        <input type="text" id="vendeai-account-id" placeholder="1" style="width:100%;">
+      </div>
+      <div style="flex:1;">
+        <label style="font-size:13px; display:block; margin-bottom:4px;">Inbox ID (usado só ao criar contato novo)</label>
+        <input type="text" id="vendeai-inbox-id" placeholder="5" style="width:100%;">
+      </div>
+    </div>
+
+    <button type="submit" class="btn-toggle" style="margin-top:12px;">Salvar configuração da VendeAí</button>
+    <span id="vendeai-salvo" style="color:#16a34a; font-size:13px; display:none;">✅ Salvo</span>
+  </form>
+</div>
+
+<div class="cartao">
   <h2>📤 Disparo em lote</h2>
   <p style="color:#888; font-size:13px;">Cole os números (um por linha, ou separados por vírgula) ou escolha um arquivo .txt</p>
   <input type="file" id="arquivo-lote" accept=".txt,.csv"><br><br>
@@ -514,6 +546,39 @@ async function salvarSms(ev) {
   }
 }
 
+async function carregarVendeai() {
+  const res = await fetch('/api/configuracao');
+  const cfg = await res.json();
+  document.getElementById('vendeai-habilitado').checked = cfg.vendeai_habilitado;
+  document.getElementById('vendeai-url').value = cfg.vendeai_url;
+  document.getElementById('vendeai-account-id').value = cfg.vendeai_account_id;
+  document.getElementById('vendeai-inbox-id').value = cfg.vendeai_inbox_id;
+}
+
+async function salvarVendeai(ev) {
+  ev.preventDefault();
+
+  const res = await fetch('/api/configuracao', {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      vendeai_habilitado: document.getElementById('vendeai-habilitado').checked,
+      vendeai_url: document.getElementById('vendeai-url').value,
+      vendeai_account_id: document.getElementById('vendeai-account-id').value,
+      vendeai_inbox_id: document.getElementById('vendeai-inbox-id').value,
+    })
+  });
+
+  if (res.ok) {
+    const aviso = document.getElementById('vendeai-salvo');
+    aviso.style.display = 'inline';
+    setTimeout(() => { aviso.style.display = 'none'; }, 2000);
+  } else {
+    const erro = await res.json();
+    alert('Erro ao salvar: ' + (erro.detail || 'erro desconhecido'));
+  }
+}
+
 async function carregarTotalHoje() {
   const res = await fetch('/api/total-hoje');
   const dados = await res.json();
@@ -711,6 +776,7 @@ carregarNumeros();
 carregarHistorico();
 carregarHorario();
 carregarSms();
+carregarVendeai();
 setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarSaldoSms(); }, 10000);
 </script>
 

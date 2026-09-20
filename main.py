@@ -53,11 +53,15 @@ WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN", env.get("WEBHOOK_V
 # como manter cookie de sessao. So vale para as rotas em ROTAS_API_KEY -
 # nao da acesso a cadastro/exclusao de numeros nem a mais nada do painel.
 API_KEY = os.environ.get("API_KEY", env.get("API_KEY", ""))
-ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar", "/api/resposta-lead"}
+ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar", "/api/resposta-lead", "/api/vendeai/atualizar-atributos-conversa"}
 # Token da GTI SMS - fallback quando nao ha numero de WhatsApp disponivel
 # ou o envio via Meta falha. Sem esse token configurado, o fallback fica
 # desligado e o comportamento continua identico a hoje (so WhatsApp).
 SMS_GTI_TOKEN = os.environ.get("SMS_GTI_TOKEN", env.get("SMS_GTI_TOKEN", ""))
+# Token de admin da conta VendeAi/Chatwoot - usado pra criar/atualizar
+# contatos automaticamente a cada disparo. Segredo, fica so em env var,
+# igual os outros tokens - nao e editavel pelo painel.
+VENDEAI_API_TOKEN = os.environ.get("VENDEAI_API_TOKEN", env.get("VENDEAI_API_TOKEN", ""))
 sessoes_ativas = set()
 
 # Cache do saldo de creditos da GTI SMS - consultado no maximo a cada
@@ -177,7 +181,11 @@ def init_db():
             sms_template TEXT NOT NULL DEFAULT 'Oi {1}! Voce tem uma oferta disponivel. Fale com a gente: {link}',
             whatsapp_destino TEXT NOT NULL DEFAULT '',
             whatsapp_mensagem_template TEXT NOT NULL DEFAULT 'Ola, recebi um SMS sobre uma oferta.',
-            link_base_url TEXT NOT NULL DEFAULT ''
+            link_base_url TEXT NOT NULL DEFAULT '',
+            vendeai_habilitado INTEGER NOT NULL DEFAULT 0,
+            vendeai_url TEXT NOT NULL DEFAULT '',
+            vendeai_account_id TEXT NOT NULL DEFAULT '',
+            vendeai_inbox_id TEXT NOT NULL DEFAULT ''
         )
     """)
     # migra bancos que ja existiam antes do fallback de SMS existir - PRECISA
@@ -198,15 +206,26 @@ def init_db():
         conn.execute("ALTER TABLE configuracao ADD COLUMN whatsapp_mensagem_template TEXT NOT NULL DEFAULT 'Ola, recebi um SMS sobre uma oferta.'")
     if "link_base_url" not in colunas_config:
         conn.execute("ALTER TABLE configuracao ADD COLUMN link_base_url TEXT NOT NULL DEFAULT ''")
+    if "vendeai_habilitado" not in colunas_config:
+        # Sincroniza automaticamente o contato (nome/telefone/cpf) no CRM
+        # VendeAi (Chatwoot) a cada /disparar, pra IA/atendente de la ja
+        # ter esses dados sem precisar perguntar de novo pro lead.
+        conn.execute("ALTER TABLE configuracao ADD COLUMN vendeai_habilitado INTEGER NOT NULL DEFAULT 0")
+    if "vendeai_url" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN vendeai_url TEXT NOT NULL DEFAULT ''")
+    if "vendeai_account_id" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN vendeai_account_id TEXT NOT NULL DEFAULT ''")
+    if "vendeai_inbox_id" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN vendeai_inbox_id TEXT NOT NULL DEFAULT ''")
 
     # linha unica de configuracao (id sempre 1) - cria com os defaults se ainda nao existir.
     # So roda depois das migracoes acima, garantindo que todas as colunas ja existem.
     conn.execute("""
         INSERT OR IGNORE INTO configuracao
-        (id, modo, hora_inicio, hora_fim, dias_semana, sms_habilitado, sms_modo, sms_template, whatsapp_destino, whatsapp_mensagem_template, link_base_url)
+        (id, modo, hora_inicio, hora_fim, dias_semana, sms_habilitado, sms_modo, sms_template, whatsapp_destino, whatsapp_mensagem_template, link_base_url, vendeai_habilitado, vendeai_url, vendeai_account_id, vendeai_inbox_id)
         VALUES (1, 'automatico', '08:00', '20:00', '1,2,3,4,5,6,7', 0, 'fallback',
                 'Oi {1}! Voce tem uma oferta disponivel. Fale com a gente: {link}',
-                '', 'Ola, recebi um SMS sobre uma oferta.', '')
+                '', 'Ola, recebi um SMS sobre uma oferta.', '', 0, '', '', '')
     """)
 
     conn.execute("""
@@ -325,6 +344,7 @@ def carregar_configuracao() -> dict:
     cfg = dict(row)
     cfg["dias_semana"] = [int(d) for d in cfg["dias_semana"].split(",") if d]
     cfg["sms_habilitado"] = bool(cfg["sms_habilitado"])
+    cfg["vendeai_habilitado"] = bool(cfg["vendeai_habilitado"])
     return cfg
 
 
@@ -572,6 +592,74 @@ def normalizar_telefone_br(numero: str) -> str:
     if local and local[0] in "6789":
         return f"55{ddd}9{local}"
     return limpo
+
+
+def sincronizar_contato_vendeai(telefone: str, nome: str, cpf: str, info_extra: dict = None):
+    """
+    Cria ou atualiza o contato na VendeAi (Chatwoot) com nome, telefone,
+    cpf e qualquer info_extra, pra evitar que a IA/atendente de la
+    precise perguntar de novo pro lead dados que a gente ja tem.
+
+    Best-effort: nunca levanta excecao pro chamador, so registra evento
+    em caso de falha - isso nunca deve travar o fluxo principal de
+    disparo, ja que e so um "nice to have", nao o core da funcionalidade.
+    """
+    cfg = carregar_configuracao()
+    if not cfg["vendeai_habilitado"] or not VENDEAI_API_TOKEN:
+        return
+
+    base = cfg["vendeai_url"].rstrip("/")
+    account_id = cfg["vendeai_account_id"]
+    inbox_id = cfg["vendeai_inbox_id"]
+    if not base or not account_id:
+        registrar_evento(None, "vendeai_config_incompleta", "vendeai_habilitado esta ligado mas falta vendeai_url ou vendeai_account_id")
+        return
+
+    telefone_limpo = re.sub(r"\D", "", telefone or "")
+    if not telefone_limpo:
+        return
+    telefone_e164 = f"+{telefone_limpo}"
+
+    custom_attributes = {"cpf": cpf} if cpf else {}
+    if info_extra:
+        custom_attributes.update(info_extra)
+
+    headers = {"api_access_token": VENDEAI_API_TOKEN, "Content-Type": "application/json"}
+
+    try:
+        resp_busca = requests.get(
+            f"{base}/api/v1/accounts/{account_id}/contacts/search",
+            headers=headers, params={"q": telefone_e164}, timeout=10,
+        )
+        contatos = resp_busca.json().get("payload", []) if resp_busca.status_code == 200 else []
+
+        if contatos:
+            contato_id = contatos[0]["id"]
+            resp = requests.put(
+                f"{base}/api/v1/accounts/{account_id}/contacts/{contato_id}",
+                headers=headers,
+                json={"name": nome, "custom_attributes": custom_attributes} if nome else {"custom_attributes": custom_attributes},
+                timeout=10,
+            )
+        else:
+            payload = {
+                "name": nome or telefone_e164,
+                "phone_number": telefone_e164,
+                "custom_attributes": custom_attributes,
+            }
+            if inbox_id:
+                payload["inbox_id"] = int(inbox_id) if str(inbox_id).isdigit() else inbox_id
+            resp = requests.post(
+                f"{base}/api/v1/accounts/{account_id}/contacts",
+                headers=headers, json=payload, timeout=10,
+            )
+
+        if resp.status_code not in (200, 201):
+            registrar_evento(None, "vendeai_erro_sincronizar", f"Telefone {telefone_e164}: HTTP {resp.status_code} - {resp.text[:300]}")
+    except requests.RequestException as e:
+        registrar_evento(None, "vendeai_erro_sincronizar", f"Telefone {telefone_e164}: {e}")
+    except Exception as e:
+        registrar_evento(None, "vendeai_erro_sincronizar", f"Telefone {telefone_e164}: erro inesperado {e}")
 
 
 def normalizar_texto_sms(texto: str) -> str:
@@ -952,6 +1040,59 @@ async def resposta_lead(request: Request):
     return {"status": "ok", "disparo_id": disparo["id"], "resposta_lead": resposta, "link_conversa": link_conversa}
 
 
+@app.post("/api/vendeai/atualizar-atributos-conversa")
+async def vendeai_atualizar_atributos_conversa(request: Request):
+    """
+    Atualiza atributos customizados de uma CONVERSA especifica na VendeAi
+    (Chatwoot) - diferente de atributos de contato, esses so existem
+    depois que a conversa ja foi criada de verdade (lead respondeu pelo
+    numero real da VendeAi). Pensado pra ser chamado pelo n8n assim que
+    detectar uma conversa nova, jogando de uma vez os dados de
+    identificacao que ja temos (CPF, nome, data nascimento, etc.), pra
+    a IA/atendente nao precisar perguntar de novo.
+
+    O chamador manda o dicionario de atributos EXATAMENTE com as chaves
+    que a VendeAi espera (definidas nas configuracoes de custom
+    attributes de conversa de la) - esse endpoint nao tenta adivinhar
+    nomes de campo, so repassa.
+
+    merge=true na chamada pro Chatwoot: so as chaves enviadas sao
+    atualizadas, o resto que ja estava na conversa continua intacto.
+    """
+    cfg = carregar_configuracao()
+    if not cfg["vendeai_habilitado"] or not VENDEAI_API_TOKEN:
+        raise HTTPException(503, "Integracao com VendeAi nao esta habilitada/configurada")
+
+    base = cfg["vendeai_url"].rstrip("/")
+    account_id = cfg["vendeai_account_id"]
+    if not base or not account_id:
+        raise HTTPException(503, "vendeai_url ou vendeai_account_id nao configurados")
+
+    body = await request.json()
+    conversation_id = body.get("conversation_id")
+    atributos = body.get("atributos")
+
+    if not conversation_id:
+        raise HTTPException(400, "Campo 'conversation_id' obrigatorio")
+    if not atributos or not isinstance(atributos, dict):
+        raise HTTPException(400, "Campo 'atributos' obrigatorio e precisa ser um objeto/dicionario")
+
+    try:
+        resp = requests.post(
+            f"{base}/api/v1/accounts/{account_id}/conversations/{conversation_id}/custom_attributes",
+            headers={"api_access_token": VENDEAI_API_TOKEN, "Content-Type": "application/json"},
+            json={"custom_attributes": atributos, "merge": True},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        raise HTTPException(502, f"Erro ao falar com a VendeAi: {e}")
+
+    if resp.status_code != 200:
+        raise HTTPException(502, f"VendeAi respondeu {resp.status_code}: {resp.text[:300]}")
+
+    return {"status": "ok", "conversation_id": conversation_id, "custom_attributes": resp.json().get("custom_attributes")}
+
+
 @app.post("/disparar")
 async def disparar(request: Request):
     body = await request.json()
@@ -959,11 +1100,17 @@ async def disparar(request: Request):
     nome_lead = body.get("nome", "")
     telefone = body.get("whatsapp", "") or body.get("telefone", "")
     variaveis = body.get("variaveis_template", [])
+    info_extra = body.get("info_extra")
 
     if not telefone:
         raise HTTPException(400, "Campo 'whatsapp' ou 'telefone' obrigatorio")
 
     telefone = normalizar_telefone_br(telefone)
+
+    # Sincroniza o contato na VendeAi (se habilitado) - antes mesmo de saber
+    # se o disparo vai dar certo, ja que o objetivo e so ter o dado pronto
+    # pra quando o lead responder. Best-effort, nunca bloqueia o disparo.
+    sincronizar_contato_vendeai(telefone, nome_lead, cpf, info_extra)
 
     if variaveis and any(not str(v).strip() for v in variaveis):
         indices_vazios = [i for i, v in enumerate(variaveis, start=1) if not str(v).strip()]
@@ -1339,10 +1486,17 @@ async def atualizar_configuracao(request: Request):
     if "link_base_url" in body and body["link_base_url"] and not body["link_base_url"].startswith(("http://", "https://")):
         raise HTTPException(400, "link_base_url deve comecar com http:// ou https://")
 
+    if "vendeai_habilitado" in body:
+        body["vendeai_habilitado"] = 1 if body["vendeai_habilitado"] else 0
+
+    if "vendeai_url" in body and body["vendeai_url"] and not body["vendeai_url"].startswith(("http://", "https://")):
+        raise HTTPException(400, "vendeai_url deve comecar com http:// ou https://")
+
     campos_validos = {
         "modo", "hora_inicio", "hora_fim", "dias_semana",
         "sms_habilitado", "sms_modo", "sms_template", "whatsapp_destino",
         "whatsapp_mensagem_template", "link_base_url",
+        "vendeai_habilitado", "vendeai_url", "vendeai_account_id", "vendeai_inbox_id",
     }
     atualizacoes = {k: v for k, v in body.items() if k in campos_validos}
     if not atualizacoes:
