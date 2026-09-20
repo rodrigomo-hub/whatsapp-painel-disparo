@@ -54,14 +54,16 @@ Exemplo fictício de entrada:
 | `cpf` | — | Opcional; texto, com ou sem pontuação; a VendeAI valida checksum |
 | `nome` | `name` | Opcional; nome completo |
 | `nascimento` | `birth_date` | Opcional; `AAAA-MM-DD` ou `DD/MM/AAAA`; enviado como `DD/MM/AAAA` |
-| `email` | — | Opcional; quando ausente, gera endereço aleatório `lead<24 caracteres>@gmail.com` |
+| `email` | — | Opcional; quando ausente, gera endereço aleatório `<primeiro nome><5 dígitos aleatórios>@gmail.com` |
 | `produto` | `product` | Substitui o produto padrão; obrigatório na VendeAI |
 | `campanha` | `campaign` | Substitui a campanha padrão |
 | `variaveis_template` | — | Lista de textos para o template WhatsApp; continua independente do cadastro |
 
 `info_extra.nascimento`, `info_extra.birth_date` e `info_extra.email` também são
 aceitos quando não informados na raiz. E-mail informado é preservado; se ausente,
-nulo ou vazio, gera um endereço aleatório sem usar CPF, telefone ou nome. Isso
+nulo ou vazio, gera um endereço com o primeiro nome em minúsculas, sem acentos ou sinais, e cinco
+dígitos aleatórios (ex.: `jose48217@gmail.com`), sem usar CPF ou telefone. Sem nome
+utilizável, usa `lead` no lugar do primeiro nome. Isso
 apenas preenche o cadastro, não cria uma conta Gmail nem verifica uma caixa postal.
 Cada nova entrada sem e-mail gera outro endereço, inclusive em reenvios.
 Os demais campos opcionais vazios são omitidos.

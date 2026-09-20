@@ -2,6 +2,7 @@
 import re
 import secrets
 import time
+import unicodedata
 from datetime import datetime
 
 import requests
@@ -41,6 +42,13 @@ def texto(dados, *chaves):
     return ""
 
 
+def gerar_email(nome):
+    primeiro = nome.split()[0] if nome.split() else "lead"
+    primeiro = unicodedata.normalize("NFKD", primeiro).encode("ascii", "ignore").decode().lower()
+    primeiro = re.sub(r"[^a-z]", "", primeiro)[:59] or "lead"
+    return f"{primeiro}{secrets.randbelow(100000):05d}@gmail.com"
+
+
 def preparar_lead(body, cfg):
     if not isinstance(body, dict):
         raise HTTPException(400, "Cada lead deve ser um objeto")
@@ -66,11 +74,12 @@ def preparar_lead(body, cfg):
         "phone": telefone,
         "product": texto(body, "produto", "product") or cfg["vendeai_produto_padrao"],
     }
+    nome = texto(body, "nome", "name")
     opcionais = {
         "cpf": texto(body, "cpf"),
-        "name": texto(body, "nome", "name"),
+        "name": nome,
         "birth_date": nascimento,
-        "email": texto(body, "email") or texto(extra, "email") or f"lead{secrets.token_hex(12)}@gmail.com",
+        "email": texto(body, "email") or texto(extra, "email") or gerar_email(nome),
         "campaign": texto(body, "campanha", "campaign") or cfg["vendeai_campanha_padrao"],
     }
     lead.update({k: v for k, v in opcionais.items() if v})

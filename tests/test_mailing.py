@@ -80,17 +80,21 @@ class MailingTests(unittest.TestCase):
         res = self.client.post("/disparar", json={"whatsapp": "5511987654321", "nome": "Teste"})
         self.assertEqual(res.json()["status"], "sucesso")
         enviado = self.api.call_args.kwargs["json"]["leads"][0]
-        self.assertRegex(enviado["email"], r"^lead[0-9a-f]{24}@gmail\.com$")
+        self.assertRegex(enviado["email"], r"^teste[0-9]{5}@gmail\.com$")
         self.assertEqual({k: v for k, v in enviado.items() if k != "email"}, {"phone": "5511987654321", "name": "Teste", "product": "clt"})
 
     def test_email_ausente_vazio_ou_nulo_gera_aleatorio(self):
         cfg = main.carregar_configuracao()
-        emails = []
         for valor in (None, "", "   "):
             lead = mailing.preparar_lead({"telefone": "11987654321", "email": valor}, cfg)["mailing"]
-            self.assertRegex(lead["email"], r"^lead[0-9a-f]{24}@gmail\.com$")
-            emails.append(lead["email"])
-        self.assertEqual(len(set(emails)), 3)
+            self.assertRegex(lead["email"], r"^lead[0-9]{5}@gmail\.com$")
+
+    def test_email_primeiro_nome_sem_acentos_e_cinco_digitos(self):
+        with patch.object(mailing.secrets, "randbelow", return_value=42):
+            lead = mailing.preparar_lead({"telefone": "11987654321", "nome": "  JOSÉ da Silva  "}, main.carregar_configuracao())["mailing"]
+            self.assertEqual(lead["email"], "jose00042@gmail.com")
+            self.assertEqual(mailing.gerar_email(""), "lead00042@gmail.com")
+            self.assertEqual(mailing.gerar_email("Ana-Clara Silva"), "anaclara00042@gmail.com")
 
     def test_email_info_extra_preservado(self):
         lead = mailing.preparar_lead({"telefone": "11987654321", "email": " ", "info_extra": {"email": "real@example.com"}}, main.carregar_configuracao())["mailing"]
@@ -101,7 +105,7 @@ class MailingTests(unittest.TestCase):
         self.client.post("/api/disparo-lote", json={"leads": [self.lead, {"telefone": "11987654322"}]})
         enviados = self.api.call_args.kwargs["json"]["leads"]
         self.assertEqual(enviados[0]["email"], "teste@example.com")
-        self.assertRegex(enviados[1]["email"], r"^lead[0-9a-f]{24}@gmail\.com$")
+        self.assertRegex(enviados[1]["email"], r"^lead[0-9]{5}@gmail\.com$")
 
     def test_aliases_data_e_ddd_55(self):
         cfg = main.carregar_configuracao()
