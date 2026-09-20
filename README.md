@@ -7,7 +7,7 @@ Esta integração substitui a antiga sincronização automática de contatos Cha
 
 ## Configuração no painel
 
-Em **Base de campanha VendeAI**, configure:
+Na aba **Configurações → Base de campanha**, configure:
 
 - Habilitar/desabilitar o cadastro antes dos disparos.
 - URL base: `https://ia.vendeaitecnologia.com.br` (sem caminho).

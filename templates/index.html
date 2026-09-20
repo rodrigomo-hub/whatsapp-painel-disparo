@@ -2,6 +2,7 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Painel de Disparo WhatsApp</title>
 <style>
   body { font-family: -apple-system, sans-serif; background: #f4f4f7; margin: 0; padding: 20px; }
@@ -59,14 +60,49 @@
   .aviso-info-icone { font-size: 22px; line-height: 1; }
   .aviso-info-texto { font-size: 13px; color: #475569; line-height: 1.5; }
   .aviso-info-texto strong { color: #1e3a8a; }
+  [hidden] { display: none !important; }
+  .navegacao-principal { display: flex; gap: 6px; border-bottom: 1px solid #dddde6; margin: 8px 0 24px; }
+  .navegacao-principal a { color: #64748b; text-decoration: none; padding: 14px 20px; border-bottom: 3px solid transparent; font-weight: 600; font-size: 14px; }
+  .navegacao-principal a[aria-current="page"] { color: #1a1a2e; border-color: #22c55e; }
+  .navegacao-principal a:hover { background: #eaf0ed; }
+  .config-cabecalho h2 { margin: 0 0 8px; color: #1a1a2e; }
+  .config-cabecalho p { color: #64748b; margin: 0 0 24px; font-size: 14px; }
+  .config-layout { display: grid; grid-template-columns: 240px minmax(0, 960px); gap: 24px; align-items: start; }
+  .config-menu { display: grid; gap: 6px; }
+  .config-menu a { display: block; padding: 16px; text-decoration: none; border-radius: 8px; color: #475569; font-size: 14px; font-weight: 600; }
+  .config-menu a span { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; color: #64748b; }
+  .config-menu a[aria-current="page"] { background: #dcfce7; color: #166534; }
+  .config-menu a:hover { background: #e8eeeb; }
+  .config-conteudo { padding: 28px; }
+  .config-conteudo h2 { margin-top: 0; font-size: 20px; }
+  .config-conteudo p { line-height: 1.6; }
+  #form-sms { display: block; }
+  #form-sms input:not([type="checkbox"]), #form-sms select { box-sizing: border-box; width: 100%; margin-right: 0; }
+  .config-conteudo select { padding: 9px; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; max-width: 100%; }
+  .config-conteudo button[type="submit"] { padding: 10px 16px; }
+  @media (max-width: 760px) {
+    .config-layout { grid-template-columns: 1fr; gap: 16px; }
+    .config-menu { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .config-menu a { padding: 12px 8px; }
+    .config-menu a span { display: none; }
+    .config-conteudo { padding: 20px; }
+    .navegacao-principal a { padding: 12px; }
+  }
 </style>
 </head>
 <body>
 
 <div style="display:flex; justify-content:space-between; align-items:center;">
-  <h1>📱 Painel de Disparo WhatsApp <a href="/estatisticas" style="font-size:14px; color:#2563eb; text-decoration:none; vertical-align:middle;">📊 Ver estatísticas históricas</a></h1>
+  <h1>📱 Painel de Disparo WhatsApp</h1>
   <a href="/logout" style="color:#dc2626; font-size:13px; text-decoration:none;">Sair</a>
 </div>
+
+<nav class="navegacao-principal" aria-label="Navegação principal">
+  <a href="#painel" id="nav-painel" aria-current="page">Disparos</a>
+  <a href="#configuracoes-vendeai" id="nav-configuracoes">Configurações</a>
+  <a href="/estatisticas">Estatísticas</a>
+</nav>
+<main id="pagina-painel">
 
 <div class="aviso-info">
   <div class="aviso-info-icone">💡</div>
@@ -123,6 +159,48 @@
 </div>
 
 <div class="cartao">
+  <h2>📤 Disparo em lote</h2>
+  <p style="color:#888; font-size:13px;">Cole números ou uma lista JSON de leads com telefone, CPF, nome, nascimento, e-mail, produto e campanha. Também aceita arquivo .txt ou .json.</p>
+  <input type="file" id="arquivo-lote" accept=".txt,.json"><br><br>
+  <textarea id="numeros-lote" placeholder="5511999999999&#10;5521988888888&#10;..."></textarea>
+
+  <p style="color:#888; font-size:13px;">Números a usar no rodízio (deixe tudo desmarcado para usar todos os ativos):</p>
+  <div class="checkboxes-numeros" id="checkboxes-numeros"></div>
+
+  <button class="btn-disparar" onclick="dispararLote()">Disparar para todos</button>
+  <div id="resultado-lote" class="resultado-lote"></div>
+</div>
+
+<div class="cartao">
+  <h2>Últimos disparos <button class="btn-toggle" onclick="baixarCsv('positivo')" style="font-size:12px; background:#16a34a;">⬇️ Baixar positivos</button> <button class="btn-toggle" onclick="baixarCsv('negativo')" style="font-size:12px; background:#dc2626;">⬇️ Baixar negativos</button></h2>
+  <select id="filtro-resposta" onchange="carregarHistorico()" style="margin-bottom:12px; padding:6px; border:1px solid #ddd; border-radius:6px; font-family:inherit;">
+    <option value="todos">Todos</option>
+    <option value="positivo">Só positivos</option>
+    <option value="negativo">Só negativos</option>
+    <option value="sem_resposta">Sem resposta ainda</option>
+  </select>
+  <table>
+    <thead>
+      <tr><th>Quando</th><th>Número usado</th><th>Lead</th><th>Telefone</th><th>Status</th><th>Resposta</th></tr>
+    </thead>
+    <tbody id="tabela-historico"></tbody>
+  </table>
+</div>
+
+</main>
+<section id="pagina-configuracoes" hidden aria-labelledby="titulo-configuracoes">
+  <header class="config-cabecalho">
+    <h2 id="titulo-configuracoes">Configurações</h2>
+    <p>Gerencie as integrações e as regras de envio.</p>
+  </header>
+  <div class="config-layout">
+    <nav class="config-menu" aria-label="Categorias de configuração">
+      <a href="#configuracoes-vendeai" data-config="vendeai">Base de campanha<span>Cadastro de leads na VendeAI</span></a>
+      <a href="#configuracoes-sms" data-config="sms">SMS<span>Mensagem, link e fallback</span></a>
+      <a href="#configuracoes-horario" data-config="horario">Horários<span>Dias e horários de envio</span></a>
+    </nav>
+    <div class="config-paineis">
+<section class="cartao config-conteudo" id="config-horario" hidden>
   <h2>⏰ Horário de funcionamento</h2>
   <p style="color:#888; font-size:13px;">No modo "respeita horário", disparos feitos fora da janela configurada (via painel ou API/n8n) são recusados automaticamente.</p>
   <form id="form-horario" onsubmit="salvarHorario(event)">
@@ -138,9 +216,8 @@
     <button type="submit" class="btn-toggle">Salvar configuração</button>
     <span id="horario-salvo" style="color:#16a34a; font-size:13px; display:none;">✅ Salvo</span>
   </form>
-</div>
-
-<div class="cartao">
+</section>
+<section class="cartao config-conteudo" id="config-sms" hidden>
   <h2>📱 SMS de fallback (GTI SMS)</h2>
   <p style="color:#888; font-size:13px;">
     Usado quando não há número de WhatsApp disponível, ou o envio falha.
@@ -189,9 +266,8 @@
     <button type="submit" class="btn-toggle" style="margin-top:12px;">Salvar configuração de SMS</button>
     <span id="sms-salvo" style="color:#16a34a; font-size:13px; display:none;">✅ Salvo</span>
   </form>
-</div>
-
-<div class="cartao">
+</section>
+<section class="cartao config-conteudo" id="config-vendeai" hidden>
   <h2>🤝 Base de campanha VendeAI</h2>
   <p style="color:#888; font-size:13px;">
     Cadastra os dados do lead antes do disparo, para a IA aproveitar no primeiro contato.
@@ -241,36 +317,10 @@
     <button type="submit" class="btn-toggle" style="margin-top:12px;">Salvar configuração da VendeAí</button>
     <span id="vendeai-salvo" style="color:#16a34a; font-size:13px; display:none;">✅ Salvo</span>
   </form>
-</div>
-
-<div class="cartao">
-  <h2>📤 Disparo em lote</h2>
-  <p style="color:#888; font-size:13px;">Cole números ou uma lista JSON de leads com telefone, CPF, nome, nascimento, e-mail, produto e campanha. Também aceita arquivo .txt ou .json.</p>
-  <input type="file" id="arquivo-lote" accept=".txt,.json"><br><br>
-  <textarea id="numeros-lote" placeholder="5511999999999&#10;5521988888888&#10;..."></textarea>
-
-  <p style="color:#888; font-size:13px;">Números a usar no rodízio (deixe tudo desmarcado para usar todos os ativos):</p>
-  <div class="checkboxes-numeros" id="checkboxes-numeros"></div>
-
-  <button class="btn-disparar" onclick="dispararLote()">Disparar para todos</button>
-  <div id="resultado-lote" class="resultado-lote"></div>
-</div>
-
-<div class="cartao">
-  <h2>Últimos disparos <button class="btn-toggle" onclick="baixarCsv('positivo')" style="font-size:12px; background:#16a34a;">⬇️ Baixar positivos</button> <button class="btn-toggle" onclick="baixarCsv('negativo')" style="font-size:12px; background:#dc2626;">⬇️ Baixar negativos</button></h2>
-  <select id="filtro-resposta" onchange="carregarHistorico()" style="margin-bottom:12px; padding:6px; border:1px solid #ddd; border-radius:6px; font-family:inherit;">
-    <option value="todos">Todos</option>
-    <option value="positivo">Só positivos</option>
-    <option value="negativo">Só negativos</option>
-    <option value="sem_resposta">Sem resposta ainda</option>
-  </select>
-  <table>
-    <thead>
-      <tr><th>Quando</th><th>Número usado</th><th>Lead</th><th>Telefone</th><th>Status</th><th>Resposta</th></tr>
-    </thead>
-    <tbody id="tabela-historico"></tbody>
-  </table>
-</div>
+</section>
+    </div>
+  </div>
+</section>
 
 <div class="modal-fundo" id="modal-editar">
   <div class="modal-caixa">
@@ -296,6 +346,28 @@
 </div>
 
 <script>
+function mostrarPagina() {
+  const categoria = location.hash.replace('#configuracoes-', '');
+  const configuracoes = ['vendeai', 'sms', 'horario'].includes(categoria);
+  document.getElementById('pagina-painel').hidden = configuracoes;
+  document.getElementById('pagina-configuracoes').hidden = !configuracoes;
+  for (const id of ['painel', 'configuracoes']) {
+    const link = document.getElementById('nav-' + id);
+    if ((id === 'configuracoes') === configuracoes) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  }
+  document.querySelectorAll('[data-config]').forEach(link => {
+    const ativo = configuracoes && link.dataset.config === categoria;
+    document.getElementById('config-' + link.dataset.config).hidden = !ativo;
+    if (ativo) link.setAttribute('aria-current', 'page');
+    else link.removeAttribute('aria-current');
+  });
+  document.title = configuracoes ? 'Configurações - Painel WhatsApp' : 'Painel de Disparo WhatsApp';
+}
+window.addEventListener('hashchange', mostrarPagina);
+mostrarPagina();
+
+
 let numerosCache = [];
 
 let templatesEncontrados = {};
