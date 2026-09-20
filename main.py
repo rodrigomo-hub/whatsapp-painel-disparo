@@ -6,6 +6,7 @@ import asyncio
 import sqlite3
 import unicodedata
 import requests
+import vendeai_mailing
 from urllib.parse import urlparse, quote
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -58,9 +59,8 @@ ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar", "/api/r
 # ou o envio via Meta falha. Sem esse token configurado, o fallback fica
 # desligado e o comportamento continua identico a hoje (so WhatsApp).
 SMS_GTI_TOKEN = os.environ.get("SMS_GTI_TOKEN", env.get("SMS_GTI_TOKEN", ""))
-# Token de admin da conta VendeAi/Chatwoot - usado pra criar/atualizar
-# contatos automaticamente a cada disparo. Segredo, fica so em env var,
-# igual os outros tokens - nao e editavel pelo painel.
+# Token do CRM usado no cadastro de campanha; o painel permite um override
+# protegido. Nunca devolvemos o valor nos endpoints de configuracao.
 VENDEAI_API_TOKEN = os.environ.get("VENDEAI_API_TOKEN", env.get("VENDEAI_API_TOKEN", ""))
 sessoes_ativas = set()
 
@@ -294,6 +294,7 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN template_idioma TEXT NOT NULL DEFAULT 'pt_BR'")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_wamid ON disparos(wamid)")
+    vendeai_mailing.migrar(conn)
     conn.commit()
     conn.close()
 
@@ -594,72 +595,14 @@ def normalizar_telefone_br(numero: str) -> str:
     return limpo
 
 
-def sincronizar_contato_vendeai(telefone: str, nome: str, cpf: str, info_extra: dict = None):
-    """
-    Cria ou atualiza o contato na VendeAi (Chatwoot) com nome, telefone,
-    cpf e qualquer info_extra, pra evitar que a IA/atendente de la
-    precise perguntar de novo pro lead dados que a gente ja tem.
-
-    Best-effort: nunca levanta excecao pro chamador, so registra evento
-    em caso de falha - isso nunca deve travar o fluxo principal de
-    disparo, ja que e so um "nice to have", nao o core da funcionalidade.
-    """
-    cfg = carregar_configuracao()
-    if not cfg["vendeai_habilitado"] or not VENDEAI_API_TOKEN:
-        return
-
-    base = cfg["vendeai_url"].rstrip("/")
-    account_id = cfg["vendeai_account_id"]
-    inbox_id = cfg["vendeai_inbox_id"]
-    if not base or not account_id:
-        registrar_evento(None, "vendeai_config_incompleta", "vendeai_habilitado esta ligado mas falta vendeai_url ou vendeai_account_id")
-        return
-
-    telefone_limpo = re.sub(r"\D", "", telefone or "")
-    if not telefone_limpo:
-        return
-    telefone_e164 = f"+{telefone_limpo}"
-
-    custom_attributes = {"cpf": cpf} if cpf else {}
-    if info_extra:
-        custom_attributes.update(info_extra)
-
-    headers = {"api_access_token": VENDEAI_API_TOKEN, "Content-Type": "application/json"}
-
-    try:
-        resp_busca = requests.get(
-            f"{base}/api/v1/accounts/{account_id}/contacts/search",
-            headers=headers, params={"q": telefone_e164}, timeout=10,
-        )
-        contatos = resp_busca.json().get("payload", []) if resp_busca.status_code == 200 else []
-
-        if contatos:
-            contato_id = contatos[0]["id"]
-            resp = requests.put(
-                f"{base}/api/v1/accounts/{account_id}/contacts/{contato_id}",
-                headers=headers,
-                json={"name": nome, "custom_attributes": custom_attributes} if nome else {"custom_attributes": custom_attributes},
-                timeout=10,
-            )
-        else:
-            payload = {
-                "name": nome or telefone_e164,
-                "phone_number": telefone_e164,
-                "custom_attributes": custom_attributes,
-            }
-            if inbox_id:
-                payload["inbox_id"] = int(inbox_id) if str(inbox_id).isdigit() else inbox_id
-            resp = requests.post(
-                f"{base}/api/v1/accounts/{account_id}/contacts",
-                headers=headers, json=payload, timeout=10,
-            )
-
-        if resp.status_code not in (200, 201):
-            registrar_evento(None, "vendeai_erro_sincronizar", f"Telefone {telefone_e164}: HTTP {resp.status_code} - {resp.text[:300]}")
-    except requests.RequestException as e:
-        registrar_evento(None, "vendeai_erro_sincronizar", f"Telefone {telefone_e164}: {e}")
-    except Exception as e:
-        registrar_evento(None, "vendeai_erro_sincronizar", f"Telefone {telefone_e164}: erro inesperado {e}")
+def cadastrar_base_vendeai(leads, cfg):
+    resultados = vendeai_mailing.cadastrar(leads, cfg, VENDEAI_API_TOKEN, get_db)
+    if cfg["vendeai_habilitado"]:
+        sucessos = sum(r["status"] == "cadastrado" for r in resultados)
+        motivos = sorted({r["motivo"] for r in resultados if r.get("motivo")})
+        registrar_evento(None, "vendeai_cadastro_base",
+                         f"Aceitos: {sucessos}; falhas: {len(resultados) - sucessos}; motivos: {', '.join(motivos)}")
+    return resultados
 
 
 def normalizar_texto_sms(texto: str) -> str:
@@ -1096,21 +1039,19 @@ async def vendeai_atualizar_atributos_conversa(request: Request):
 @app.post("/disparar")
 async def disparar(request: Request):
     body = await request.json()
-    cpf = body.get("cpf", "")
-    nome_lead = body.get("nome", "")
-    telefone = body.get("whatsapp", "") or body.get("telefone", "")
-    variaveis = body.get("variaveis_template", [])
-    info_extra = body.get("info_extra")
+    cfg = carregar_configuracao()
+    preparado = vendeai_mailing.preparar_lead(body, cfg)
+    lead = preparado["mailing"]
+    cpf = lead.get("cpf", "")
+    nome_lead = lead.get("name", "")
+    telefone = lead["phone"]
+    variaveis = preparado["variaveis_template"]
 
     if not telefone:
         raise HTTPException(400, "Campo 'whatsapp' ou 'telefone' obrigatorio")
 
-    telefone = normalizar_telefone_br(telefone)
-
-    # Sincroniza o contato na VendeAi (se habilitado) - antes mesmo de saber
-    # se o disparo vai dar certo, ja que o objetivo e so ter o dado pronto
-    # pra quando o lead responder. Best-effort, nunca bloqueia o disparo.
-    sincronizar_contato_vendeai(telefone, nome_lead, cpf, info_extra)
+    if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone):
+        raise HTTPException(400, "Telefone brasileiro invalido")
 
     if variaveis and any(not str(v).strip() for v in variaveis):
         indices_vazios = [i for i, v in enumerate(variaveis, start=1) if not str(v).strip()]
@@ -1124,12 +1065,17 @@ async def disparar(request: Request):
     if not permitido:
         return {"status": "erro", "motivo": motivo_horario, "motivo_codigo": "fora_do_horario"}
 
+    cadastro = (await asyncio.to_thread(cadastrar_base_vendeai, [lead], cfg))[0]
+    if vendeai_mailing.bloqueado(cadastro, cfg):
+        return {"status": "pendente", "motivo_codigo": "vendeai_cadastro_falhou",
+                "motivo": "Disparo nao realizado: cadastro na VendeAI nao confirmado", "vendeai": cadastro}
+
     numero = proximo_numero_disponivel(_ultimo_usado["id"])
     if numero is None:
         resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis)
         if resultado_sms is not None:
-            return resultado_sms
-        return {"status": "erro", "motivo": "Nenhum numero disponivel (todos pausados ou limite atingido)"}
+            return {**resultado_sms, "vendeai": cadastro}
+        return {"status": "erro", "motivo": "Nenhum numero disponivel (todos pausados ou limite atingido)", "vendeai": cadastro}
 
     sucesso, erro, wamid = enviar_whatsapp(numero, telefone, variaveis)
     _ultimo_usado["id"] = numero["id"]
@@ -1140,12 +1086,13 @@ async def disparar(request: Request):
     if not sucesso:
         resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis)
         if resultado_sms is not None:
-            return resultado_sms
+            return {**resultado_sms, "vendeai": cadastro}
         return {
             "status": "erro",
             "numero_usado": numero["nome"],
             "canal": "whatsapp",
             "erro": erro,
+            "vendeai": cadastro,
         }
 
     # WhatsApp deu certo. No modo "sempre", manda SMS tambem, alem do
@@ -1161,28 +1108,38 @@ async def disparar(request: Request):
         "canal": "whatsapp",
         "erro": None,
         "sms_extra": sms_extra,
+        "vendeai": cadastro,
     }
 
 
 @app.post("/api/disparo-lote")
 async def disparo_lote(request: Request):
     body = await request.json()
-    numeros_texto = body.get("numeros_texto", "")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Corpo deve ser um objeto")
+    cfg = carregar_configuracao()
+    numeros_texto = vendeai_mailing.texto(body, "numeros_texto")
     numeros_selecionados = body.get("numeros_selecionados", [])
+    if not isinstance(numeros_selecionados, list) or not all(type(n) is int for n in numeros_selecionados):
+        raise HTTPException(400, "numeros_selecionados deve ser lista de IDs inteiros")
+    if "leads" in body and numeros_texto:
+        raise HTTPException(400, "Use leads ou numeros_texto, nao ambos")
+    entradas = body.get("leads") if "leads" in body else [
+        {"telefone": t} for t in re.split(r"[,\n\r; ]+", numeros_texto) if t
+    ]
+    if not isinstance(entradas, list) or not 1 <= len(entradas) <= 20000:
+        raise HTTPException(400, "Envie de 1 a 20000 leads")
 
-    brutos = re.split(r"[,\n\r; ]+", numeros_texto)
     formatados = []
+    preparados = {}
     vistos = set()
-    for b in brutos:
-        limpo = re.sub(r"\D", "", b)
-        if not limpo:
-            continue
-        if not limpo.startswith("55"):
-            limpo = "55" + limpo
-        limpo = normalizar_telefone_br(limpo)
+    for entrada in entradas:
+        preparado = vendeai_mailing.preparar_lead(entrada, cfg)
+        limpo = preparado["mailing"]["phone"]
         if limpo not in vistos:
             vistos.add(limpo)
             formatados.append(limpo)
+            preparados[limpo] = preparado
 
     permitido, motivo_horario = dentro_do_horario_permitido()
     if not permitido:
@@ -1205,22 +1162,39 @@ async def disparo_lote(request: Request):
     if not pool:
         return {"total": len(formatados), "resultados": [], "erro_geral": "Nenhum numero disponivel/selecionado"}
 
+    erros_entrada = {}
+    for telefone in formatados:
+        if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone):
+            erros_entrada[telefone] = "Telefone brasileiro invalido"
+        elif any(not v.strip() for v in preparados[telefone]["variaveis_template"]):
+            erros_entrada[telefone] = "variaveis_template contem valor vazio"
+    validos = [t for t in formatados if t not in erros_entrada]
+    cadastros = dict(zip(validos, await asyncio.to_thread(
+        cadastrar_base_vendeai, [preparados[t]["mailing"] for t in validos], cfg
+    )))
+
     resultados = []
     idx_rr = 0
     for telefone in formatados:
-        # valida tamanho antes de tentar enviar (numero BR: 55 + DDD(2) + numero(8 ou 9) = 12 ou 13 digitos)
-        if len(telefone) < 12 or len(telefone) > 13:
-            resultados.append({"telefone": telefone, "status": "invalido", "motivo": f"Numero com {len(telefone)} digitos - formato invalido, nao foi enviado"})
+        if telefone in erros_entrada:
+            resultados.append({"telefone": telefone, "status": "invalido", "motivo": erros_entrada[telefone]})
+            continue
+        cadastro = cadastros[telefone]
+        if vendeai_mailing.bloqueado(cadastro, cfg):
+            resultados.append({"telefone": telefone, "status": "pendente", "motivo": "Cadastro VendeAI nao confirmado",
+                               "motivo_codigo": "vendeai_cadastro_falhou", "vendeai": cadastro})
             continue
 
+        preparado = preparados[telefone]
+        lead = preparado["mailing"]
         enviado = False
         for _ in range(len(pool)):
             candidato = pool[idx_rr % len(pool)]
             idx_rr += 1
             if disponivel_agora(candidato):
-                sucesso, erro, wamid = enviar_whatsapp(candidato, telefone, [])
-                registrar_disparo(candidato["id"], "", "Disparo em lote", telefone, "sucesso" if sucesso else "erro", erro, wamid)
-                resultados.append({"telefone": telefone, "status": "sucesso" if sucesso else "erro", "numero_usado": candidato["nome"]})
+                sucesso, erro, wamid = enviar_whatsapp(candidato, telefone, preparado["variaveis_template"])
+                registrar_disparo(candidato["id"], lead.get("cpf", ""), lead.get("name", "Disparo em lote"), telefone, "sucesso" if sucesso else "erro", erro, wamid)
+                resultados.append({"telefone": telefone, "status": "sucesso" if sucesso else "erro", "numero_usado": candidato["nome"], "vendeai": cadastro, "erro": erro})
                 enviado = True
 
                 # atualiza o candidato (que fica em memoria durante todo o lote) com
@@ -1232,7 +1206,7 @@ async def disparo_lote(request: Request):
                     candidato["ativo"] = 0
                 break
         if not enviado:
-            resultados.append({"telefone": telefone, "status": "pendente", "motivo": "Sem numero disponivel no momento"})
+            resultados.append({"telefone": telefone, "status": "pendente", "motivo": "Sem numero disponivel no momento", "vendeai": cadastro})
 
     return {"total": len(formatados), "resultados": resultados}
 
@@ -1454,12 +1428,40 @@ def pagina_estatisticas(request: Request):
 
 @app.get("/api/configuracao")
 def obter_configuracao():
-    return carregar_configuracao()
+    cfg = carregar_configuracao()
+    token_painel = cfg.pop("vendeai_mailing_token", "")
+    cfg["vendeai_token_configurado"] = bool(token_painel or VENDEAI_API_TOKEN)
+    cfg["vendeai_token_origem"] = "painel" if token_painel else ("ambiente" if VENDEAI_API_TOKEN else "ausente")
+    return cfg
 
 
 @app.patch("/api/configuracao")
 async def atualizar_configuracao(request: Request):
     body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Corpo deve ser um objeto")
+    for campo in (*vendeai_mailing.CONFIG_COLUMNS, "vendeai_account_id"):
+        if campo in body:
+            if not isinstance(body[campo], str):
+                raise HTTPException(400, f"{campo} deve ser texto")
+            body[campo] = body[campo].strip()
+    if "vendeai_mailing_token" in body and not body["vendeai_mailing_token"]:
+        # Campo vazio no formulario preserva segredo existente.
+        del body["vendeai_mailing_token"]
+    if body.get("vendeai_remover_token") is True:
+        body["vendeai_mailing_token"] = ""
+    if "vendeai_mailing_url" in body:
+        url = urlparse(body["vendeai_mailing_url"])
+        if (url.scheme != "https" or not url.hostname or url.username or url.password
+                or url.query or url.fragment or url.path not in ("", "/")):
+            raise HTTPException(400, "vendeai_mailing_url deve ser uma URL base HTTPS, sem caminho ou credenciais")
+    if "vendeai_falha_modo" in body and body["vendeai_falha_modo"] not in ("bloquear", "continuar"):
+        raise HTTPException(400, "vendeai_falha_modo deve ser bloquear ou continuar")
+    if "vendeai_habilitado" in body and type(body["vendeai_habilitado"]) is not bool:
+        raise HTTPException(400, "vendeai_habilitado deve ser booleano")
+    prevista = {**carregar_configuracao(), **body}
+    if prevista["vendeai_habilitado"] and (not prevista["vendeai_account_id"] or not (prevista["vendeai_mailing_token"] or VENDEAI_API_TOKEN)):
+        raise HTTPException(400, "Informe Account ID e token do CRM antes de habilitar a VendeAI")
 
     if "modo" in body and body["modo"] not in ("automatico", "horario"):
         raise HTTPException(400, "modo deve ser 'automatico' ou 'horario'")
@@ -1497,6 +1499,7 @@ async def atualizar_configuracao(request: Request):
         "sms_habilitado", "sms_modo", "sms_template", "whatsapp_destino",
         "whatsapp_mensagem_template", "link_base_url",
         "vendeai_habilitado", "vendeai_url", "vendeai_account_id", "vendeai_inbox_id",
+        *vendeai_mailing.CONFIG_COLUMNS,
     }
     atualizacoes = {k: v for k, v in body.items() if k in campos_validos}
     if not atualizacoes:
@@ -1508,8 +1511,8 @@ async def atualizar_configuracao(request: Request):
     conn.commit()
     conn.close()
 
-    registrar_evento(None, "configuracao_atualizada", f"Configuracao de horario atualizada: {atualizacoes}")
-    return carregar_configuracao()
+    registrar_evento(None, "configuracao_atualizada", f"Campos atualizados: {', '.join(sorted(atualizacoes))}")
+    return obter_configuracao()
 
 
 @app.get("/api/sms/saldo")

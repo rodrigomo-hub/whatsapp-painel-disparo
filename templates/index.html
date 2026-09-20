@@ -27,6 +27,13 @@
   .btn-disparar { background: #25d366; color: white; padding: 10px 20px; font-size: 14px; }
   input, textarea { padding: 8px; border: 1px solid #ddd; border-radius: 6px; margin-right: 8px; font-family: inherit; }
   form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 15px; }
+  #form-vendeai { display: block; max-width: 960px; }
+  #form-vendeai input:not([type="checkbox"]), #form-vendeai select { box-sizing: border-box; margin-right: 0; }
+  #form-vendeai select { padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; }
+  #form-vendeai label[for] { display: block; font-size: 13px; margin-bottom: 4px; }
+  #form-vendeai small { display: block; margin: 6px 0; color: #666; }
+  #form-vendeai > div > div { min-width: 0; }
+  @media (max-width: 640px) { #form-vendeai > div { flex-direction: column; } }
   .status-sucesso { color: #16a34a; }
   .status-erro { color: #dc2626; }
   .status-pendente { color: #eab308; }
@@ -185,31 +192,51 @@
 </div>
 
 <div class="cartao">
-  <h2>🤝 CRM VendeAí (Chatwoot)</h2>
+  <h2>🤝 Base de campanha VendeAI</h2>
   <p style="color:#888; font-size:13px;">
-    Cria/atualiza automaticamente o contato na VendeAí a cada disparo (nome, telefone, CPF),
-    pra IA/atendente de lá não precisar perguntar de novo pro lead.
+    Cadastra os dados do lead antes do disparo, para a IA aproveitar no primeiro contato.
+    O cadastro vale por 7 dias; um novo envio renova esse prazo. Não há renovação automática.
   </p>
   <form id="form-vendeai" onsubmit="salvarVendeai(event)">
     <label style="font-size:13px;">
-      <input type="checkbox" id="vendeai-habilitado"> Sincronização com VendeAí habilitada
+      <input type="checkbox" id="vendeai-habilitado"> Cadastrar leads antes dos disparos
     </label>
 
     <div style="margin-top:12px;">
-      <label style="font-size:13px; display:block; margin-bottom:4px;">URL base da VendeAí</label>
-      <input type="text" id="vendeai-url" placeholder="https://crm.vendeaitecnologia.com.br" style="width:100%;">
+      <label for="vendeai-url" style="font-size:13px; display:block; margin-bottom:4px;">URL base da API de campanhas</label>
+      <input type="url" id="vendeai-url" required placeholder="https://ia.vendeaitecnologia.com.br" style="width:100%;">
     </div>
 
     <div style="display:flex; gap:12px; margin-top:12px;">
       <div style="flex:1;">
-        <label style="font-size:13px; display:block; margin-bottom:4px;">Account ID</label>
-        <input type="text" id="vendeai-account-id" placeholder="1" style="width:100%;">
+        <label for="vendeai-account-id" style="font-size:13px; display:block; margin-bottom:4px;">Account ID</label>
+        <input type="text" id="vendeai-account-id" placeholder="33393" style="width:100%;">
       </div>
       <div style="flex:1;">
-        <label style="font-size:13px; display:block; margin-bottom:4px;">Inbox ID (usado só ao criar contato novo)</label>
-        <input type="text" id="vendeai-inbox-id" placeholder="5" style="width:100%;">
+        <label for="vendeai-token" style="font-size:13px; display:block; margin-bottom:4px;">Token de API do CRM</label>
+        <input type="password" id="vendeai-token" autocomplete="new-password" placeholder="Vazio mantém o token atual" style="width:100%;">
+        <small id="vendeai-token-status"></small>
+        <label style="display:block; font-size:12px;"><input type="checkbox" id="vendeai-remover-token"> Remover token do painel e usar o do servidor, se existir</label>
       </div>
     </div>
+
+    <div style="display:flex; gap:12px; margin-top:12px;">
+      <div style="flex:1;">
+        <label for="vendeai-produto">Produto padrão</label>
+        <input id="vendeai-produto" type="text" placeholder="clt ou fgts" style="width:100%;">
+      </div>
+      <div style="flex:1;">
+        <label for="vendeai-campanha">Campanha padrão (opcional)</label>
+        <input id="vendeai-campanha" type="text" placeholder="Nome da campanha" style="width:100%;">
+      </div>
+    </div>
+    <p style="font-size:12px; color:#666;">Produto e campanha enviados em cada lead substituem os padrões acima.</p>
+    <label for="vendeai-falha">Se o cadastro falhar ou atingir o limite</label>
+    <select id="vendeai-falha" style="width:100%;">
+      <option value="bloquear">Não disparar; retornar pendente para nova tentativa (recomendado)</option>
+      <option value="continuar">Disparar mesmo sem confirmar o cadastro na VendeAI</option>
+    </select>
+    <p style="font-size:12px; color:#666;">Limites: 10 chamadas por minuto e 1.440 por dia, por conta. Use lotes para maiores volumes. Pendentes não são reenviados automaticamente.</p>
 
     <button type="submit" class="btn-toggle" style="margin-top:12px;">Salvar configuração da VendeAí</button>
     <span id="vendeai-salvo" style="color:#16a34a; font-size:13px; display:none;">✅ Salvo</span>
@@ -218,8 +245,8 @@
 
 <div class="cartao">
   <h2>📤 Disparo em lote</h2>
-  <p style="color:#888; font-size:13px;">Cole os números (um por linha, ou separados por vírgula) ou escolha um arquivo .txt</p>
-  <input type="file" id="arquivo-lote" accept=".txt,.csv"><br><br>
+  <p style="color:#888; font-size:13px;">Cole números ou uma lista JSON de leads com telefone, CPF, nome, nascimento, e-mail, produto e campanha. Também aceita arquivo .txt ou .json.</p>
+  <input type="file" id="arquivo-lote" accept=".txt,.json"><br><br>
   <textarea id="numeros-lote" placeholder="5511999999999&#10;5521988888888&#10;..."></textarea>
 
   <p style="color:#888; font-size:13px;">Números a usar no rodízio (deixe tudo desmarcado para usar todos os ativos):</p>
@@ -550,9 +577,14 @@ async function carregarVendeai() {
   const res = await fetch('/api/configuracao');
   const cfg = await res.json();
   document.getElementById('vendeai-habilitado').checked = cfg.vendeai_habilitado;
-  document.getElementById('vendeai-url').value = cfg.vendeai_url;
+  document.getElementById('vendeai-url').value = cfg.vendeai_mailing_url;
   document.getElementById('vendeai-account-id').value = cfg.vendeai_account_id;
-  document.getElementById('vendeai-inbox-id').value = cfg.vendeai_inbox_id;
+  document.getElementById('vendeai-produto').value = cfg.vendeai_produto_padrao;
+  document.getElementById('vendeai-campanha').value = cfg.vendeai_campanha_padrao;
+  document.getElementById('vendeai-falha').value = cfg.vendeai_falha_modo;
+  document.getElementById('vendeai-token').value = '';
+  document.getElementById('vendeai-remover-token').checked = false;
+  document.getElementById('vendeai-token-status').textContent = cfg.vendeai_token_configurado ? `Token configurado (${cfg.vendeai_token_origem})` : 'Token não configurado';
 }
 
 async function salvarVendeai(ev) {
@@ -563,14 +595,19 @@ async function salvarVendeai(ev) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       vendeai_habilitado: document.getElementById('vendeai-habilitado').checked,
-      vendeai_url: document.getElementById('vendeai-url').value,
+      vendeai_mailing_url: document.getElementById('vendeai-url').value,
       vendeai_account_id: document.getElementById('vendeai-account-id').value,
-      vendeai_inbox_id: document.getElementById('vendeai-inbox-id').value,
+      vendeai_mailing_token: document.getElementById('vendeai-token').value,
+      vendeai_remover_token: document.getElementById('vendeai-remover-token').checked,
+      vendeai_produto_padrao: document.getElementById('vendeai-produto').value,
+      vendeai_campanha_padrao: document.getElementById('vendeai-campanha').value,
+      vendeai_falha_modo: document.getElementById('vendeai-falha').value,
     })
   });
 
   if (res.ok) {
     const aviso = document.getElementById('vendeai-salvo');
+    await carregarVendeai();
     aviso.style.display = 'inline';
     setTimeout(() => { aviso.style.display = 'none'; }, 2000);
   } else {
@@ -749,23 +786,38 @@ async function dispararLote() {
   if (!texto.trim()) { alert('Cole ou suba uma lista de números primeiro'); return; }
 
   const selecionados = Array.from(document.querySelectorAll('.chk-numero-lote:checked')).map(el => parseInt(el.value));
+  let entrada = {numeros_texto: texto, numeros_selecionados: selecionados};
+  if (texto.trim().startsWith('[') || texto.trim().startsWith('{')) {
+    try {
+      const json = JSON.parse(texto);
+      const leads = Array.isArray(json) ? json : json.leads;
+      if (!Array.isArray(leads)) throw new Error('Informe uma lista de leads');
+      entrada = {leads, numeros_selecionados: selecionados};
+    } catch (e) { alert('JSON inválido: ' + e.message); return; }
+  }
 
   document.getElementById('resultado-lote').innerHTML = 'Disparando... aguarde';
 
   const res = await fetch('/api/disparo-lote', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({numeros_texto: texto, numeros_selecionados: selecionados})
+    body: JSON.stringify(entrada)
   });
   const dados = await res.json();
-
-  let html = `<p><strong>Total processado: ${dados.total}</strong></p><ul>`;
+  const resultado = document.getElementById('resultado-lote');
+  resultado.replaceChildren();
+  const resumo = document.createElement('p');
+  resumo.textContent = !res.ok ? (dados.detail || 'Erro ao processar lote') : (dados.erro_geral || `Total processado: ${dados.total}`);
+  resultado.appendChild(resumo);
+  const lista = document.createElement('ul');
   (dados.resultados || []).forEach(r => {
     const cor = r.status === 'sucesso' ? 'status-sucesso' : (r.status === 'erro' || r.status === 'invalido' ? 'status-erro' : 'status-pendente');
-    html += `<li class="${cor}">${r.telefone} - ${r.status} ${r.numero_usado ? '(' + r.numero_usado + ')' : ''} ${r.motivo || ''}</li>`;
+    const item = document.createElement('li');
+    item.className = cor;
+    item.textContent = `${r.telefone} - ${r.status} ${r.numero_usado ? '(' + r.numero_usado + ')' : ''} ${r.motivo || ''}${r.vendeai ? ' | VendeAI: ' + r.vendeai.status + (r.vendeai.motivo ? ' (' + r.vendeai.motivo + ')' : '') : ''}`;
+    lista.appendChild(item);
   });
-  html += '</ul>';
-  document.getElementById('resultado-lote').innerHTML = html;
+  resultado.appendChild(lista);
 
   carregarNumeros();
   carregarHistorico();
