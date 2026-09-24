@@ -596,7 +596,7 @@ def normalizar_telefone_br(numero: str) -> str:
 
 
 def cadastrar_base_vendeai(leads, cfg):
-    resultados = vendeai_mailing.cadastrar(leads, cfg, VENDEAI_API_TOKEN, get_db)
+    resultados = vendeai_mailing.cadastrar(leads, cfg, VENDEAI_API_TOKEN)
     if cfg["vendeai_habilitado"]:
         sucessos = sum(r["status"] == "cadastrado" for r in resultados)
         motivos = sorted({r["motivo"] for r in resultados if r.get("motivo")})

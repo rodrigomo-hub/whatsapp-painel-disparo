@@ -1,6 +1,5 @@
 import tempfile
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -199,22 +198,17 @@ class MailingTests(unittest.TestCase):
         self.api.assert_not_called()
         self.whatsapp.assert_not_called()
 
-    def test_limites_concorrentes_e_persistentes(self):
-        with ThreadPoolExecutor(max_workers=12) as executor:
-            resultados = list(executor.map(lambda _: mailing.reservar_chamada(main.get_db, "conta"), range(12)))
-        self.assertEqual(resultados.count(0), 10)
-        self.assertGreater(mailing.reservar_chamada(main.get_db, "conta"), 0)
-        self.assertEqual(mailing.reservar_chamada(main.get_db, "outra"), 0)
+    def test_contagem_legada_esgotada_nao_impede_cadastro_individual_ou_lote(self):
+        import time
         with test_db() as conn:
-            conn.executemany("INSERT INTO vendeai_chamadas VALUES (?, ?)", [("dia", mailing.time.time() - 120)] * 1440)
-        self.assertGreater(mailing.reservar_chamada(main.get_db, "dia"), 86000)
-
-    def test_limite_local_nao_chama_servico(self):
-        with patch.object(mailing, "reservar_chamada", return_value=42):
-            res = self.client.post("/disparar", json=self.lead).json()
-        self.assertEqual(res["vendeai"]["tentar_apos_segundos"], 42)
-        self.api.assert_not_called()
-        self.whatsapp.assert_not_called()
+            conn.executemany("INSERT INTO vendeai_chamadas VALUES (?, ?)", [("33393", time.time())] * 1440)
+        individual = self.client.post("/disparar", json=self.lead).json()
+        self.assertEqual(individual["vendeai"]["status"], "cadastrado")
+        self.assertEqual(individual["status"], "sucesso")
+        lote = self.client.post("/api/disparo-lote", json={"leads": [self.lead]}).json()
+        self.assertEqual(lote["resultados"][0]["vendeai"]["status"], "cadastrado")
+        self.assertEqual(self.api.call_count, 2)
+        self.assertEqual(self.whatsapp.call_count, 2)
 
     def test_configuracao_token_protegido_e_preservado(self):
         res = self.client.patch("/api/configuracao", json={"vendeai_mailing_token": "novo-segredo", "vendeai_campanha_padrao": "campanha"})

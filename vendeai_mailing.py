@@ -1,7 +1,6 @@
 """Cadastro de campanha documentado pela VendeAI; sem efeitos de envio de mensagens."""
 import re
 import secrets
-import time
 import unicodedata
 from datetime import datetime
 
@@ -25,7 +24,7 @@ def migrar(conn):
     for nome, tipo in CONFIG_COLUMNS.items():
         if nome not in existentes:
             conn.execute(f"ALTER TABLE configuracao ADD COLUMN {nome} {tipo}")
-    # Compartilhado por processos e mantido entre reinicios. Nunca armazena leads/token.
+    # Tabela legada preservada por compatibilidade; nao controla nem bloqueia chamadas.
     conn.execute("CREATE TABLE IF NOT EXISTS vendeai_chamadas (account_id TEXT NOT NULL, instante REAL NOT NULL)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vendeai_chamadas ON vendeai_chamadas(account_id, instante)")
 
@@ -86,30 +85,7 @@ def preparar_lead(body, cfg):
     return {"mailing": lead, "variaveis_template": variaveis}
 
 
-def reservar_chamada(get_db, account_id):
-    agora = time.time()
-    conn = get_db()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM vendeai_chamadas WHERE instante <= ?", (agora - 86400,))
-        chamadas = [r[0] for r in conn.execute(
-            "SELECT instante FROM vendeai_chamadas WHERE account_id = ? ORDER BY instante", (account_id,)
-        )]
-        recentes = [t for t in chamadas if t > agora - 60]
-        espera = 0
-        if len(chamadas) >= 1440:
-            espera = max(espera, chamadas[-1440] + 86400 - agora)
-        if len(recentes) >= 10:
-            espera = max(espera, recentes[-10] + 60 - agora)
-        if not espera:
-            conn.execute("INSERT INTO vendeai_chamadas VALUES (?, ?)", (account_id, agora))
-        conn.commit()
-        return int(espera) + 1 if espera else 0
-    finally:
-        conn.close()
-
-
-def cadastrar(leads, cfg, token_env, get_db):
+def cadastrar(leads, cfg, token_env):
     """Resultado por indice. Somente confirma itens explicitamente aceitos pela API."""
     def todos(status, motivo=None, **extras):
         return [{"status": status, **({"motivo": motivo} if motivo else {}), **extras} for _ in leads]
@@ -124,9 +100,7 @@ def cadastrar(leads, cfg, token_env, get_db):
     account = cfg["vendeai_account_id"]
     if not token or not account:
         return todos("erro", "CONFIGURACAO_INCOMPLETA")
-    espera = reservar_chamada(get_db, account)
-    if espera:
-        return todos("erro", "LIMITE_LOCAL", tentar_apos_segundos=espera)
+    # A cota e decidida pela VendeAI. Nao recusar chamadas por contagem local.
     try:
         resposta = requests.post(
             cfg["vendeai_mailing_url"].rstrip("/") + MAILING_PATH,

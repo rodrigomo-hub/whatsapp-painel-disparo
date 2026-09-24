@@ -87,7 +87,8 @@ Se ocorrer falha no modo padrão, nenhuma mensagem WhatsApp/SMS será enviada:
   "motivo": "Disparo nao realizado: cadastro na VendeAI nao confirmado",
   "vendeai": {
     "status": "erro",
-    "motivo": "LIMITE_LOCAL",
+    "motivo": "HTTP_429",
+    "http_status": 429,
     "tentar_apos_segundos": 42
   }
 }
@@ -124,8 +125,9 @@ o fallback SMS continua pertencendo ao endpoint individual.
 
 ## Limites e validade
 
-- 10 chamadas/minuto e 1.440 chamadas/dia por conta. O controle local usa SQLite,
-  reserva atômica e janelas móveis de 60 segundos/24 horas; persiste entre reinícios.
+- A VendeAI documenta 10 chamadas/minuto e 1.440 chamadas/dia por conta. O painel
+  não aplica cota local: tenta o cadastro na API, mesmo quando a contagem histórica
+  local excede esses valores. Somente a VendeAI determina se sua cota foi atingida.
 - Outras aplicações na mesma conta também consomem o limite da VendeAI. HTTP 429
   retorna uma indicação de espera, sem retry automático dentro do disparo.
 - Timeout, HTTP 403/429/5xx ou resposta inconsistente nunca são tratados como cadastro confirmado.
