@@ -7,11 +7,13 @@ import sqlite3
 import unicodedata
 import requests
 import vendeai_mailing
+import fila_disparos
 from urllib.parse import urlparse, quote
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import secrets
+from contextlib import closing
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, PlainTextResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -105,7 +107,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Chamadas automatizadas (n8n etc): aceita X-API-Key valida nas
         # rotas de disparo, sem precisar de login/cookie.
-        if request.url.path in ROTAS_API_KEY and API_KEY:
+        if (request.url.path in ROTAS_API_KEY or (request.method == "GET" and re.fullmatch(r"/api/fila/[0-9a-f]{32}", request.url.path))) and API_KEY:
             chave_recebida = request.headers.get("X-API-Key", "")
             if secrets.compare_digest(chave_recebida, API_KEY):
                 return await call_next(request)
@@ -295,6 +297,7 @@ def init_db():
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_wamid ON disparos(wamid)")
     vendeai_mailing.migrar(conn)
+    fila_disparos.migrar(conn)
     conn.commit()
     conn.close()
 
@@ -346,6 +349,7 @@ def carregar_configuracao() -> dict:
     cfg["dias_semana"] = [int(d) for d in cfg["dias_semana"].split(",") if d]
     cfg["sms_habilitado"] = bool(cfg["sms_habilitado"])
     cfg["vendeai_habilitado"] = bool(cfg["vendeai_habilitado"])
+    cfg["fila_habilitada"] = bool(cfg["fila_habilitada"])
     return cfg
 
 
@@ -858,6 +862,8 @@ async def loop_verificar_qualidade():
 async def startup():
     init_db()
     asyncio.create_task(loop_verificar_qualidade())
+    app.state.fila_parar = False
+    app.state.fila_task = asyncio.create_task(loop_fila())
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -1061,6 +1067,11 @@ async def disparar(request: Request):
             "motivo_codigo": "variavel_vazia",
         }
 
+    if cfg["vendeai_habilitado"] and cfg["fila_habilitada"]:
+        chave = request.headers.get("Idempotency-Key") or body.get("idempotency_key")
+        item = obter_fila().enfileirar([(preparado, body, "individual", [], chave)], cfg)[0]
+        return JSONResponse(item, status_code=202 if item["status"] == "enfileirado" else 200)
+
     permitido, motivo_horario = dentro_do_horario_permitido()
     if not permitido:
         return {"status": "erro", "motivo": motivo_horario, "motivo_codigo": "fora_do_horario"}
@@ -1070,12 +1081,28 @@ async def disparar(request: Request):
         return {"status": "pendente", "motivo_codigo": "vendeai_cadastro_falhou",
                 "motivo": "Disparo nao realizado: cadastro na VendeAI nao confirmado", "vendeai": cadastro}
 
-    numero = proximo_numero_disponivel(_ultimo_usado["id"])
+    return executar_disparo_preparado(preparado, cadastro)
+
+
+def executar_disparo_preparado(preparado, cadastro, origem="individual", numeros=None):
+    lead = preparado["mailing"]
+    telefone = lead["phone"]
+    cpf = lead.get("cpf", "")
+    nome_lead = lead.get("name", "")
+    variaveis = preparado["variaveis_template"]
+    permitido, motivo = dentro_do_horario_permitido()
+    if not permitido:
+        return {"status": "pendente", "motivo_codigo": "fora_do_horario", "motivo": motivo, "vendeai": cadastro}
+    pool = None
+    if numeros:
+        with closing(get_db()) as conn:
+            pool = conn.execute(f"SELECT * FROM numeros WHERE id IN ({','.join('?' for _ in numeros)}) AND ativo=1", numeros).fetchall()
+    numero = proximo_numero_disponivel(_ultimo_usado["id"], pool=pool)
     if numero is None:
-        resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis)
+        resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis) if origem != "lote" else None
         if resultado_sms is not None:
             return {**resultado_sms, "vendeai": cadastro}
-        return {"status": "erro", "motivo": "Nenhum numero disponivel (todos pausados ou limite atingido)", "vendeai": cadastro}
+        return {"status": "erro", "motivo": "Nenhum numero disponivel (todos pausados ou limite atingido)", "motivo_codigo": "nenhum_numero_disponivel", "vendeai": cadastro}
 
     sucesso, erro, wamid = enviar_whatsapp(numero, telefone, variaveis)
     _ultimo_usado["id"] = numero["id"]
@@ -1084,7 +1111,7 @@ async def disparar(request: Request):
     verificar_qualidade_pos_envio(numero)
 
     if not sucesso:
-        resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis)
+        resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis) if origem != "lote" else None
         if resultado_sms is not None:
             return {**resultado_sms, "vendeai": cadastro}
         return {
@@ -1099,7 +1126,7 @@ async def disparar(request: Request):
     # WhatsApp (custa mais - e uma escolha explicita de quem configurou).
     cfg = carregar_configuracao()
     sms_extra = None
-    if cfg["sms_habilitado"] and cfg["sms_modo"] == "sempre":
+    if origem != "lote" and cfg["sms_habilitado"] and cfg["sms_modo"] == "sempre":
         sms_extra = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis)
 
     return {
@@ -1132,6 +1159,7 @@ async def disparo_lote(request: Request):
 
     formatados = []
     preparados = {}
+    originais = {}
     vistos = set()
     for entrada in entradas:
         preparado = vendeai_mailing.preparar_lead(entrada, cfg)
@@ -1140,6 +1168,18 @@ async def disparo_lote(request: Request):
             vistos.add(limpo)
             formatados.append(limpo)
             preparados[limpo] = preparado
+            originais[limpo] = entrada
+
+    if cfg["vendeai_habilitado"] and cfg["fila_habilitada"]:
+        itens, invalidos = [], []
+        for telefone in formatados:
+            preparado = preparados[telefone]
+            if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone) or any(not v.strip() for v in preparado["variaveis_template"]):
+                invalidos.append({"telefone": telefone, "status": "invalido", "motivo": "Telefone ou variaveis invalidos"})
+            else:
+                itens.append((preparado, originais[telefone], "lote", numeros_selecionados, originais[telefone].get("idempotency_key")))
+        resultados = obter_fila().enfileirar(itens, cfg) if itens else []
+        return JSONResponse({"total": len(formatados), "resultados": resultados + invalidos}, status_code=202)
 
     permitido, motivo_horario = dentro_do_horario_permitido()
     if not permitido:
@@ -1440,6 +1480,16 @@ async def atualizar_configuracao(request: Request):
     body = await request.json()
     if not isinstance(body, dict):
         raise HTTPException(400, "Corpo deve ser um objeto")
+    if "fila_habilitada" in body and type(body["fila_habilitada"]) is not bool:
+        raise HTTPException(400, "fila_habilitada deve ser booleano")
+    if "fila_intervalo_segundos" in body and (type(body["fila_intervalo_segundos"]) is not int or not 60 <= body["fila_intervalo_segundos"] <= 3600):
+        raise HTTPException(400, "fila_intervalo_segundos deve estar entre 60 e 3600")
+    atual = carregar_configuracao()
+    if any(k in body and body[k].strip() != str(atual[k]).strip() for k in ("vendeai_account_id", "vendeai_mailing_url") if isinstance(body.get(k), str)):
+        with closing(get_db()) as conn:
+            pendentes = conn.execute("SELECT COUNT(*) FROM fila_disparos WHERE status IN ('aguardando_cadastro','cadastrando','pronto','enviando')").fetchone()[0]
+        if pendentes:
+            raise HTTPException(409, "Conclua ou cancele os itens pendentes antes de trocar a conta/URL da VendeAI")
     for campo in (*vendeai_mailing.CONFIG_COLUMNS, "vendeai_account_id"):
         if campo in body:
             if not isinstance(body[campo], str):
@@ -1499,7 +1549,7 @@ async def atualizar_configuracao(request: Request):
         "sms_habilitado", "sms_modo", "sms_template", "whatsapp_destino",
         "whatsapp_mensagem_template", "link_base_url",
         "vendeai_habilitado", "vendeai_url", "vendeai_account_id", "vendeai_inbox_id",
-        *vendeai_mailing.CONFIG_COLUMNS,
+        *vendeai_mailing.CONFIG_COLUMNS, *fila_disparos.CONFIG_COLUMNS,
     }
     atualizacoes = {k: v for k, v in body.items() if k in campos_validos}
     if not atualizacoes:
@@ -1754,3 +1804,44 @@ def eventos(limit: int = 50):
 @app.get("/", response_class=HTMLResponse)
 def painel(request: Request):
     return templates.TemplateResponse(request, "index.html", {})
+
+
+def obter_fila():
+    return fila_disparos.Fila(get_db, DB_FILE)
+
+
+async def loop_fila():
+    while not app.state.fila_parar:
+        try:
+            await asyncio.to_thread(obter_fila().processar, carregar_configuracao,
+                                    cadastrar_base_vendeai, executar_disparo_preparado,
+                                    dentro_do_horario_permitido, lambda: app.state.fila_parar)
+        except Exception as erro:
+            registrar_evento(None, "fila_worker_erro", type(erro).__name__)
+        await asyncio.sleep(2)
+
+
+@app.on_event("shutdown")
+async def parar_fila():
+    app.state.fila_parar = True
+    task = getattr(app.state, "fila_task", None)
+    if task:
+        await task
+
+
+@app.get("/api/fila")
+def listar_fila(limit: int = 50):
+    cfg = carregar_configuracao()
+    return {**obter_fila().resumo(limit), "habilitada": cfg["fila_habilitada"],
+            "integracao_habilitada": cfg["vendeai_habilitado"], "intervalo_segundos": cfg["fila_intervalo_segundos"],
+            "horario_permitido": dentro_do_horario_permitido()[0]}
+
+
+@app.get("/api/fila/{identificador}")
+def consultar_fila(identificador: str):
+    return obter_fila().consultar(identificador)
+
+
+@app.post("/api/fila/{identificador}/cancelar")
+def cancelar_fila(identificador: str):
+    return obter_fila().cancelar(identificador)

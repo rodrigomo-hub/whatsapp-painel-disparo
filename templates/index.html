@@ -158,6 +158,17 @@
   </form>
 </div>
 
+<div class="cartao" id="cartao-fila">
+  <h2>Fila de disparos</h2>
+  <p id="fila-resumo" style="color:#475569; font-size:14px;">Carregando fila...</p>
+  <p id="fila-proxima" style="font-size:13px;"></p>
+  <p style="font-size:13px;"><a href="#configuracoes-vendeai">Configurar agrupamento</a> · O envio só acontece após confirmar o cadastro na VendeAI.</p>
+  <div style="overflow-x:auto; max-height:380px;">
+    <table><thead><tr><th>Recebido</th><th>Lead</th><th>Telefone</th><th>Etapa</th><th>Detalhe</th><th>Ação</th></tr></thead>
+    <tbody id="tabela-fila"></tbody></table>
+  </div>
+</div>
+
 <div class="cartao">
   <h2>📤 Disparo em lote</h2>
   <p style="color:#888; font-size:13px;">Cole números ou uma lista JSON de leads com telefone, CPF, nome, nascimento, e-mail, produto e campanha. Também aceita arquivo .txt ou .json.</p>
@@ -271,7 +282,7 @@
   <h2>🤝 Base de campanha VendeAI</h2>
   <p style="color:#888; font-size:13px;">
     Cadastra os dados do lead antes do disparo, para a IA aproveitar no primeiro contato.
-    O cadastro vale por 7 dias; um novo envio renova esse prazo. Não há renovação automática.
+    O cadastro vale por 7 dias. Na fila, se expirar antes do disparo, o cadastro será renovado antes de enviar.
     Se o lead vier sem e-mail, será usado o primeiro nome + 5 dígitos aleatórios + @gmail.com apenas para cadastro; isso não cria uma conta de e-mail.
   </p>
   <form id="form-vendeai" onsubmit="salvarVendeai(event)">
@@ -308,12 +319,19 @@
       </div>
     </div>
     <p style="font-size:12px; color:#666;">Produto e campanha enviados em cada lead substituem os padrões acima.</p>
-    <label for="vendeai-falha">Se o cadastro falhar ou atingir o limite</label>
+    <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:16px; margin:16px 0;">
+      <label><input type="checkbox" id="fila-habilitada"> Agrupar novas entradas em uma fila automática</label>
+      <label for="fila-intervalo" style="margin-top:12px;">Intervalo entre rodadas (minutos)</label>
+      <input type="number" id="fila-intervalo" min="1" max="60" step="1" required style="width:100px;">
+      <p style="font-size:13px; margin-bottom:0;">Recomendado: 5 minutos. Cada rodada cadastra até 20.000 leads em uma chamada e libera os envios confirmados. Em caso de limite da VendeAI, aguarda o prazo informado e mantém os leads salvos.</p>
+      <p style="font-size:12px; color:#475569;">O n8n recebe “enfileirado” com um ID, não uma confirmação de envio. A fila respeita horários e disponibilidade dos números. Desativar esta opção afeta novas entradas; itens já recebidos continuam. Desabilitar a integração pausa a fila.</p>
+    </div>
+    <label for="vendeai-falha">Sem fila: se o cadastro falhar ou atingir o limite</label>
     <select id="vendeai-falha" style="width:100%;">
       <option value="bloquear">Não disparar; retornar pendente para nova tentativa (recomendado)</option>
       <option value="continuar">Disparar mesmo sem confirmar o cadastro na VendeAI</option>
     </select>
-    <p style="font-size:12px; color:#666;">Limites informados pela VendeAI: 10 chamadas por minuto e 1.440 por dia, por conta. O painel não bloqueia por contagem local. Use lotes para maiores volumes. Pendentes não são reenviados automaticamente.</p>
+    <p style="font-size:12px; color:#666;">Limites informados pela VendeAI: 10 chamadas por minuto e 1.440 por dia, por conta. O painel não bloqueia por contagem local. Use lotes para maiores volumes. Na fila, tentativas de cadastro são automáticas; o modo imediato não faz novas tentativas.</p>
 
     <button type="submit" class="btn-toggle" style="margin-top:12px;">Salvar configuração da VendeAí</button>
     <span id="vendeai-salvo" style="color:#16a34a; font-size:13px; display:none;">✅ Salvo</span>
@@ -650,6 +668,8 @@ async function carregarVendeai() {
   const res = await fetch('/api/configuracao');
   const cfg = await res.json();
   document.getElementById('vendeai-habilitado').checked = cfg.vendeai_habilitado;
+  document.getElementById('fila-habilitada').checked = cfg.fila_habilitada;
+  document.getElementById('fila-intervalo').value = cfg.fila_intervalo_segundos / 60;
   document.getElementById('vendeai-url').value = cfg.vendeai_mailing_url;
   document.getElementById('vendeai-account-id').value = cfg.vendeai_account_id;
   document.getElementById('vendeai-produto').value = cfg.vendeai_produto_padrao;
@@ -668,6 +688,8 @@ async function salvarVendeai(ev) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       vendeai_habilitado: document.getElementById('vendeai-habilitado').checked,
+      fila_habilitada: document.getElementById('fila-habilitada').checked,
+      fila_intervalo_segundos: Number(document.getElementById('fila-intervalo').value) * 60,
       vendeai_mailing_url: document.getElementById('vendeai-url').value,
       vendeai_account_id: document.getElementById('vendeai-account-id').value,
       vendeai_mailing_token: document.getElementById('vendeai-token').value,
@@ -687,6 +709,46 @@ async function salvarVendeai(ev) {
     const erro = await res.json();
     alert('Erro ao salvar: ' + (erro.detail || 'erro desconhecido'));
   }
+}
+
+const nomesEtapasFila = {aguardando_cadastro: 'Aguardando cadastro', cadastrando: 'Cadastrando', pronto: 'Aguardando envio', enviando: 'Enviando', sucesso: 'Enviado', erro: 'Erro', incerto: 'Conferir envio', cancelado: 'Cancelado'};
+async function carregarFila() {
+  try {
+    const res = await fetch('/api/fila');
+    if (!res.ok) throw new Error('Não foi possível carregar a fila');
+    const dados = await res.json();
+    const c = dados.contagens;
+    const aguardando = (c.aguardando_cadastro || 0) + (c.cadastrando || 0);
+    const prontos = (c.pronto || 0) + (c.enviando || 0);
+    document.getElementById('fila-resumo').textContent = `${aguardando} aguardando cadastro · ${prontos} aguardando envio · ${c.sucesso || 0} enviados · ${(c.erro || 0) + (c.incerto || 0)} precisam de atenção`;
+    let texto = dados.habilitada ? `Agrupamento a cada ${dados.intervalo_segundos / 60} minuto(s).` : 'Novas entradas no modo imediato.';
+    if (!dados.integracao_habilitada) texto += ' Integração desabilitada: fila pausada.';
+    else if (!dados.horario_permitido) texto += ' Aguardando horário de funcionamento.';
+    else if (dados.bloqueado_ate * 1000 > Date.now()) texto += ` Nova tentativa após ${new Date(dados.bloqueado_ate * 1000).toLocaleString('pt-BR')} (${dados.ultimo_erro}).`;
+    else if (aguardando && dados.proxima_rodada) texto += ` Próxima rodada prevista: ${new Date(dados.proxima_rodada * 1000).toLocaleTimeString('pt-BR')}.`;
+    document.getElementById('fila-proxima').textContent = texto;
+    const tbody = document.getElementById('tabela-fila');
+    tbody.replaceChildren();
+    for (const item of dados.itens) {
+      const tr = document.createElement('tr');
+      const detalhe = item.resultado?.motivo || item.resultado?.erro || item.vendeai?.motivo || (item.vendeai?.status === 'cadastrado' ? 'Cadastro confirmado' : '');
+      for (const valor of [new Date(item.criado_em * 1000).toLocaleString('pt-BR'), item.nome || '-', item.telefone, nomesEtapasFila[item.status] || item.status, detalhe]) {
+        const td = document.createElement('td'); td.textContent = valor; tr.appendChild(td);
+      }
+      const td = document.createElement('td');
+      if (['aguardando_cadastro', 'pronto'].includes(item.status)) {
+        const botao = document.createElement('button'); botao.textContent = 'Cancelar'; botao.className = 'btn-remover';
+        botao.onclick = async () => {
+          if (!confirm('Cancelar este item da fila? Nenhuma mensagem será enviada por ele.')) return;
+          const r = await fetch(`/api/fila/${item.id}/cancelar`, {method: 'POST'});
+          if (!r.ok) alert((await r.json()).detail || 'Não foi possível cancelar');
+          carregarFila();
+        };
+        td.appendChild(botao);
+      }
+      tr.appendChild(td); tbody.appendChild(tr);
+    }
+  } catch (erro) { document.getElementById('fila-proxima').textContent = 'Não foi possível atualizar a fila. Tentaremos novamente.'; }
 }
 
 async function carregarTotalHoje() {
@@ -869,7 +931,7 @@ async function dispararLote() {
     } catch (e) { alert('JSON inválido: ' + e.message); return; }
   }
 
-  document.getElementById('resultado-lote').innerHTML = 'Disparando... aguarde';
+  document.getElementById('resultado-lote').textContent = 'Recebendo leads... aguarde';
 
   const res = await fetch('/api/disparo-lote', {
     method: 'POST',
@@ -902,7 +964,8 @@ carregarHistorico();
 carregarHorario();
 carregarSms();
 carregarVendeai();
-setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarSaldoSms(); }, 10000);
+carregarFila();
+setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarSaldoSms(); carregarFila(); }, 10000);
 </script>
 
 </body>
