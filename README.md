@@ -225,3 +225,39 @@ Em Docker, os módulos `vendeai_mailing.py` e `fila_disparos.py` são incluídos
 em volume persistente. Após publicar o código e atualizar o serviço, confira o cartão
 de configuração e teste com um próximo lead autorizado. Nenhuma credencial real deve
 ser incluída em commits, exemplos ou arquivos de teste.
+
+
+## Importacao de planilha e lote exclusivo
+
+O painel aceita CSV (UTF-8 ou Windows-1252; separador virgula, ponto e virgula ou tab)
+e Excel XLSX (primeira aba). TXT e JSON continuam disponiveis. Limites: 10 MB,
+20.000 linhas e 100 colunas no Excel. Formulas devem ser substituidas por valores.
+O modelo CSV pode ser baixado em `/api/lote/modelo.csv` (sessao do painel).
+
+Colunas: `telefone` (ou `whatsapp`), `cpf`, `nome`, `nascimento` (DD/MM/AAAA),
+`produto`, `campanha`, `email` e `variavel_1` ate `variavel_10`.
+Telefone e CPF devem preferencialmente ser texto no Excel. Datas Excel sao convertidas.
+CPF numerico inteiro e completado para 11 digitos; CPF informado passa por checksum.
+Campos opcionais seguem os padroes da integracao; email ausente e gerado no cadastro.
+A importacao mostra linhas validas, duplicadas e erros por linha. Telefones repetidos
+sao normalizados e mantem a primeira ocorrencia. Havendo erros, corrija e reimporte.
+A previa nao cadastra leads nem envia mensagens.
+
+`POST /api/lote/arquivo` recebe multipart com `arquivo` e retorna a previa e `leads`.
+`POST /api/lote/capacidade` recebe `numeros_selecionados` e calcula por numero o menor
+saldo entre limite diario e limite da ultima hora, descontando envios com sucesso.
+Pausados e qualidade RED tem capacidade zero. A soma desses menores saldos e o teto
+atual do lote, tambem respeitando horario. Exemplo: dois numeros com 500/dia nao
+significam 1.000 disponiveis se ja houve envios ou o limite de hora for menor.
+
+A capacidade e conferida novamente em `POST /api/disparo-lote`, inclusive para JSON
+ou TXT e chamadas diretas da API. Excesso retorna HTTP 409, `aceito:false` e
+`motivo_codigo:capacidade_insuficiente`, sem aceitar parte silenciosamente.
+So inicia lote com fila vazia. Enquanto houver item ativo com origem lote,
+`/disparar` e novos lotes retornam HTTP 409 com `fila_ocupada`; nada e guardado para
+enviar depois. `/api/pode-disparar` tambem informa o bloqueio. As admissoes sao
+serializadas entre processos por arquivo de lock no volume do banco; concorrencia
+imediata retorna `entrada_em_andamento`. No modo imediato, o lock dura toda a chamada.
+Finalizacao, erro ou cancelamento de todos os itens libera novas entradas.
+A protecao contra falta de canal continua: se perder disponibilidade, encerra o item.
+O n8n deve tratar recusas explicitamente, sem repeticao automatica indiscriminada.

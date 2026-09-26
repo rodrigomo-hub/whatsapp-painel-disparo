@@ -8,6 +8,8 @@ import unicodedata
 import requests
 import vendeai_mailing
 import fila_disparos
+import planilhas
+from functools import wraps
 from urllib.parse import urlparse, quote
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -910,6 +912,8 @@ def pode_disparar():
     fallback esta habilitado, ainda responde pode_disparar=true (o
     disparo vai sair por SMS).
     """
+    if estado_lote()["lote"]:
+        return {"pode_disparar": False, "motivo_codigo": "lote_em_andamento", "motivo": "Lote exclusivo em andamento", "numeros_disponiveis": 0, "canal_provavel": None}
     permitido, motivo_horario = dentro_do_horario_permitido()
     if not permitido:
         return {
@@ -1042,7 +1046,111 @@ async def vendeai_atualizar_atributos_conversa(request: Request):
     return {"status": "ok", "conversation_id": conversation_id, "custom_attributes": resp.json().get("custom_attributes")}
 
 
+def estado_lote():
+    with closing(get_db()) as conn:
+        return dict(conn.execute("SELECT COUNT(*) pendentes, COALESCE(SUM(CASE WHEN origem='lote' THEN 1 ELSE 0 END),0) lote FROM fila_disparos WHERE status IN ('aguardando_cadastro','cadastrando','pronto','enviando')").fetchone())
+
+
+def entrada_exclusiva(func):
+    @wraps(func)
+    async def protegida(request: Request):
+        # Serializa admissao, inclusive enquanto o modo imediato aguarda APIs externas.
+        with fila_disparos.trava_worker(str(DB_FILE) + '.entrada') as obtida:
+            if not obtida:
+                return JSONResponse({"status": "erro", "aceito": False, "motivo_codigo": "entrada_em_andamento", "motivo": "Outra entrada esta em processamento. Nada foi enfileirado."}, status_code=409)
+            estado = estado_lote()
+            if estado['lote'] or (func.__name__ == 'disparo_lote' and estado['pendentes']):
+                return JSONResponse({"status": "erro", "aceito": False, "motivo_codigo": "fila_ocupada", "motivo": "Ha envios em andamento. Aguarde finalizar ou cancele os pendentes antes de iniciar outro lote."}, status_code=409)
+            return await func(request)
+    return protegida
+
+
+def capacidade_lote(selecionados=None):
+    if selecionados is None:
+        selecionados = []
+    if not isinstance(selecionados, list) or not all(type(n) is int for n in selecionados):
+        raise HTTPException(400, 'numeros_selecionados deve ser lista de IDs inteiros')
+    with closing(get_db()) as conn:
+        pool = conn.execute('SELECT * FROM numeros').fetchall()
+    detalhes = []
+    for n in pool:
+        if selecionados and n['id'] not in selecionados:
+            continue
+        dia = max(0, n['limite_diario'] - contagem_hoje(n['id']))
+        hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
+        elegivel = bool(n['ativo']) and n['qualidade'] != 'RED'
+        detalhes.append({'id': n['id'], 'nome': n['nome'], 'elegivel': elegivel,
+                         'restante_dia': dia if elegivel else 0, 'restante_hora': hora if elegivel else 0,
+                         'disponivel_agora': min(dia, hora) if elegivel else 0})
+    permitido, motivo = dentro_do_horario_permitido()
+    estado = estado_lote()
+    return {'numeros': detalhes, 'restante_dia': sum(n['restante_dia'] for n in detalhes),
+            'restante_hora': sum(n['restante_hora'] for n in detalhes),
+            'capacidade_agora': sum(n['disponivel_agora'] for n in detalhes) if permitido else 0,
+            'horario_permitido': permitido, 'motivo_horario': motivo, 'fila_ocupada': bool(estado['pendentes']),
+            'lote_em_andamento': bool(estado['lote'])}
+
+
+@app.post('/api/lote/capacidade')
+async def consultar_capacidade_lote(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, 'Corpo deve ser um objeto')
+    return capacidade_lote(body.get('numeros_selecionados', []))
+
+
+@app.get('/api/lote/modelo.csv')
+def modelo_lote():
+    return Response(content='\ufefftelefone;cpf;nome;nascimento;produto;campanha;variavel_1;variavel_2;variavel_3\r\n',
+                    media_type='text/csv; charset=utf-8', headers={'Content-Disposition': 'attachment; filename="modelo-leads.csv"'})
+
+
+@app.post('/api/lote/arquivo')
+async def importar_planilha(request: Request):
+    async with request.form(max_files=1, max_fields=2) as form:
+        arquivo = form.get('arquivo')
+        if not arquivo or not hasattr(arquivo, 'read'):
+            raise HTTPException(400, 'Envie o campo arquivo')
+        conteudo = await arquivo.read(planilhas.MAX_BYTES + 1)
+        linhas, erros = await asyncio.to_thread(planilhas.ler, arquivo.filename or '', conteudo)
+    cfg = carregar_configuracao()
+    total_linhas = len(linhas) + len(erros)
+    leads, vistos, duplicados = [], set(), 0
+    for row in linhas:
+        try:
+            preparado = vendeai_mailing.preparar_lead(row['lead'], cfg)
+            m = preparado['mailing']
+            if not re.fullmatch(r'55[1-9][0-9][0-9]{8,9}', m['phone']):
+                raise HTTPException(400, 'Telefone brasileiro invalido')
+            if any(not v.strip() for v in preparado['variaveis_template']):
+                raise HTTPException(400, 'Variaveis do template com lacunas ou valores vazios')
+            if m.get('cpf'):
+                cpf = re.sub(r'\D', '', m['cpf'])
+                if len(cpf) != 11 or len(set(cpf)) == 1 or any(int(cpf[k]) != (sum(int(cpf[i]) * (k + 1 - i) for i in range(k)) * 10 % 11) % 10 for k in (9, 10)):
+                    raise HTTPException(400, 'CPF invalido')
+            if m.get('email') and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', m['email']):
+                raise HTTPException(400, 'Email invalido')
+            if m.get('birth_date'):
+                try:
+                    nascimento = datetime.strptime(m['birth_date'], '%d/%m/%Y').date()
+                    if nascimento > date.today() or (date.today() - nascimento).days > 120 * 366:
+                        raise ValueError()
+                except ValueError:
+                    raise HTTPException(400, 'Nascimento invalido; use DD/MM/AAAA')
+            if m['phone'] in vistos:
+                duplicados += 1
+                continue
+            vistos.add(m['phone'])
+            leads.append(row['lead'])
+        except HTTPException as erro:
+            erros.append({'linha': row['linha'], 'motivo': erro.detail})
+    return {'leads': leads, 'total_linhas': total_linhas,
+            'validos': len(leads), 'duplicados': duplicados, 'erros': erros,
+            'pode_importar': bool(leads) and not erros}
+
+
 @app.post("/disparar")
+@entrada_exclusiva
 async def disparar(request: Request):
     body = await request.json()
     cfg = carregar_configuracao()
@@ -1160,6 +1268,7 @@ def executar_disparo_preparado(preparado, cadastro, origem="individual", numeros
 
 
 @app.post("/api/disparo-lote")
+@entrada_exclusiva
 async def disparo_lote(request: Request):
     body = await request.json()
     if not isinstance(body, dict):
@@ -1189,6 +1298,12 @@ async def disparo_lote(request: Request):
             formatados.append(limpo)
             preparados[limpo] = preparado
             originais[limpo] = entrada
+
+    capacidade = capacidade_lote(numeros_selecionados)
+    if len(formatados) > capacidade['capacidade_agora']:
+        return JSONResponse({'status': 'erro', 'aceito': False, 'motivo_codigo': 'capacidade_insuficiente',
+                             'motivo': 'Lote excede a capacidade restante de envio agora. Reduza o lote.',
+                             'total': len(formatados), 'capacidade': capacidade}, status_code=409)
 
     if cfg["vendeai_habilitado"] and cfg["fila_habilitada"]:
         impedimento = impedimento_fila("lote", numeros_selecionados)

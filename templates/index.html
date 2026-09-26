@@ -171,14 +171,18 @@
 
 <div class="cartao">
   <h2>📤 Disparo em lote</h2>
-  <p style="color:#888; font-size:13px;">Cole números ou uma lista JSON de leads com telefone, CPF, nome, nascimento, e-mail, produto e campanha. Também aceita arquivo .txt ou .json.</p>
-  <input type="file" id="arquivo-lote" accept=".txt,.json"><br><br>
+  <p style="color:#888; font-size:13px;">Cole números ou uma lista JSON de leads com telefone, CPF, nome, nascimento, e-mail, produto e campanha. CSV e Excel (.xlsx) aceitam colunas telefone, cpf, nome, nascimento, produto, campanha, email e variavel_1, variavel_2… E-mail vazio é gerado pelo sistema. No Excel, use a primeira aba e formate CPF e telefone como texto.</p>
+  <p><a href="/api/lote/modelo.csv">Baixar modelo CSV</a></p>
+  <input type="file" id="arquivo-lote" accept=".csv,.xlsx,.txt,.json"><br><br>
   <textarea id="numeros-lote" placeholder="5511999999999&#10;5521988888888&#10;..."></textarea>
 
   <p style="color:#888; font-size:13px;">Números a usar no rodízio (deixe tudo desmarcado para usar todos os ativos):</p>
   <div class="checkboxes-numeros" id="checkboxes-numeros"></div>
 
-  <button class="btn-disparar" onclick="dispararLote()">Disparar para todos</button>
+  <p id="previa-planilha" style="white-space:pre-line;"></p>
+  <p id="capacidade-planilha" style="white-space:pre-line;"></p>
+  <p style="font-size:13px;color:#475569;">O lote precisa caber no saldo diário e da última hora. Durante o processamento, novas entradas (inclusive n8n) são recusadas, sem fila de espera. Para iniciar, finalize ou cancele os envios anteriores.</p>
+  <button id="botao-lote" class="btn-disparar" onclick="dispararLote()" disabled>Iniciar lote exclusivo</button>
   <div id="resultado-lote" class="resultado-lote"></div>
 </div>
 
@@ -800,10 +804,12 @@ async function carregarNumeros() {
   });
 
   const checkboxes = document.getElementById('checkboxes-numeros');
+  const marcados = new Set(Array.from(checkboxes.querySelectorAll('input:checked')).map(x=>x.value));
   checkboxes.innerHTML = '';
-  numerosCache.filter(n => n.ativo).forEach(n => {
-    checkboxes.innerHTML += `<label><input type="checkbox" value="${n.id}" class="chk-numero-lote"> ${n.nome}</label>`;
+  numerosCache.filter(n => n.ativo || marcados.has(String(n.id))).forEach(n => {
+    checkboxes.innerHTML += `<label><input type="checkbox" value="${n.id}" class="chk-numero-lote" ${marcados.has(String(n.id)) ? 'checked' : ''}> ${n.nome}</label>`;
   });
+  atualizarPreviaLote();
 }
 
 async function carregarHistorico() {
@@ -906,31 +912,88 @@ document.getElementById('form-numero').addEventListener('submit', async (e) => {
   carregarNumeros();
 });
 
-document.getElementById('arquivo-lote').addEventListener('change', (e) => {
+let errosImportacao = false;
+let resumoImportacao = '';
+let enviandoLote = false;
+let previaSequencia = 0;
+function entradaLote() {
+  const texto = document.getElementById('numeros-lote').value.trim();
+  const numeros_selecionados = Array.from(document.querySelectorAll('.chk-numero-lote:checked')).map(el => Number(el.value));
+  if (!texto) return {leads: [], numeros_selecionados};
+  if (texto.startsWith('[') || texto.startsWith('{')) {
+    const json = JSON.parse(texto);
+    const leads = Array.isArray(json) ? json : json.leads;
+    if (!Array.isArray(leads)) throw new Error('Informe uma lista de leads');
+    return {leads, numeros_selecionados};
+  }
+  return {leads: texto.split(/[,\n\r; ]+/).filter(Boolean).map(telefone => ({telefone})), numeros_selecionados};
+}
+async function atualizarPreviaLote() {
+  const sequencia = ++previaSequencia;
+  const botao = document.getElementById('botao-lote');
+  botao.disabled = true;
+  try {
+    const entrada = entradaLote();
+    const telefones = entrada.leads.map(l => {
+      let t = String(l.whatsapp || l.telefone || l.phone || '').replace(/\D/g, '');
+      if ([10,11].includes(t.length)) t = '55' + t;
+      if (t.length === 12 && t.startsWith('55') && '6789'.includes(t[4])) t = t.slice(0,4) + '9' + t.slice(4);
+      if (!/^55[1-9][0-9][0-9]{8,9}$/.test(t)) throw new Error('Existe telefone inválido na lista');
+      return t;
+    });
+    const unicos = new Set(telefones).size;
+    if (!errosImportacao) document.getElementById('previa-planilha').textContent = resumoImportacao || `${entrada.leads.length} linhas · ${unicos} leads únicos · ${entrada.leads.length - unicos} telefones repetidos (primeiro prevalece).`;
+    const res = await fetch('/api/lote/capacidade', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({numeros_selecionados:entrada.numeros_selecionados})});
+    if (!res.ok) throw new Error('Não foi possível consultar a capacidade');
+    const c = await res.json();
+    if (sequencia !== previaSequencia) return;
+    document.getElementById('capacidade-planilha').textContent = `Capacidade agora: ${c.capacidade_agora} leads · Saldo diário: ${c.restante_dia} · Saldo da última hora: ${c.restante_hora}\n` +
+      c.numeros.map(n => `${n.nome}: ${n.disponivel_agora} agora (${n.restante_dia} no dia / ${n.restante_hora} na hora)`).join('\n') +
+      (c.fila_ocupada ? '\nExistem envios pendentes: novo lote bloqueado.' : '') +
+      (!c.horario_permitido ? '\nFora do horário permitido.' : '') +
+      (unicos > c.capacidade_agora ? '\nA lista excede a capacidade. Reduza a quantidade antes de iniciar.' : '');
+    botao.disabled = enviandoLote || errosImportacao || !unicos || unicos > c.capacidade_agora || c.fila_ocupada;
+  } catch(e) {
+    if (sequencia === previaSequencia) document.getElementById('capacidade-planilha').textContent = e.message;
+  }
+}
+document.getElementById('numeros-lote').addEventListener('input', () => { errosImportacao=false; resumoImportacao=''; atualizarPreviaLote(); });
+document.getElementById('checkboxes-numeros').addEventListener('change', atualizarPreviaLote);
+document.getElementById('arquivo-lote').addEventListener('change', async (e) => {
   const arquivo = e.target.files[0];
   if (!arquivo) return;
-  const leitor = new FileReader();
-  leitor.onload = (ev) => {
-    document.getElementById('numeros-lote').value = ev.target.result;
-  };
-  leitor.readAsText(arquivo);
+  errosImportacao = true;
+  resumoImportacao = '';
+  document.getElementById('botao-lote').disabled = true;
+  document.getElementById('numeros-lote').value = '';
+  document.getElementById('previa-planilha').textContent = 'Validando arquivo...';
+  try {
+    if (/\.(csv|xlsx)$/i.test(arquivo.name)) {
+      const form = new FormData(); form.append('arquivo', arquivo);
+      const res = await fetch('/api/lote/arquivo', {method:'POST', body:form});
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.detail || 'Falha ao ler arquivo');
+      errosImportacao = !d.pode_importar;
+      document.getElementById('numeros-lote').value = JSON.stringify(d.leads, null, 2);
+      document.getElementById('previa-planilha').textContent = `${d.total_linhas} linhas · ${d.validos} válidos · ${d.duplicados} duplicados · ${d.erros.length} erros.\n` + d.erros.slice(0,30).map(x=>`Linha ${x.linha}: ${x.motivo}`).join('\n');
+      resumoImportacao = document.getElementById('previa-planilha').textContent;
+      if (d.erros.length) document.getElementById('previa-planilha').textContent += '\nCorrija o arquivo e importe novamente. Nenhum lead foi enviado.';
+    } else {
+      document.getElementById('numeros-lote').value = await arquivo.text();
+      errosImportacao = false;
+    }
+    await atualizarPreviaLote();
+  } catch(e) { document.getElementById('previa-planilha').textContent = e.message; }
 });
 
 async function dispararLote() {
-  const texto = document.getElementById('numeros-lote').value;
-  if (!texto.trim()) { alert('Cole ou suba uma lista de números primeiro'); return; }
-
-  const selecionados = Array.from(document.querySelectorAll('.chk-numero-lote:checked')).map(el => parseInt(el.value));
-  let entrada = {numeros_texto: texto, numeros_selecionados: selecionados};
-  if (texto.trim().startsWith('[') || texto.trim().startsWith('{')) {
-    try {
-      const json = JSON.parse(texto);
-      const leads = Array.isArray(json) ? json : json.leads;
-      if (!Array.isArray(leads)) throw new Error('Informe uma lista de leads');
-      entrada = {leads, numeros_selecionados: selecionados};
-    } catch (e) { alert('JSON inválido: ' + e.message); return; }
-  }
-
+  if (enviandoLote || errosImportacao) return;
+  let entrada;
+  try { entrada = entradaLote(); } catch(e) { alert(e.message); return; }
+  if (!entrada.leads.length) return;
+  enviandoLote = true;
+  document.getElementById('botao-lote').disabled = true;
+  try {
   document.getElementById('resultado-lote').textContent = 'Recebendo leads... aguarde';
 
   const res = await fetch('/api/disparo-lote', {
@@ -942,7 +1005,7 @@ async function dispararLote() {
   const resultado = document.getElementById('resultado-lote');
   resultado.replaceChildren();
   const resumo = document.createElement('p');
-  resumo.textContent = !res.ok ? (dados.detail || 'Erro ao processar lote') : (dados.erro_geral || `Total processado: ${dados.total}`);
+  resumo.textContent = !res.ok ? (dados.motivo || dados.detail || 'Erro ao processar lote') : (dados.erro_geral || `Total processado: ${dados.total}`);
   resultado.appendChild(resumo);
   const lista = document.createElement('ul');
   (dados.resultados || []).forEach(r => {
@@ -956,6 +1019,8 @@ async function dispararLote() {
 
   carregarNumeros();
   carregarHistorico();
+  } catch(e) { document.getElementById('resultado-lote').textContent = 'Falha de conexão. Confira a fila antes de tentar novamente.'; }
+  finally { enviandoLote=false; atualizarPreviaLote(); }
 }
 
 carregarTotalHoje();
