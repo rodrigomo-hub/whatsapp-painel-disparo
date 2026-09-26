@@ -88,6 +88,17 @@
     .config-conteudo { padding: 20px; }
     .navegacao-principal a { padding: 12px; }
   }
+.lote-resumo {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:16px 0;}
+.lote-metrica {background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:16px;}
+.lote-metrica span {display:block;font-size:12px;color:#64748b;margin-bottom:6px;}
+.lote-metrica strong {font-size:26px;color:#0f172a;}
+.lote-metrica small {display:block;color:#64748b;font-size:12px;margin-top:5px;}
+.lote-detalhes {border:1px solid #e2e8f0;border-radius:8px;margin:12px 0;padding:12px 16px;}
+.lote-detalhes summary {cursor:pointer;color:#475569;font-size:13px;font-weight:600;}
+.lote-detalhes table {margin-top:12px;}
+.lote-aviso {font-size:13px;color:#92400e;background:#fffbeb;border-radius:8px;padding:12px;margin:12px 0;}
+.lote-aviso:empty {display:none;}
+@media(max-width:600px){.lote-resumo{grid-template-columns:1fr;gap:8px}.lote-metrica{padding:12px}.lote-metrica strong{font-size:22px}}
 </style>
 </head>
 <body>
@@ -179,8 +190,16 @@
   <p style="color:#888; font-size:13px;">Números a usar no rodízio (deixe tudo desmarcado para usar todos os ativos):</p>
   <div class="checkboxes-numeros" id="checkboxes-numeros"></div>
 
-  <p id="previa-planilha" style="white-space:pre-line;"></p>
-  <p id="capacidade-planilha" style="white-space:pre-line;"></p>
+  <div class="lote-resumo" aria-live="polite">
+    <div class="lote-metrica"><span>Leads na lista</span><strong id="lote-total">0</strong><small id="lote-lista-descricao">Importe um arquivo para começar</small></div>
+    <div class="lote-metrica"><span>Disponíveis agora</span><strong id="lote-capacidade">—</strong><small>Respeitando os limites de envio</small></div>
+    <div class="lote-metrica"><span>Saldo diário</span><strong id="lote-saldo-dia">—</strong><small id="lote-saldo-hora">Consultando capacidade…</small></div>
+  </div>
+  <p id="previa-planilha" style="white-space:pre-line;font-size:13px;color:#64748b;"></p>
+  <p id="capacidade-planilha" class="lote-aviso" role="status"></p>
+  <details class="lote-detalhes"><summary>Ver capacidade por número</summary>
+    <div style="overflow-x:auto;max-height:280px;"><table><thead><tr><th>Número</th><th>Agora</th><th>No dia</th><th>Na hora</th></tr></thead><tbody id="lote-capacidade-numeros"></tbody></table></div>
+  </details>
   <p style="font-size:13px;color:#475569;">O lote precisa caber no saldo diário e da última hora. Durante o processamento, novas entradas (inclusive n8n) são recusadas, sem fila de espera. Para iniciar, finalize ou cancele os envios anteriores.</p>
   <button id="botao-lote" class="btn-disparar" onclick="dispararLote()" disabled>Iniciar lote exclusivo</button>
   <div id="resultado-lote" class="resultado-lote"></div>
@@ -942,16 +961,30 @@ async function atualizarPreviaLote() {
       return t;
     });
     const unicos = new Set(telefones).size;
-    if (!errosImportacao) document.getElementById('previa-planilha').textContent = resumoImportacao || `${entrada.leads.length} linhas · ${unicos} leads únicos · ${entrada.leads.length - unicos} telefones repetidos (primeiro prevalece).`;
+    document.getElementById('lote-total').textContent = unicos;
+    document.getElementById('lote-lista-descricao').textContent = unicos ? `${entrada.leads.length} linhas · ${entrada.leads.length - unicos} duplicados ignorados` : 'Importe um arquivo para começar';
+    if (!errosImportacao) document.getElementById('previa-planilha').textContent = resumoImportacao;
     const res = await fetch('/api/lote/capacidade', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({numeros_selecionados:entrada.numeros_selecionados})});
     if (!res.ok) throw new Error('Não foi possível consultar a capacidade');
     const c = await res.json();
     if (sequencia !== previaSequencia) return;
-    document.getElementById('capacidade-planilha').textContent = `Capacidade agora: ${c.capacidade_agora} leads · Saldo diário: ${c.restante_dia} · Saldo da última hora: ${c.restante_hora}\n` +
-      c.numeros.map(n => `${n.nome}: ${n.disponivel_agora} agora (${n.restante_dia} no dia / ${n.restante_hora} na hora)`).join('\n') +
-      (c.fila_ocupada ? '\nExistem envios pendentes: novo lote bloqueado.' : '') +
-      (!c.horario_permitido ? '\nFora do horário permitido.' : '') +
-      (unicos > c.capacidade_agora ? '\nA lista excede a capacidade. Reduza a quantidade antes de iniciar.' : '');
+    document.getElementById('lote-capacidade').textContent = c.capacidade_agora;
+    document.getElementById('lote-saldo-dia').textContent = c.restante_dia;
+    document.getElementById('lote-saldo-hora').textContent = `${c.restante_hora} disponíveis na última hora`;
+    const tabela = document.getElementById('lote-capacidade-numeros');
+    tabela.replaceChildren();
+    c.numeros.forEach(n => {
+      const tr = document.createElement('tr');
+      [n.nome, n.disponivel_agora, n.restante_dia, n.restante_hora].forEach(valor => {
+        const td = document.createElement('td'); td.textContent = valor; tr.appendChild(td);
+      });
+      tabela.appendChild(tr);
+    });
+    const aviso = c.fila_ocupada ? 'Há envios em andamento. Finalize ou cancele antes de iniciar outro lote.' :
+      !c.horario_permitido ? 'Fora do horário de envio configurado.' :
+      !c.capacidade_agora ? 'Nenhum número disponível para envio neste momento.' :
+      unicos > c.capacidade_agora ? `Sua lista excede a capacidade em ${unicos - c.capacidade_agora} leads. Reduza a lista para iniciar.` : '';
+    document.getElementById('capacidade-planilha').textContent = aviso;
     botao.disabled = enviandoLote || errosImportacao || !unicos || unicos > c.capacidade_agora || c.fila_ocupada;
   } catch(e) {
     if (sequencia === previaSequencia) document.getElementById('capacidade-planilha').textContent = e.message;
