@@ -1068,6 +1068,9 @@ async def disparar(request: Request):
         }
 
     if cfg["vendeai_habilitado"] and cfg["fila_habilitada"]:
+        impedimento = impedimento_fila()
+        if impedimento:
+            return {**impedimento, "aceito": False}
         chave = request.headers.get("Idempotency-Key") or body.get("idempotency_key")
         item = obter_fila().enfileirar([(preparado, body, "individual", [], chave)], cfg)[0]
         return JSONResponse(item, status_code=202 if item["status"] == "enfileirado" else 200)
@@ -1082,6 +1085,23 @@ async def disparar(request: Request):
                 "motivo": "Disparo nao realizado: cadastro na VendeAI nao confirmado", "vendeai": cadastro}
 
     return executar_disparo_preparado(preparado, cadastro)
+
+
+def impedimento_fila(origem="individual", numeros=None):
+    permitido, motivo = dentro_do_horario_permitido()
+    if not permitido:
+        return {"status": "erro", "motivo_codigo": "fora_do_horario", "motivo": motivo}
+    with closing(get_db()) as conn:
+        pool = conn.execute("SELECT * FROM numeros WHERE ativo=1").fetchall()
+    if numeros:
+        pool = [n for n in pool if n["id"] in numeros]
+    if any(disponivel_agora(n) for n in pool):
+        return None
+    cfg = carregar_configuracao()
+    if origem != "lote" and cfg["sms_habilitado"] and SMS_GTI_TOKEN:
+        return None
+    return {"status": "erro", "motivo_codigo": "nenhum_numero_disponivel",
+            "motivo": "Sem numero disponivel agora. Entrada encerrada, sem envio posterior automatico."}
 
 
 def executar_disparo_preparado(preparado, cadastro, origem="individual", numeros=None):
@@ -1171,6 +1191,10 @@ async def disparo_lote(request: Request):
             originais[limpo] = entrada
 
     if cfg["vendeai_habilitado"] and cfg["fila_habilitada"]:
+        impedimento = impedimento_fila("lote", numeros_selecionados)
+        if impedimento:
+            return {"total": len(formatados), "aceito": False, "erro_geral": impedimento["motivo"],
+                    "resultados": [{"telefone": t, **impedimento} for t in formatados]}
         itens, invalidos = [], []
         for telefone in formatados:
             preparado = preparados[telefone]
@@ -1815,7 +1839,7 @@ async def loop_fila():
         try:
             await asyncio.to_thread(obter_fila().processar, carregar_configuracao,
                                     cadastrar_base_vendeai, executar_disparo_preparado,
-                                    dentro_do_horario_permitido, lambda: app.state.fila_parar)
+                                    dentro_do_horario_permitido, lambda: app.state.fila_parar, impedimento_fila)
         except Exception as erro:
             registrar_evento(None, "fila_worker_erro", type(erro).__name__)
         await asyncio.sleep(2)

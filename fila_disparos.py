@@ -172,7 +172,7 @@ class Fila:
         with closing(self.get_db()) as conn, conn:
             conn.execute(f"UPDATE fila_disparos SET {','.join(k+'=?' for k in campos)} WHERE id=?", [*campos.values(), identificador])
 
-    def processar(self, carregar_cfg, cadastrar, enviar, horario, parar=lambda: False):
+    def processar(self, carregar_cfg, cadastrar, enviar, horario, parar=lambda: False, impedimento=None):
         with trava_worker(self.db_path) as obtida:
             if not obtida:
                 return
@@ -183,6 +183,18 @@ class Fila:
             cfg = carregar_cfg()
             if not cfg["vendeai_habilitado"] or parar():
                 return
+            # Encerrar pendentes assim que o canal/horario ficar indisponivel.
+            if impedimento:
+                with closing(self.get_db()) as conn:
+                    pendentes = conn.execute("SELECT id,origem,numeros FROM fila_disparos WHERE status IN ('aguardando_cadastro','pronto')").fetchall()
+                motivos = {}
+                for item in pendentes:
+                    chave = (item["origem"], item["numeros"])
+                    if chave not in motivos:
+                        motivos[chave] = impedimento(item["origem"], json.loads(item["numeros"]))
+                    motivo = motivos[chave]
+                    if motivo:
+                        self.alterar(item["id"], status="erro", tentar_em=0, resultado=serializar(motivo))
             # Nao consumir cadastro/validade fora da janela de envio.
             if not horario()[0]:
                 return
@@ -211,7 +223,7 @@ class Fila:
                     self.alterar(row["id"], status="incerto", resultado=serializar({"motivo": "Falha durante envio. Conferir historico antes de reenviar."}))
                     continue
                 if resultado.get("motivo_codigo") in ("nenhum_numero_disponivel", "fora_do_horario"):
-                    self.alterar(row["id"], status="pronto", tentar_em=time.time() + 30, resultado=serializar(resultado))
+                    self.alterar(row["id"], status="erro", tentar_em=0, resultado=serializar({**resultado, "status": "erro"}))
                 else:
                     self.alterar(row["id"], status="sucesso" if resultado.get("status") == "sucesso" else "erro", tentar_em=0, resultado=serializar(resultado))
 

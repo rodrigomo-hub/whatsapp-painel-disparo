@@ -324,7 +324,7 @@
       <label for="fila-intervalo" style="margin-top:12px;">Intervalo entre rodadas (minutos)</label>
       <input type="number" id="fila-intervalo" min="1" max="60" step="1" required style="width:100px;">
       <p style="font-size:13px; margin-bottom:0;">Recomendado: 5 minutos. Cada rodada cadastra até 20.000 leads em uma chamada e libera os envios confirmados. Em caso de limite da VendeAI, aguarda o prazo informado e mantém os leads salvos.</p>
-      <p style="font-size:12px; color:#475569;">O n8n recebe “enfileirado” com um ID, não uma confirmação de envio. A fila respeita horários e disponibilidade dos números. Desativar esta opção afeta novas entradas; itens já recebidos continuam. Desabilitar a integração pausa a fila.</p>
+      <p style="font-size:12px; color:#475569;">O n8n recebe “enfileirado” com um ID, não uma confirmação de envio. Sem canal disponível ou fora do horário, a entrada é recusada. Se isso ocorrer depois, o item é encerrado sem envio posterior automático. Desativar esta opção afeta novas entradas; itens já recebidos continuam. Desabilitar a integração pausa a fila.</p>
     </div>
     <label for="vendeai-falha">Sem fila: se o cadastro falhar ou atingir o limite</label>
     <select id="vendeai-falha" style="width:100%;">
@@ -723,7 +723,7 @@ async function carregarFila() {
     document.getElementById('fila-resumo').textContent = `${aguardando} aguardando cadastro · ${prontos} aguardando envio · ${c.sucesso || 0} enviados · ${(c.erro || 0) + (c.incerto || 0)} precisam de atenção`;
     let texto = dados.habilitada ? `Agrupamento a cada ${dados.intervalo_segundos / 60} minuto(s).` : 'Novas entradas no modo imediato.';
     if (!dados.integracao_habilitada) texto += ' Integração desabilitada: fila pausada.';
-    else if (!dados.horario_permitido) texto += ' Aguardando horário de funcionamento.';
+    else if (!dados.horario_permitido) texto += ' Fora do horário: novas entradas recusadas e pendentes encerrados.';
     else if (dados.bloqueado_ate * 1000 > Date.now()) texto += ` Nova tentativa após ${new Date(dados.bloqueado_ate * 1000).toLocaleString('pt-BR')} (${dados.ultimo_erro}).`;
     else if (aguardando && dados.proxima_rodada) texto += ` Próxima rodada prevista: ${new Date(dados.proxima_rodada * 1000).toLocaleTimeString('pt-BR')}.`;
     document.getElementById('fila-proxima').textContent = texto;

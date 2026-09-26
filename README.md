@@ -49,8 +49,15 @@ fila habilitadas, a entrada é salva no banco e responde **HTTP 202**, sem envia
 O primeiro lead inicia uma janela de 5 minutos. Cada rodada cadastra até 20.000
 telefones em uma única chamada, incluindo entradas individuais e lotes. Rodadas vazias
 não chamam a VendeAI. Depois do cadastro, o envio segue o rodízio, a qualidade, os limites
-de cada número e o horário. A espera pode ultrapassar 5 minutos se não houver número
-livre, se estiver fora do horário, se houver mais de 20.000 leads ou bloqueio da API.
+de cada número e o horário. Sem canal disponível ou fora do horário, novas entradas
+são recusadas com HTTP 200, `status: "erro"`, `aceito: false` e `motivo_codigo`, sem
+inserção na fila. O n8n deve verificar o corpo, não apenas o código HTTP.
+A mesma checagem respeita os números selecionados no lote. O fallback SMS configurado
+continua sendo uma alternativa para entradas individuais.
+Se o canal ficar indisponível depois da entrada, os pendentes terminam em `erro`:
+não aguardam o número voltar e não são reenviados automaticamente. A indisponibilidade
+no instante do envio também encerra o item. O agrupamento de cadastro permanece em
+5 minutos; bloqueios da VendeAI ainda respeitam Retry-After enquanto houver canal disponível.
 
 No n8n, trate `enfileirado` como **entrada recebida**, não como mensagem enviada. Para
 acompanhar, use `GET /api/fila/{fila_id}` com o mesmo header `X-API-Key`. O endpoint

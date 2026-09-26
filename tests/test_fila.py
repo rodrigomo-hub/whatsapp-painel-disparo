@@ -28,7 +28,7 @@ class FilaTests(unittest.TestCase):
 
     def rodada(self):
         self.fila.processar(main.carregar_configuracao, main.cadastrar_base_vendeai,
-                            main.executar_disparo_preparado, main.dentro_do_horario_permitido)
+                            main.executar_disparo_preparado, main.dentro_do_horario_permitido, impedimento=main.impedimento_fila)
 
     def entrada(self, **campos):
         return self.client.post("/disparar", json={**self.lead, **campos})
@@ -107,31 +107,55 @@ class FilaTests(unittest.TestCase):
         self.assertEqual(a["fila_id"], b["fila_id"])
         self.assertEqual(self.entrada(idempotency_key="execucao-1", nome="Outro").status_code, 409)
 
-    def test_sem_numero_espera_sem_recadastrar(self):
+    def test_sem_numero_no_envio_encerra_sem_repetir(self):
         a = self.entrada().json()["fila_id"]
         self.avancar(300)
         with patch.object(main, "proximo_numero_disponivel", return_value=None):
             self.rodada()
-        self.assertEqual(self.fila.consultar(a)["status"], "pronto")
+        self.assertEqual(self.fila.consultar(a)["status"], "erro")
         self.whatsapp.assert_not_called()
         self.avancar(30)
         self.rodada()
         self.api.assert_called_once()
-        self.whatsapp.assert_called_once()
+        self.whatsapp.assert_not_called()
 
-    def test_horario_e_integracao_pausam_sem_perder(self):
+    def test_recusa_entrada_sem_numero_sem_gravar(self):
+        with test_db() as conn:
+            conn.execute("UPDATE numeros SET ativo=0")
+        r = self.entrada().json()
+        self.assertFalse(r["aceito"])
+        self.assertEqual(r["motivo_codigo"], "nenhum_numero_disponivel")
+        self.assertEqual(self.fila.resumo()["contagens"], {})
+        self.api.assert_not_called()
+
+    def test_pendentes_encerram_quando_numero_pausa(self):
+        a = self.entrada().json()["fila_id"]
+        with test_db() as conn:
+            conn.execute("UPDATE numeros SET ativo=0")
+        self.rodada()
+        self.assertEqual(self.fila.consultar(a)["status"], "erro")
+        with test_db() as conn:
+            conn.execute("UPDATE numeros SET ativo=1")
+        self.avancar(300)
+        self.rodada()
+        self.api.assert_not_called()
+        self.whatsapp.assert_not_called()
+
+    def test_horario_recusa_entrada_e_encerra_pendente(self):
+        a = self.entrada().json()["fila_id"]
         with patch.object(main, "dentro_do_horario_permitido", return_value=(False, "Fechado")):
-            a = self.entrada().json()["fila_id"]
-            self.avancar(300)
+            r = self.entrada(telefone="11987654322").json()
+            self.assertFalse(r["aceito"])
             self.rodada()
-        self.api.assert_not_called()
-        self.client.patch("/api/configuracao", json={"vendeai_habilitado": False})
+        self.assertEqual(self.fila.consultar(a)["status"], "erro")
+        self.avancar(300)
         self.rodada()
-        self.api.assert_not_called()
-        self.assertEqual(self.fila.consultar(a)["status"], "aguardando_cadastro")
-        self.client.patch("/api/configuracao", json={"vendeai_habilitado": True})
-        self.rodada()
-        self.assertEqual(self.fila.consultar(a)["status"], "sucesso")
+        self.whatsapp.assert_not_called()
+
+    def test_lote_recusa_se_selecionado_indisponivel(self):
+        r = self.client.post("/api/disparo-lote", json={"leads": [self.lead], "numeros_selecionados": [999]}).json()
+        self.assertFalse(r["aceito"])
+        self.assertEqual(self.fila.resumo()["contagens"], {})
 
     def test_excecao_envio_nao_duplica(self):
         a = self.entrada().json()["fila_id"]
