@@ -1,6 +1,7 @@
 import re
 import os
 import csv
+import json
 import io
 import asyncio
 import sqlite3
@@ -298,6 +299,8 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN template_idioma TEXT NOT NULL DEFAULT 'pt_BR'")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_wamid ON disparos(wamid)")
+    if "template_sem_variaveis" not in colunas_existentes:
+        conn.execute("ALTER TABLE numeros ADD COLUMN template_sem_variaveis INTEGER NOT NULL DEFAULT 0")
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
     conn.commit()
@@ -426,14 +429,16 @@ def enviar_whatsapp(numero, telefone_destino, variaveis_template):
         "template": {
             "name": numero["template_nome"],
             "language": {"code": numero["template_idioma"] if numero["template_idioma"] else "pt_BR"},
-            "components": [
-                {
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": v} for v in variaveis_template],
-                }
-            ] if variaveis_template else [],
         },
     }
+    # Templates estaticos nao recebem nem mesmo componentes vazios.
+    sem_variaveis = bool(dict(numero).get("template_sem_variaveis", False))
+    if not sem_variaveis and any(not str(v).strip() for v in variaveis_template):
+        return False, "Variaveis do template com valores vazios", ""
+    if variaveis_template and not sem_variaveis:
+        payload["template"]["components"] = [{"type": "body", "parameters": [
+            {"type": "text", "text": v} for v in variaveis_template
+        ]}]
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=15)
         if resp.status_code == 200:
@@ -1046,6 +1051,16 @@ async def vendeai_atualizar_atributos_conversa(request: Request):
     return {"status": "ok", "conversation_id": conversation_id, "custom_attributes": resp.json().get("custom_attributes")}
 
 
+def variaveis_vazias_impedem(variaveis, numeros=None):
+    if not any(not str(v).strip() for v in variaveis):
+        return False
+    with closing(get_db()) as conn:
+        pool = conn.execute("SELECT * FROM numeros WHERE ativo=1 AND qualidade != 'RED'").fetchall()
+    if numeros:
+        pool = [n for n in pool if n['id'] in numeros]
+    return not pool or not all(n['template_sem_variaveis'] for n in pool)
+
+
 def estado_lote():
     with closing(get_db()) as conn:
         return dict(conn.execute("SELECT COUNT(*) pendentes, COALESCE(SUM(CASE WHEN origem='lote' THEN 1 ELSE 0 END),0) lote FROM fila_disparos WHERE status IN ('aguardando_cadastro','cadastrando','pronto','enviando')").fetchone())
@@ -1122,7 +1137,7 @@ async def importar_planilha(request: Request):
             m = preparado['mailing']
             if not re.fullmatch(r'55[1-9][0-9][0-9]{8,9}', m['phone']):
                 raise HTTPException(400, 'Telefone brasileiro invalido')
-            if any(not v.strip() for v in preparado['variaveis_template']):
+            if variaveis_vazias_impedem(preparado['variaveis_template']):
                 raise HTTPException(400, 'Variaveis do template com lacunas ou valores vazios')
             if m.get('cpf'):
                 cpf = re.sub(r'\D', '', m['cpf'])
@@ -1167,7 +1182,7 @@ async def disparar(request: Request):
     if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone):
         raise HTTPException(400, "Telefone brasileiro invalido")
 
-    if variaveis and any(not str(v).strip() for v in variaveis):
+    if variaveis_vazias_impedem(variaveis):
         indices_vazios = [i for i, v in enumerate(variaveis, start=1) if not str(v).strip()]
         return {
             "status": "erro",
@@ -1313,7 +1328,7 @@ async def disparo_lote(request: Request):
         itens, invalidos = [], []
         for telefone in formatados:
             preparado = preparados[telefone]
-            if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone) or any(not v.strip() for v in preparado["variaveis_template"]):
+            if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone) or variaveis_vazias_impedem(preparado["variaveis_template"], numeros_selecionados):
                 invalidos.append({"telefone": telefone, "status": "invalido", "motivo": "Telefone ou variaveis invalidos"})
             else:
                 itens.append((preparado, originais[telefone], "lote", numeros_selecionados, originais[telefone].get("idempotency_key")))
@@ -1345,7 +1360,7 @@ async def disparo_lote(request: Request):
     for telefone in formatados:
         if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone):
             erros_entrada[telefone] = "Telefone brasileiro invalido"
-        elif any(not v.strip() for v in preparados[telefone]["variaveis_template"]):
+        elif variaveis_vazias_impedem(preparados[telefone]["variaveis_template"], numeros_selecionados):
             erros_entrada[telefone] = "variaveis_template contem valor vazio"
     validos = [t for t in formatados if t not in erros_entrada]
     cadastros = dict(zip(validos, await asyncio.to_thread(
@@ -1718,6 +1733,24 @@ def saldo_sms():
     }
 
 
+def template_estatico(template):
+    componentes = template.get("components")
+    if not isinstance(componentes, list) or not componentes:
+        return False
+    if template.get("category") == "AUTHENTICATION":
+        return False
+    for c in componentes:
+        if c.get("type") not in ("BODY", "HEADER", "FOOTER", "BUTTONS"):
+            return False
+        if c.get("type") == "HEADER" and c.get("format") != "TEXT":
+            return False
+        if c.get("type") == "BUTTONS" and any(b.get("type") not in ("URL", "PHONE_NUMBER", "QUICK_REPLY") for b in c.get("buttons", [])):
+            return False
+        if "{{" in json.dumps(c):
+            return False
+    return True
+
+
 @app.post("/api/buscar-templates")
 async def buscar_templates(request: Request):
     body = await request.json()
@@ -1747,6 +1780,8 @@ async def buscar_templates(request: Request):
                 "categoria": t.get("category"),
                 "status": t.get("status"),
                 "texto": corpo,
+                "idioma": t.get("language", "pt_BR"),
+                "sem_variaveis": template_estatico(t),
             })
         return {"templates": templates}
     except Exception as e:
@@ -1812,9 +1847,11 @@ def listar_numeros():
 @app.post("/api/numeros")
 async def adicionar_numero(request: Request):
     body = await request.json()
+    if "template_sem_variaveis" in body and type(body["template_sem_variaveis"]) is not bool:
+        raise HTTPException(400, "template_sem_variaveis deve ser booleano")
     conn = get_db()
     conn.execute(
-        "INSERT INTO numeros (nome, phone_number_id, access_token, template_nome, template_idioma, limite_diario, limite_hora, ativo, qualidade, waba_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'UNKNOWN', ?)",
+        "INSERT INTO numeros (nome, phone_number_id, access_token, template_nome, template_idioma, limite_diario, limite_hora, ativo, qualidade, waba_id, template_sem_variaveis) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'UNKNOWN', ?, ?)",
         (
             body["nome"], body["phone_number_id"], body["access_token"],
             body.get("template_nome", "oferta_credito"),
@@ -1822,6 +1859,7 @@ async def adicionar_numero(request: Request):
             body.get("limite_diario", 250),
             body.get("limite_hora", 20),
             body.get("waba_id", ""),
+            int(body.get("template_sem_variaveis", False)),
         ),
     )
     conn.commit()
@@ -1832,6 +1870,8 @@ async def adicionar_numero(request: Request):
 @app.patch("/api/numeros/{numero_id}")
 async def atualizar_numero(numero_id: int, request: Request):
     body = await request.json()
+    if "template_sem_variaveis" in body and type(body["template_sem_variaveis"]) is not bool:
+        raise HTTPException(400, "template_sem_variaveis deve ser booleano")
     conn = get_db()
     if "ativo" in body:
         # Toggle manual (usuario) - sempre limpa a flag de pausa automatica: se o
@@ -1842,8 +1882,12 @@ async def atualizar_numero(numero_id: int, request: Request):
         conn.execute("UPDATE numeros SET limite_diario = ? WHERE id = ?", (body["limite_diario"], numero_id))
     if "limite_hora" in body:
         conn.execute("UPDATE numeros SET limite_hora = ? WHERE id = ?", (body["limite_hora"], numero_id))
+    if "template_nome" in body and "template_sem_variaveis" not in body:
+        conn.execute("UPDATE numeros SET template_sem_variaveis = 0 WHERE id = ? AND template_nome != ?", (numero_id, body["template_nome"]))
     if "template_nome" in body:
         conn.execute("UPDATE numeros SET template_nome = ? WHERE id = ?", (body["template_nome"], numero_id))
+    if "template_sem_variaveis" in body:
+        conn.execute("UPDATE numeros SET template_sem_variaveis = ? WHERE id = ?", (int(body["template_sem_variaveis"]), numero_id))
     if "template_idioma" in body:
         conn.execute("UPDATE numeros SET template_idioma = ? WHERE id = ?", (body["template_idioma"], numero_id))
     conn.commit()

@@ -162,6 +162,7 @@
     <select id="novo-template" required onchange="mostrarPreview('novo-template', 'preview-novo')">
       <option value="">Selecione um template...</option>
     </select>
+    <label style="font-size:13px;"><input type="checkbox" id="novo-sem-variaveis"> Template de texto sem variáveis (ignorar parâmetros recebidos)</label>
     <div id="preview-novo" style="width:100%; background:#f8f9fa; border:1px solid #eee; border-radius:8px; padding:12px; margin-top:8px; font-size:13px; white-space:pre-wrap; display:none;"></div>
     <input type="number" id="novo-limite" placeholder="Limite diário" value="250" required>
     <input type="number" id="novo-limite-hora" placeholder="Limite por hora" value="20" required>
@@ -374,6 +375,7 @@
       <select id="editar-template" onchange="mostrarPreview('editar-template', 'preview-editar')">
         <option value="">Selecione um template...</option>
       </select>
+    <label style="font-size:13px;"><input type="checkbox" id="editar-sem-variaveis"> Template de texto sem variáveis (ignorar parâmetros recebidos)</label>
       <div id="preview-editar" style="background:#f8f9fa; border:1px solid #eee; border-radius:8px; padding:12px; margin-bottom:10px; font-size:13px; white-space:pre-wrap; display:none;"></div>
       <label>Limite diário</label>
       <input type="number" id="editar-limite">
@@ -436,7 +438,9 @@ async function popularSelectTemplates(selectId, accessToken, wabaId) {
       const cat = {'MARKETING': '📢 Marketing', 'UTILITY': '🔧 Utilitário', 'AUTHENTICATION': '🔐 Autenticação'}[t.categoria] || t.categoria;
       const opt = document.createElement('option');
       opt.value = t.nome;
-      opt.textContent = `${t.nome} — ${cat} — ${t.status}`;
+      opt.dataset.semVariaveis = String(t.sem_variaveis);
+      opt.dataset.idioma = t.idioma || "pt_BR";
+      opt.textContent = `${t.nome} — ${t.idioma} — ${cat} — ${t.status}${t.sem_variaveis ? " — Sem variáveis" : ""}`;
       select.appendChild(opt);
       templatesEncontrados[t.nome] = t.texto;
     });
@@ -448,6 +452,8 @@ async function popularSelectTemplates(selectId, accessToken, wabaId) {
 function mostrarPreview(selectId, previewId) {
   const select = document.getElementById(selectId);
   const preview = document.getElementById(previewId);
+  const tipo = selectId.startsWith('novo') ? 'novo' : 'editar';
+  document.getElementById(tipo + '-sem-variaveis').checked = select.selectedOptions[0]?.dataset.semVariaveis === 'true';
   const texto = templatesEncontrados[select.value];
 
   if (texto) {
@@ -886,7 +892,13 @@ async function removerNumero(id) {
 function abrirModal(id) {
   const n = numerosCache.find(x => x.id === id);
   document.getElementById('editar-id').value = n.id;
-  document.getElementById('editar-template').value = n.template_nome;
+  const select = document.getElementById('editar-template');
+  const atual = document.createElement('option');
+  atual.value = n.template_nome; atual.textContent = n.template_nome;
+  atual.dataset.idioma = n.template_idioma || 'pt_BR';
+  atual.dataset.semVariaveis = String(Boolean(n.template_sem_variaveis));
+  select.replaceChildren(atual);
+  document.getElementById('editar-sem-variaveis').checked = Boolean(n.template_sem_variaveis);
   document.getElementById('editar-limite').value = n.limite_diario;
   document.getElementById('editar-limite-hora').value = n.limite_hora;
   document.getElementById('modal-editar').style.display = 'flex';
@@ -904,6 +916,8 @@ document.getElementById('form-editar').addEventListener('submit', async (e) => {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
       template_nome: document.getElementById('editar-template').value,
+      template_sem_variaveis: document.getElementById('editar-sem-variaveis').checked,
+      template_idioma: document.getElementById('editar-template').selectedOptions[0]?.dataset.idioma || 'pt_BR',
       limite_diario: parseInt(document.getElementById('editar-limite').value),
       limite_hora: parseInt(document.getElementById('editar-limite-hora').value),
     })
@@ -922,6 +936,8 @@ document.getElementById('form-numero').addEventListener('submit', async (e) => {
       phone_number_id: document.getElementById('novo-phone-id').value,
       access_token: document.getElementById('novo-token').value,
       template_nome: document.getElementById('novo-template').value,
+      template_sem_variaveis: document.getElementById('novo-sem-variaveis').checked,
+      template_idioma: document.getElementById('novo-template').selectedOptions[0]?.dataset.idioma || 'pt_BR',
       waba_id: document.getElementById('novo-waba-id').value,
       limite_diario: parseInt(document.getElementById('novo-limite').value),
       limite_hora: parseInt(document.getElementById('novo-limite-hora').value),

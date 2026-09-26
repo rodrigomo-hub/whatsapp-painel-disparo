@@ -261,3 +261,19 @@ imediata retorna `entrada_em_andamento`. No modo imediato, o lock dura toda a ch
 Finalizacao, erro ou cancelamento de todos os itens libera novas entradas.
 A protecao contra falta de canal continua: se perder disponibilidade, encerra o item.
 O n8n deve tratar recusas explicitamente, sem repeticao automatica indiscriminada.
+
+## Templates com e sem variaveis
+
+Na busca de templates da Meta, templates de texto estatico sao identificados como
+"Sem variaveis". Ao selecionar e salvar, o numero guarda o modo e o idioma escolhidos.
+Tambem e possivel marcar "Template de texto sem variaveis" na edicao de um numero
+existente. Nesse modo, o envio omite `components` e ignora a lista de parametros
+recebida do n8n ou planilha. Campos do cadastro VendeAI continuam sendo enviados.
+
+Templates com variaveis continuam usando `variaveis_template` na ordem fornecida.
+Se a lista estiver ausente ou vazia, o payload tambem omite `components`.
+A migracao preserva o comportamento dos numeros existentes; para reconhecer um
+template ja cadastrado, busque/selecione novamente ou marque explicitamente o modo.
+A deteccao automatica nao classifica cabecalho de midia, botoes dinamicos ou templates
+de autenticacao como texto sem variaveis. O modo nao adiciona suporte a midia nem a
+parametros de cabecalho/botoes; esses formatos requerem implementacao especifica.
