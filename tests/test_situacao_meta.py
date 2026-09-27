@@ -14,11 +14,11 @@ class SituacaoTests(unittest.TestCase):
             self.whatsapp.assert_not_called()
             return r.json()
     def test_estados(self):
-        for estado,rotulo in [('AVAILABLE','Disponivel para envio'),('LIMITED','Envio limitado'),('BLOCKED','Envio bloqueado')]:
+        for estado,rotulo in [('AVAILABLE','Disponível para envio'),('LIMITED','Envio limitado'),('BLOCKED','Envio bloqueado')]:
             self.assertEqual(self.consultar({'health_status':{'can_send_message':estado}})['situacao'],rotulo)
     def test_token_nao_e_banimento(self):
         r=self.consultar({'error':{'code':190,'message':'fake-token'}},400)
-        self.assertEqual(r['situacao'],'Nao foi possivel consultar')
+        self.assertEqual(r['situacao'],'Não foi possível consultar')
         self.assertNotIn('fake-token',str(r))
     def test_motivo_e_segredo(self):
         r=self.consultar({'health_status':{'can_send_message':'BLOCKED','entities':[{'entity_type':'WABA','can_send_message':'BLOCKED','errors':[{'error_code':123,'error_description':'Problema fake-token'}]}]}})
@@ -30,3 +30,11 @@ class SituacaoTests(unittest.TestCase):
         self.client.cookies.clear()
         r=self.client.get('/api/numeros/1/situacao-meta',follow_redirects=False)
         self.assertIn(r.status_code,(401,303,307,302))
+
+    def test_avisos_chamadas_em_portugues(self):
+        for codigo in (138024,138025):
+            r=self.consultar({'health_status':{'can_send_message':'AVAILABLE','entities':[{'entity_type':'PHONE_NUMBER','can_send_message':'AVAILABLE','errors':[{'error_code':codigo,'error_description':'SIP is not enabled'}]}]}})
+            e=r['entidades'][0]
+            self.assertEqual(e['tipo'],'Número de telefone')
+            self.assertIn('não ao envio de mensagens',e['erros'][0]['descricao'])
+            self.assertNotIn('is not enabled',e['erros'][0]['descricao'])

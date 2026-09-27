@@ -2188,9 +2188,9 @@ def situacao_meta(numero_id: int):
     with closing(get_db()) as c:
         numero=c.execute('SELECT phone_number_id,access_token FROM numeros WHERE id=?',(numero_id,)).fetchone()
     if numero is None:
-        raise HTTPException(404,'Numero nao encontrado')
+        raise HTTPException(404,'Número não encontrado')
     if not numero['access_token'] or not numero['phone_number_id']:
-        return {'situacao':'Nao foi possivel consultar','detalhe':'Token ou identificador do numero ausente.'}
+        return {'situacao':'Não foi possível consultar','detalhe':'Token ou identificador do número ausente.'}
     try:
         r=requests.get('https://graph.facebook.com/v21.0/'+requests.utils.quote(numero['phone_number_id'],safe=''),
                        params={'fields':'health_status'},headers={'Authorization':'Bearer '+numero['access_token']},
@@ -2200,11 +2200,15 @@ def situacao_meta(numero_id: int):
         if r.status_code!=200 or d.get('error'):
             erro=d.get('error') or {}
             code=erro.get('code') if isinstance(erro,dict) else None
-            detalhe='Token invalido ou expirado.' if code==190 else 'A Meta nao permitiu a consulta. Confira as permissoes e o acesso do token a esta conta.'
-            return {'situacao':'Nao foi possivel consultar','detalhe':detalhe,'codigo_meta':code,'http_status':r.status_code}
+            detalhe='Token inválido ou expirado.' if code==190 else 'A Meta não permitiu a consulta. Confira as permissões e o acesso do token a esta conta.'
+            return {'situacao':'Não foi possível consultar','detalhe':detalhe,'codigo_meta':code,'http_status':r.status_code}
         h=d.get('health_status') or {}
         status=h.get('can_send_message')
-        rotulos={'AVAILABLE':'Disponivel para envio','LIMITED':'Envio limitado','BLOCKED':'Envio bloqueado'}
+        rotulos={'AVAILABLE':'Disponível para envio','LIMITED':'Envio limitado','BLOCKED':'Envio bloqueado'}
+        tipos={'PHONE_NUMBER':'Número de telefone','WABA':'Conta do WhatsApp Business','BUSINESS':'Empresa','APP':'Aplicativo'}
+        avisos={
+            '138024':'As chamadas por SIP não estão habilitadas neste número. Esse aviso se refere a chamadas, não ao envio de mensagens.',
+            '138025':'O aplicativo não tem um servidor SIP configurado para chamadas neste número. Esse aviso se refere a chamadas, não ao envio de mensagens.'}
         entidades=[]
         for e in h.get('entities',[]):
             if not isinstance(e,dict): continue
@@ -2212,8 +2216,8 @@ def situacao_meta(numero_id: int):
             for error in e.get('errors',[]) or []:
                 if isinstance(error,dict):
                     texto=str(error.get('error_description') or error.get('error_summary') or '')[:1000]
-                    erros.append({'codigo':error.get('error_code'),'descricao':texto.replace(numero['access_token'],'[oculto]')})
-            entidades.append({'tipo':e.get('entity_type'),'situacao':rotulos.get(e.get('can_send_message'),'Nao informado'),'erros':erros})
-        return {'situacao':rotulos.get(status,'Situacao nao informada'),'detalhe':'Bloqueio de envio nao confirma banimento definitivo. Esta consulta nao garante a entrega de mensagens.', 'entidades':entidades}
+                    erros.append({'codigo':error.get('error_code'),'descricao':avisos.get(str(error.get('error_code')),'A Meta retornou um aviso sem tradução cadastrada. Consulte o suporte informando o código acima.'),'descricao_original':texto.replace(numero['access_token'],'[oculto]')})
+            entidades.append({'tipo':tipos.get(e.get('entity_type'),'Outro componente'),'situacao':rotulos.get(e.get('can_send_message'),'Não informado'),'erros':erros})
+        return {'situacao':rotulos.get(status,'Situação não informada'),'detalhe':'Bloqueio de envio não confirma banimento definitivo. Esta consulta não garante a entrega de mensagens.', 'entidades':entidades}
     except (requests.RequestException,ValueError,TypeError,AttributeError):
-        return {'situacao':'Nao foi possivel consultar','detalhe':'Falha de comunicacao ou resposta invalida da Meta. Tente novamente.'}
+        return {'situacao':'Não foi possível consultar','detalhe':'Falha de comunicação ou resposta inválida da Meta. Tente novamente.'}
