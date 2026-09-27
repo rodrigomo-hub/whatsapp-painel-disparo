@@ -140,6 +140,12 @@
 
 <div class="cartao">
   <h2>Números conectados <button class="btn-toggle" onclick="atualizarTodos()" style="font-size:12px;">🔄 Atualizar todos</button></h2>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0;">
+    <label for="pesquisa-numero" style="font-size:13px;">Pesquisar número</label>
+    <input id="pesquisa-numero" type="search" placeholder="Nome ou telefone, mesmo sem pontuação" oninput="renderizarNumeros()" style="flex:1;min-width:220px;max-width:440px;margin:0;">
+    <button type="button" class="btn-editar" onclick="document.getElementById('pesquisa-numero').value='';renderizarNumeros();">Limpar</button>
+    <span id="pesquisa-numero-total" role="status" style="font-size:13px;color:#64748b;"></span>
+  </div>
 
   <div id="resumo-numeros" style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid #eee;"></div>
 
@@ -806,9 +812,35 @@ async function carregarNumeros() {
     <div><span style="font-size:22px; font-weight:700; color:#1a1a2e;">${numerosCache.length}</span> <span style="font-size:13px; color:#888;">total cadastrados</span></div>
   `;
 
+  renderizarNumeros();
+
+  const checkboxes = document.getElementById('checkboxes-numeros');
+  const marcados = new Set(Array.from(checkboxes.querySelectorAll('input:checked')).map(x=>x.value));
+  checkboxes.innerHTML = '';
+  numerosCache.filter(n => n.ativo || marcados.has(String(n.id))).forEach(n => {
+    checkboxes.innerHTML += `<label><input type="checkbox" value="${n.id}" class="chk-numero-lote" ${marcados.has(String(n.id)) ? 'checked' : ''}> ${n.nome}</label>`;
+  });
+  atualizarPreviaLote();
+}
+
+function filtrarNumeros(numeros, pesquisa) {
+  const normalizar = valor => String(valor || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const termo = normalizar(pesquisa).trim();
+  if (!termo) return numeros;
+  const digitos = termo.replace(/\D/g, '');
+  const telefone = /^[\d\s+().-]+$/.test(termo) && digitos.length > 0;
+  return numeros.filter(n => {
+    const texto = normalizar(n.nome);
+    return texto.includes(termo) || (telefone &&
+      (texto.replace(/\D/g, '').includes(digitos) || String(n.phone_number_id || '').includes(digitos)));
+  });
+}
+function renderizarNumeros() {
+  const filtrados = filtrarNumeros(numerosCache, document.getElementById('pesquisa-numero').value);
+  document.getElementById('pesquisa-numero-total').textContent = `${filtrados.length} de ${numerosCache.length} números`;
   const tbody = document.getElementById('tabela-numeros');
   tbody.innerHTML = '';
-  numerosCache.forEach(n => {
+  filtrados.forEach(n => {
     const pct = Math.min(100, (n.enviados_hoje / n.limite_diario) * 100);
     const tr = document.createElement('tr');
     tr.innerHTML = `
@@ -828,13 +860,13 @@ async function carregarNumeros() {
     tbody.appendChild(tr);
   });
 
-  const checkboxes = document.getElementById('checkboxes-numeros');
-  const marcados = new Set(Array.from(checkboxes.querySelectorAll('input:checked')).map(x=>x.value));
-  checkboxes.innerHTML = '';
-  numerosCache.filter(n => n.ativo || marcados.has(String(n.id))).forEach(n => {
-    checkboxes.innerHTML += `<label><input type="checkbox" value="${n.id}" class="chk-numero-lote" ${marcados.has(String(n.id)) ? 'checked' : ''}> ${n.nome}</label>`;
-  });
-  atualizarPreviaLote();
+  if (!filtrados.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td'); td.colSpan = 8;
+    td.textContent = numerosCache.length ? 'Nenhum número encontrado para essa pesquisa.' : 'Nenhum número cadastrado.';
+    td.style.cssText = 'text-align:center;color:#64748b;padding:24px;';
+    tr.appendChild(td); tbody.appendChild(tr);
+  }
 }
 
 async function carregarHistorico() {
