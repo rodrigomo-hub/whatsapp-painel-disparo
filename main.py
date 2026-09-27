@@ -60,7 +60,7 @@ WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN", env.get("WEBHOOK_V
 # como manter cookie de sessao. So vale para as rotas em ROTAS_API_KEY -
 # nao da acesso a cadastro/exclusao de numeros nem a mais nada do painel.
 API_KEY = os.environ.get("API_KEY", env.get("API_KEY", ""))
-ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar", "/api/resposta-lead", "/api/vendeai/atualizar-atributos-conversa", "/api/transbordo/receber", "/api/transbordo/disponibilidade"}
+ROTAS_API_KEY = {"/api/disponibilidade-consulta", "/disparar", "/api/disparo-lote", "/api/pode-disparar", "/api/resposta-lead", "/api/vendeai/atualizar-atributos-conversa", "/api/transbordo/receber", "/api/transbordo/disponibilidade"}
 # Token da GTI SMS - fallback quando nao ha numero de WhatsApp disponivel
 # ou o envio via Meta falha. Sem esse token configurado, o fallback fica
 # desligado e o comportamento continua identico a hoje (so WhatsApp).
@@ -909,8 +909,8 @@ def fazer_logout(request: Request):
 @app.get("/api/pode-disparar")
 def pode_disparar():
     """
-    Checagem rapida e SEM CUSTO (so consulta o banco local, nao chama a
-    Meta nem nenhuma API paga) pra saber se vale a pena seguir com uma
+    Checagem rapida (consulta o banco local e, se necessario, o painel
+    de destino; nao chama a Meta nem nenhuma API paga) pra saber se vale a pena seguir com uma
     consulta paga antes de tentar o disparo de verdade. Pensado pra ser
     chamado pelo n8n logo antes da consulta de CPF (ou qualquer consulta
     que tenha custo), evitando gastar a consulta a toa quando o disparo
@@ -945,7 +945,8 @@ def pode_disparar():
         return {'pode_disparar': destino.get('disponivel') is True,
                 'motivo_codigo': None if destino.get('disponivel') else 'transbordo_indisponivel',
                 'motivo': 'Consulta ao painel de destino; capacidade sera conferida novamente na entrada',
-                'numeros_disponiveis':0,'canal_provavel':'transbordo' if destino.get('disponivel') else None}
+                'numeros_disponiveis':0,'canal_provavel':'transbordo' if destino.get('disponivel') else None,
+                'motivo_destino':destino.get('motivo_codigo'), 'destino_consultado':True}
     if not disponiveis and not sms_disponivel:
         return {
             "pode_disparar": False,
@@ -2181,3 +2182,29 @@ def testar_destino_transbordo(cfg):
 @app.post('/api/transbordo/testar')
 async def testar_transbordo():
     return await asyncio.to_thread(testar_destino_transbordo,carregar_configuracao())
+
+
+@app.get('/api/disponibilidade-consulta')
+def disponibilidade_consulta():
+    resultado=pode_disparar()
+    permitido=resultado['pode_disparar'] is True
+    canal=resultado.get('canal_provavel')
+    cfg=carregar_configuracao()
+    motivos={
+        'lote_em_andamento':'Disparo por planilha em andamento no painel de origem.',
+        'fora_do_horario':'Fora do horário permitido no painel de origem.',
+        'nenhum_numero_disponivel':'Sem capacidade local e sem encaminhamento disponível.',
+        'transbordo_indisponivel':'Sem capacidade local e o destino não confirmou disponibilidade.'}
+    return JSONResponse({
+        'consultar_nova_vida':permitido,
+        'pode_disparar':permitido,
+        'destino_provavel':('transbordo' if canal=='transbordo' else 'local') if permitido else None,
+        'nome_destino':(cfg['transbordo_nome'] or 'Painel de destino') if canal=='transbordo' else ('Seu painel' if permitido else None),
+        'canal_provavel':canal,
+        'motivo_codigo':resultado.get('motivo_codigo'),
+        'motivo':'Há capacidade neste momento; pode seguir com a consulta.' if permitido else motivos.get(resultado.get('motivo_codigo'),resultado.get('motivo')),
+        'destino_consultado':resultado.get('destino_consultado',False),
+        'motivo_destino':resultado.get('motivo_destino'),
+        'capacidade_reservada':False,
+        'observacao':'Disponibilidade momentânea. A capacidade será conferida novamente ao receber o lead.'
+    },headers={'Cache-Control':'no-store'})

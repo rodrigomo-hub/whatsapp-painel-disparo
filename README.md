@@ -317,3 +317,15 @@ Esta implementacao protege a transferencia entre paineis; nao promete exatamente
 entrega final do WhatsApp em falhas externas. A politica `incerto` da fila continua.
 
 O painel de destino mostra as ultimas 50 tentativas autenticadas em Transbordos recebidos, inclusive recusas por capacidade, configuracao ou lote em andamento. Recusas nao entram na fila. Aceites acompanham o estado atual da fila. O historico comeca apos esta atualizacao; consultas de disponibilidade nao sao entradas de leads.
+
+## Checagem antes da consulta paga (n8n)
+
+GET /api/disponibilidade-consulta, autenticado com X-API-Key do painel de origem.
+Nao recebe CPF nem telefone e nao chama Nova Vida, Meta ou cadastro de leads.
+Prioriza a capacidade local (incluindo SMS se configurado); se esgotada, consulta
+Simplifica pelo destino configurado e habilitado. Falha de comunicacao retorna
+consultar_nova_vida=false. Respeita horario e exclusividade de lote da origem.
+No n8n: HTTP Request -> IF consultar_nova_vida is true -> Nova Vida -> /disparar.
+No ramo false, encerre o processamento antes da consulta paga.
+A resposta informa destino_provavel, nome_destino, motivo_codigo e motivo_destino.
+Nao reserva capacidade nem garante entrega: a entrada confere novamente.
