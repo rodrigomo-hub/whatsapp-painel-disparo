@@ -191,3 +191,58 @@ class TransbordoTests(unittest.TestCase):
                 row=c.execute('SELECT * FROM fila_disparos').fetchone()
                 self.assertTrue(row['destino'].endswith('|CONTA-AMIGO'))
                 self.assertEqual(json.loads(row['payload'])['mailing']['campaign'],'DESTINO')
+
+
+class RecebidosTests(TransbordoTests):
+    def receber(self):
+        with patch.object(main,'API_KEY','dest-key'):
+            return self.client.post('/api/transbordo/receber',json={'id':'d'*32,'lead':self.lead},headers={'X-API-Key':'dest-key'})
+
+    def test_recusa_visivel_sem_enfileirar(self):
+        self.sem_capacidade()
+        self.assertEqual(self.receber().status_code,409)
+        itens=self.client.get('/api/transbordos/recebidos').json()['itens']
+        self.assertEqual(itens[0]['status'],'recusado')
+        self.assertEqual(itens[0]['motivo'],'nenhum_numero_disponivel')
+        self.assertFalse(self.fila.resumo()['contagens'])
+
+    def test_aceito_acompanha_fila_e_duplicado_nao_reenvia(self):
+        a=self.receber()
+        self.assertEqual(a.status_code,202)
+        self.assertEqual(self.receber().status_code,200)
+        with test_db() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM fila_disparos').fetchone()[0],1)
+            c.execute("UPDATE fila_disparos SET status='sucesso'")
+        itens=self.client.get('/api/transbordos/recebidos').json()['itens']
+        self.assertEqual(len(itens),2)
+        self.assertTrue(all(i['status']=='sucesso' for i in itens))
+
+    def test_sem_configuracao_visivel(self):
+        with test_db() as c: c.execute('UPDATE configuracao SET vendeai_habilitado=0')
+        self.receber()
+        self.assertEqual(transbordo.listar_recebidos(main.get_db)[0]['motivo'],'destino_nao_configurado')
+
+    def test_sem_autenticacao_nao_registra(self):
+        self.client.post('/api/transbordo/receber',json={'id':'d'*32,'lead':self.lead})
+        self.assertEqual(transbordo.listar_recebidos(main.get_db),[])
+
+    def test_entrada_ocupada_visivel(self):
+        from contextlib import contextmanager
+        @contextmanager
+        def ocupada(*args): yield False
+        with patch.object(main.fila_disparos,'trava_worker',ocupada):
+            self.assertEqual(self.receber().status_code,409)
+        self.assertEqual(transbordo.listar_recebidos(main.get_db)[0]['motivo'],'entrada_em_andamento')
+
+    def test_lote_em_andamento_registra_recusa(self):
+        with patch.object(main,'estado_lote',return_value={'lote':True}):
+            self.assertEqual(self.receber().status_code,409)
+        self.assertEqual(transbordo.listar_recebidos(main.get_db)[0]['motivo'],'lote_em_andamento')
+
+    def test_erro_posterior_exibe_motivo(self):
+        self.receber()
+        with test_db() as c:
+            c.execute("UPDATE fila_disparos SET status='erro',resultado=?", ('{"motivo_codigo":"nenhum_numero_disponivel"}',))
+        item=transbordo.listar_recebidos(main.get_db)[0]
+        self.assertEqual(item['status'],'erro')
+        self.assertEqual(item['motivo'],'nenhum_numero_disponivel')

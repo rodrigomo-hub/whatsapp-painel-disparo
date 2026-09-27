@@ -30,6 +30,40 @@ def migrar(c):
         telefone TEXT NOT NULL, status TEXT NOT NULL, status_destino TEXT NOT NULL DEFAULT '',
         motivo TEXT NOT NULL DEFAULT '', criado_em REAL NOT NULL, atualizado_em REAL NOT NULL)''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_transbordo_chave ON transbordos(chave,criado_em)')
+    c.execute('''CREATE TABLE IF NOT EXISTS transbordos_recebidos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, recibo TEXT NOT NULL,
+        nome TEXT NOT NULL, telefone TEXT NOT NULL, criado_em REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'recebido', motivo TEXT NOT NULL DEFAULT '',
+        fila_id TEXT NOT NULL DEFAULT '')''')
+
+
+def registrar_recebido(get_db, recibo, lead):
+    def texto(*campos):
+        return next((str(lead[k])[:200] for k in campos if isinstance(lead.get(k), (str, int))), '')
+    with closing(get_db()) as c, c:
+        return c.execute('INSERT INTO transbordos_recebidos(recibo,nome,telefone,criado_em) VALUES(?,?,?,?)',
+                         (recibo,texto('nome','name'),texto('whatsapp','telefone','phone'),time.time())).lastrowid
+
+
+def finalizar_recebido(get_db, id, status, motivo='', fila_id=''):
+    with closing(get_db()) as c, c:
+        c.execute('UPDATE transbordos_recebidos SET status=?,motivo=?,fila_id=? WHERE id=?', (status,motivo,fila_id,id))
+
+
+def listar_recebidos(get_db):
+    with closing(get_db()) as c:
+        rows=c.execute('''SELECT r.*, f.status AS estado_fila, f.resultado, f.cadastro FROM transbordos_recebidos r
+            LEFT JOIN fila_disparos f ON f.id=r.fila_id ORDER BY r.id DESC LIMIT 50''').fetchall()
+    itens=[]
+    for r in rows:
+        item={k:r[k] for k in ('id','recibo','nome','telefone','criado_em','motivo','fila_id')}
+        item['status']=r['estado_fila'] or r['status']
+        if item['status']=='erro':
+            resultado=json.loads(r['resultado'] or '{}')
+            cadastro=json.loads(r['cadastro'] or '{}')
+            item['motivo']=resultado.get('motivo_codigo') or cadastro.get('motivo') or 'falha_no_envio'
+        itens.append(item)
+    return itens
 
 
 def validar_url(valor):

@@ -2100,27 +2100,47 @@ def consultar_disponibilidade_transbordo(request: Request):
 
 
 @app.post('/api/transbordo/receber')
-@entrada_exclusiva
 async def receber_transbordo(request: Request):
     exigir_chave_transbordo(request)
     body=await request.json()
     if not isinstance(body,dict) or not isinstance(body.get('id'),str) or not re.fullmatch('[0-9a-f]{32}',body['id']) or not isinstance(body.get('lead'),dict):
         raise HTTPException(400,'Recibo e lead invalidos')
-    cfg=carregar_configuracao()
-    lead=transbordo.dados_lead(body['lead'])
-    preparado=vendeai_mailing.preparar_lead(lead,cfg)
-    transbordo.validar_lead(preparado['mailing'])
-    chave='transbordo:'+body['id']
-    existente=obter_fila().existente(preparado,lead,cfg,chave)
-    if existente:
-        return {**existente,'recibo':body['id']}
-    disponibilidade=disponibilidade_transbordo()
-    if not disponibilidade['disponivel']:
-        return JSONResponse({'status':'erro','aceito':False,**disponibilidade},status_code=409)
-    if variaveis_vazias_impedem(preparado['variaveis_template']):
-        raise HTTPException(400,'Variaveis incompativeis com o template do destino')
-    item=obter_fila().enfileirar([(preparado,lead,'individual',[],chave)],cfg)[0]
-    return JSONResponse({**item,'recibo':body['id']},status_code=202)
+    tentativa=transbordo.registrar_recebido(get_db,body['id'],body['lead'])
+    def recusar(motivo, codigo=409):
+        transbordo.finalizar_recebido(get_db,tentativa,'recusado',motivo)
+        return JSONResponse({'status':'erro','aceito':False,'recibo':body['id'],'motivo_codigo':motivo},status_code=codigo)
+    try:
+        with fila_disparos.trava_worker(str(DB_FILE)+'.entrada') as obtida:
+            if not obtida:
+                return recusar('entrada_em_andamento')
+            cfg=carregar_configuracao()
+            lead=transbordo.dados_lead(body['lead'])
+            preparado=vendeai_mailing.preparar_lead(lead,cfg)
+            transbordo.validar_lead(preparado['mailing'])
+            chave='transbordo:'+body['id']
+            existente=obter_fila().existente(preparado,lead,cfg,chave)
+            if existente:
+                transbordo.finalizar_recebido(get_db,tentativa,'aceito',fila_id=existente['fila_id'])
+                return {**existente,'recibo':body['id']}
+            disponibilidade=disponibilidade_transbordo()
+            if not disponibilidade['disponivel']:
+                return recusar(disponibilidade['motivo_codigo'])
+            if variaveis_vazias_impedem(preparado['variaveis_template']):
+                return recusar('variaveis_incompativeis',400)
+            item=obter_fila().enfileirar([(preparado,lead,'individual',[],chave)],cfg)[0]
+            transbordo.finalizar_recebido(get_db,tentativa,'aceito',fila_id=item['fila_id'])
+            return JSONResponse({**item,'recibo':body['id']},status_code=202)
+    except HTTPException as exc:
+        transbordo.finalizar_recebido(get_db,tentativa,'recusado',str(exc.detail)[:200])
+        raise
+    except Exception:
+        transbordo.finalizar_recebido(get_db,tentativa,'incerto','falha_no_processamento')
+        raise
+
+
+@app.get('/api/transbordos/recebidos')
+def listar_transbordos_recebidos():
+    return {'itens':transbordo.listar_recebidos(get_db)}
 
 
 @app.get('/api/transbordo/recebidos/{recibo}')

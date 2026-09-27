@@ -315,3 +315,5 @@ O JSON de entrada do n8n permanece igual, mas o fluxo deve tratar `encaminhado`,
 `recusado` e `pendente` explicitamente. Nao repetir com nova chave apenas por timeout.
 Esta implementacao protege a transferencia entre paineis; nao promete exatamente uma
 entrega final do WhatsApp em falhas externas. A politica `incerto` da fila continua.
+
+O painel de destino mostra as ultimas 50 tentativas autenticadas em Transbordos recebidos, inclusive recusas por capacidade, configuracao ou lote em andamento. Recusas nao entram na fila. Aceites acompanham o estado atual da fila. O historico comeca apos esta atualizacao; consultas de disponibilidade nao sao entradas de leads.
