@@ -192,8 +192,8 @@
 </div>
 
 <div class="cartao">
-  <h2>Transbordos recebidos</h2>
-  <p style="font-size:13px;color:#64748b;">Últimas 50 tentativas recebidas de outro painel. Recusados não ficam na fila e não serão enviados depois. Atualização automática a cada 10 segundos.</p>
+  <h2>Leads recebidos</h2>
+  <p style="font-size:13px;color:#64748b;">Últimas 50 entradas recebidas. Recusados não ficam na fila e não serão enviados depois. Atualização automática a cada 10 segundos.</p>
   <div style="overflow-x:auto;max-height:320px;"><table><thead><tr><th>Recebido em</th><th>Lead</th><th>Telefone</th><th>Situação</th><th>Motivo</th></tr></thead><tbody id="tabela-transbordos-recebidos"></tbody></table></div>
 </div>
 
@@ -773,8 +773,8 @@ async function carregarTransbordosRecebidos() {
       const tr=document.createElement('tr');
       [new Date(item.criado_em*1000).toLocaleString('pt-BR'),item.nome || 'Sem nome',item.telefone,estados[item.status] || item.status,motivos[item.motivo] || item.motivo || (item.status==='erro' ? 'Consulte o detalhe na fila de disparos' : '—')].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.appendChild(td);});t.appendChild(tr);
     }
-    if(!d.itens.length){const tr=t.insertRow();const td=tr.insertCell();td.colSpan=5;td.textContent='Nenhum transbordo recebido ainda.';}
-  }catch(e){t.replaceChildren();const td=t.insertRow().insertCell();td.colSpan=5;td.textContent='Não foi possível atualizar os transbordos recebidos.';}
+    if(!d.itens.length){const tr=t.insertRow();const td=tr.insertCell();td.colSpan=5;td.textContent='Nenhum lead recebido ainda.';}
+  }catch(e){t.replaceChildren();const td=t.insertRow().insertCell();td.colSpan=5;td.textContent='Não foi possível atualizar os leads recebidos.';}
 }
 
 async function carregarTransbordos() {
