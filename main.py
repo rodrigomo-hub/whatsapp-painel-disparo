@@ -2181,3 +2181,39 @@ def testar_destino_transbordo(cfg):
 @app.post('/api/transbordo/testar')
 async def testar_transbordo():
     return await asyncio.to_thread(testar_destino_transbordo,carregar_configuracao())
+
+
+@app.get('/api/numeros/{numero_id}/situacao-meta')
+def situacao_meta(numero_id: int):
+    with closing(get_db()) as c:
+        numero=c.execute('SELECT phone_number_id,access_token FROM numeros WHERE id=?',(numero_id,)).fetchone()
+    if numero is None:
+        raise HTTPException(404,'Numero nao encontrado')
+    if not numero['access_token'] or not numero['phone_number_id']:
+        return {'situacao':'Nao foi possivel consultar','detalhe':'Token ou identificador do numero ausente.'}
+    try:
+        r=requests.get('https://graph.facebook.com/v21.0/'+requests.utils.quote(numero['phone_number_id'],safe=''),
+                       params={'fields':'health_status'},headers={'Authorization':'Bearer '+numero['access_token']},
+                       timeout=(5,15),allow_redirects=False)
+        d=r.json()
+        if not isinstance(d,dict): raise ValueError()
+        if r.status_code!=200 or d.get('error'):
+            erro=d.get('error') or {}
+            code=erro.get('code') if isinstance(erro,dict) else None
+            detalhe='Token invalido ou expirado.' if code==190 else 'A Meta nao permitiu a consulta. Confira as permissoes e o acesso do token a esta conta.'
+            return {'situacao':'Nao foi possivel consultar','detalhe':detalhe,'codigo_meta':code,'http_status':r.status_code}
+        h=d.get('health_status') or {}
+        status=h.get('can_send_message')
+        rotulos={'AVAILABLE':'Disponivel para envio','LIMITED':'Envio limitado','BLOCKED':'Envio bloqueado'}
+        entidades=[]
+        for e in h.get('entities',[]):
+            if not isinstance(e,dict): continue
+            erros=[]
+            for error in e.get('errors',[]) or []:
+                if isinstance(error,dict):
+                    texto=str(error.get('error_description') or error.get('error_summary') or '')[:1000]
+                    erros.append({'codigo':error.get('error_code'),'descricao':texto.replace(numero['access_token'],'[oculto]')})
+            entidades.append({'tipo':e.get('entity_type'),'situacao':rotulos.get(e.get('can_send_message'),'Nao informado'),'erros':erros})
+        return {'situacao':rotulos.get(status,'Situacao nao informada'),'detalhe':'Bloqueio de envio nao confirma banimento definitivo. Esta consulta nao garante a entrega de mensagens.', 'entidades':entidades}
+    except (requests.RequestException,ValueError,TypeError,AttributeError):
+        return {'situacao':'Nao foi possivel consultar','detalhe':'Falha de comunicacao ou resposta invalida da Meta. Tente novamente.'}

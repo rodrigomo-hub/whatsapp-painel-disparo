@@ -929,6 +929,22 @@ function filtrarNumeros(numeros, pesquisa) {
       (texto.replace(/\D/g, '').includes(digitos) || String(n.phone_number_id || '').includes(digitos)));
   });
 }
+async function verificarSituacaoMeta(id, botao) {
+  botao.disabled=true;botao.textContent='Consultando…';
+  try {
+    const r=await fetch('/api/numeros/'+id+'/situacao-meta');if(!r.ok)throw new Error();
+    const d=await r.json();
+    const linhas=[d.situacao, d.detalhe];
+    if(d.codigo_meta)linhas.push('Código Meta: '+d.codigo_meta);
+    for(const e of d.entidades || []){
+      linhas.push((e.tipo || 'Entidade')+': '+e.situacao);
+      for(const erro of e.erros || [])linhas.push('Aviso da Meta '+(erro.codigo ? erro.codigo+': ' : '')+erro.descricao);
+    }
+    alert(linhas.join('\n\n'));
+  }catch(e){alert('Não foi possível consultar a situação. Atualize a página e tente novamente.');}
+  finally{botao.disabled=false;botao.textContent='Verificar situação';}
+}
+
 function renderizarNumeros() {
   const filtrados = filtrarNumeros(numerosCache, document.getElementById('pesquisa-numero').value);
   document.getElementById('pesquisa-numero-total').textContent = `${filtrados.length} de ${numerosCache.length} números`;
@@ -946,6 +962,7 @@ function renderizarNumeros() {
       <td>${n.enviados_hora} / ${n.limite_hora}</td>
       <td><span class="badge ${n.ativo ? 'badge-ativo' : 'badge-pausado'}">${n.ativo ? 'Ativo' : 'Pausado'}</span></td>
       <td>
+        <button class="btn-editar" onclick="verificarSituacaoMeta(${n.id}, this)">Verificar situação</button>
         <button class="btn-editar" onclick="abrirModal(${n.id})">Editar</button>
         <button class="btn-toggle" onclick="toggleNumero(${n.id}, ${n.ativo ? 0 : 1})">${n.ativo ? 'Pausar' : 'Ativar'}</button>
         <button class="btn-remover" onclick="removerNumero(${n.id})">Remover</button>
