@@ -38,3 +38,14 @@ class SituacaoTests(unittest.TestCase):
             self.assertEqual(e['tipo'],'Número de telefone')
             self.assertIn('não ao envio de mensagens',e['erros'][0]['descricao'])
             self.assertNotIn('is not enabled',e['erros'][0]['descricao'])
+
+    def test_motivos_especificos(self):
+        for codigo,trecho in [(141006,'Problema no método de pagamento'),(141008,'inativa'),(141010,'Verificação da empresa'),(141014,'banida')]:
+            for valor in (codigo,str(codigo)):
+                r=self.consultar({'health_status':{'can_send_message':'BLOCKED','entities':[{'entity_type':'WABA','can_send_message':'BLOCKED','errors':[{'error_code':valor}]}]}})
+                self.assertIn(trecho,r['entidades'][0]['erros'][0]['descricao'])
+    def test_codigo_desconhecido_nao_inventa_diagnostico(self):
+        r=self.consultar({'health_status':{'can_send_message':'BLOCKED','entities':[{'entity_type':'WABA','errors':[{'error_code':999999,'error_description':'Unknown reason'}]}]}})
+        e=r['entidades'][0]['erros'][0]
+        self.assertIn('sem tradução',e['descricao'])
+        self.assertEqual(e['descricao_original'],'Unknown reason')
