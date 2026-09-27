@@ -1,0 +1,159 @@
+"""Encaminhamento com recibo persistente, sem repetir POST de resultado incerto."""
+import hashlib
+import json
+import re
+import time
+import uuid
+from contextlib import closing
+from datetime import datetime, date
+from urllib.parse import urlparse
+
+import requests
+from fastapi import HTTPException
+
+CONFIG_COLUMNS = {
+    'transbordo_habilitado': 'INTEGER NOT NULL DEFAULT 0',
+    'transbordo_url': "TEXT NOT NULL DEFAULT ''",
+    'transbordo_nome': "TEXT NOT NULL DEFAULT ''",
+    'transbordo_token': "TEXT NOT NULL DEFAULT ''",
+}
+
+
+def migrar(c):
+    colunas = {r['name'] for r in c.execute('PRAGMA table_info(configuracao)')}
+    for k, v in CONFIG_COLUMNS.items():
+        if k not in colunas:
+            c.execute(f'ALTER TABLE configuracao ADD COLUMN {k} {v}')
+    c.execute('''CREATE TABLE IF NOT EXISTS transbordos (
+        id TEXT PRIMARY KEY, chave TEXT NOT NULL, fingerprint TEXT NOT NULL,
+        destino TEXT NOT NULL, destino_nome TEXT NOT NULL, nome TEXT NOT NULL,
+        telefone TEXT NOT NULL, status TEXT NOT NULL, status_destino TEXT NOT NULL DEFAULT '',
+        motivo TEXT NOT NULL DEFAULT '', criado_em REAL NOT NULL, atualizado_em REAL NOT NULL)''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_transbordo_chave ON transbordos(chave,criado_em)')
+
+
+def validar_url(valor):
+    try:
+        u = urlparse(valor)
+        porta = u.port
+    except ValueError:
+        raise HTTPException(400, 'URL do destino invalida')
+    if u.scheme != 'https' or not u.hostname or u.username or u.password or u.query or u.fragment or u.path not in ('', '/') or porta not in (None, 443):
+        raise HTTPException(400, 'Destino deve ser uma URL base HTTPS, sem caminho, porta ou credenciais')
+    return valor.rstrip('/')
+
+
+def validar_lead(m):
+    if not re.fullmatch(r'55[1-9][0-9][0-9]{8,9}', m['phone']):
+        raise HTTPException(400, 'Telefone invalido para transbordo')
+    if m.get('cpf'):
+        cpf = re.sub(r'\D', '', m['cpf'])
+        if len(cpf) != 11 or len(set(cpf)) == 1 or any(int(cpf[k]) != (sum(int(cpf[i]) * (k+1-i) for i in range(k)) * 10 % 11) % 10 for k in (9,10)):
+            raise HTTPException(400, 'CPF invalido para transbordo')
+    if m.get('birth_date'):
+        try:
+            d = datetime.strptime(m['birth_date'], '%d/%m/%Y').date()
+            if d > date.today() or (date.today()-d).days > 120*366:
+                raise ValueError()
+        except ValueError:
+            raise HTTPException(400, 'Nascimento invalido para transbordo')
+    if m.get('email') and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', m['email']):
+        raise HTTPException(400, 'Email invalido para transbordo')
+
+
+def dados_lead(body):
+    campos = ('whatsapp','telefone','phone','cpf','nome','name','nascimento','birth_date','email','produto','product','campanha','campaign','variaveis_template')
+    lead = {k: body[k] for k in campos if k in body}
+    if body.get('info_extra') and not isinstance(body['info_extra'],dict):
+        raise HTTPException(400,'info_extra deve ser objeto')
+    if body.get('info_extra'):
+        lead['info_extra'] = {k: v for k,v in body['info_extra'].items() if k in ('email','nascimento','birth_date')}
+    return lead
+
+
+def identidade(body, chave):
+    if chave is not None and (not isinstance(chave,str) or not 1 <= len(chave.strip()) <= 200):
+        raise HTTPException(400, 'Idempotency-Key deve ter de 1 a 200 caracteres')
+    fp = hashlib.sha256(json.dumps(dados_lead(body),sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+    return ('exp:' + hashlib.sha256(chave.strip().encode()).hexdigest() if chave else 'auto:'+fp), fp
+
+
+class Transbordo:
+    def __init__(self, get_db):
+        self.get_db = get_db
+
+    def buscar(self, body, chave):
+        key, fp = identidade(body, chave)
+        with closing(self.get_db()) as c:
+            r = c.execute("SELECT * FROM transbordos WHERE chave=? AND (criado_em>=? OR chave LIKE 'exp:%' OR status IN ('enviando','incerto','encaminhado')) ORDER BY criado_em DESC LIMIT 1", (key,time.time()-86400)).fetchone()
+        if r and r['fingerprint'] != fp:
+            raise HTTPException(409, 'Idempotency-Key ja usada com dados diferentes')
+        return dict(r) if r else None
+
+    def obter(self, id):
+        with closing(self.get_db()) as c:
+            r = c.execute('SELECT * FROM transbordos WHERE id=?',(id,)).fetchone()
+        if not r:
+            raise HTTPException(404, 'Transbordo nao encontrado')
+        return dict(r)
+
+    def listar(self):
+        with closing(self.get_db()) as c:
+            return [self.publico(dict(r)) for r in c.execute('SELECT * FROM transbordos ORDER BY criado_em DESC LIMIT 50')]
+
+    @staticmethod
+    def publico(r):
+        incerto = r['status'] in ('enviando','incerto')
+        return {'status': 'pendente' if incerto else r['status'],
+                'aceito': None if incerto else r['status'] not in ('recusado',),
+                'transbordo_id':r['id'], 'destino':r['destino_nome'] or r['destino'],
+                'nome':r['nome'], 'telefone':r['telefone'], 'status_destino':r['status_destino'],
+                'motivo_codigo':r['motivo'], 'criado_em':r['criado_em'],
+                'consultar_em':'/api/transbordo/'+r['id']}
+
+    def alterar(self,id,status,motivo='',status_destino=''):
+        with closing(self.get_db()) as c, c:
+            c.execute('UPDATE transbordos SET status=?,motivo=?,status_destino=?,atualizado_em=? WHERE id=?',(status,motivo,status_destino,time.time(),id))
+        return self.obter(id)
+
+    def encaminhar(self, body, chave, cfg, mailing):
+        anterior = self.buscar(body,chave)
+        if anterior:
+            return self.publico(anterior)
+        key, fp = identidade(body,chave)
+        id = uuid.uuid4().hex
+        with closing(self.get_db()) as c, c:
+            c.execute('INSERT INTO transbordos(id,chave,fingerprint,destino,destino_nome,nome,telefone,status,criado_em,atualizado_em) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                      (id,key,fp,cfg['transbordo_url'],cfg['transbordo_nome'],mailing.get('name',''),mailing['phone'],'enviando',time.time(),time.time()))
+        try:
+            r = requests.post(cfg['transbordo_url']+'/api/transbordo/receber',
+                              json={'id':id,'lead':dados_lead(body)},
+                              headers={'X-API-Key':cfg['transbordo_token']},timeout=(5,20),allow_redirects=False)
+            if r.status_code in (200,202):
+                d = r.json()
+                if d.get('recibo') != id or d.get('status') not in ('enfileirado','sucesso','erro','cancelado','incerto'):
+                    raise ValueError()
+                status = 'encaminhado' if d['status']=='enfileirado' else d['status']
+                resultado = self.alterar(id,status,status_destino=d['status'])
+            elif r.status_code in (400,401,403,409,422,429):
+                resultado = self.alterar(id,'recusado','destino_recusou_'+str(r.status_code))
+            else:
+                resultado = self.alterar(id,'incerto','transbordo_sem_confirmacao')
+        except (requests.RequestException,ValueError,TypeError,AttributeError):
+            resultado = self.alterar(id,'incerto','transbordo_sem_confirmacao')
+        return self.publico(resultado)
+
+    def consultar_destino(self,id,cfg):
+        row = self.obter(id)
+        if row['status'] not in ('enviando','incerto','encaminhado') or row['destino'] != cfg['transbordo_url'] or not cfg['transbordo_token']:
+            return self.publico(row)
+        try:
+            r = requests.get(row['destino']+'/api/transbordo/recebidos/'+id,headers={'X-API-Key':cfg['transbordo_token']},timeout=(5,10),allow_redirects=False)
+            if r.status_code == 200:
+                d = r.json()
+                if d.get('recibo') == id and d.get('status') in ('aguardando_cadastro','cadastrando','pronto','enviando','sucesso','erro','cancelado','incerto'):
+                    status = 'encaminhado' if d['status'] in ('aguardando_cadastro','cadastrando','pronto','enviando') else d['status']
+                    row = self.alterar(id,status,status_destino=d['status'])
+        except (requests.RequestException,ValueError,TypeError,AttributeError):
+            pass
+        return self.publico(row)

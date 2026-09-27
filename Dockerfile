@@ -9,6 +9,7 @@ COPY main.py .
 COPY vendeai_mailing.py .
 COPY fila_disparos.py .
 COPY planilhas.py .
+COPY transbordo.py .
 COPY templates ./templates
 
 EXPOSE 80

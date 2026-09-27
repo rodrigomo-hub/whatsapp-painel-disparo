@@ -107,6 +107,24 @@ class Fila:
             resposta["tentar_em"] = row["tentar_em"] or None
         return resposta
 
+    def existente(self, preparado, original, cfg, chave_explicita=None):
+        if chave_explicita is not None and (not isinstance(chave_explicita, str) or not 1 <= len(chave_explicita.strip()) <= 200):
+            raise HTTPException(400, "idempotency_key deve ter de 1 a 200 caracteres")
+        base = json.loads(serializar(preparado))
+        if not (original.get("email") or "").strip() and not ((original.get("info_extra") or {}).get("email") or "").strip():
+            base["mailing"].pop("email", None)
+        fp = hashlib.sha256(serializar([destino(cfg), base, "individual", []]).encode()).hexdigest()
+        chave = "exp:" + chave_explicita.strip() if chave_explicita else "auto:" + fp
+        with closing(self.get_db()) as conn:
+            row = conn.execute("SELECT * FROM fila_disparos WHERE chave=? AND (criado_em>=? OR chave LIKE 'exp:%' OR status IN ('aguardando_cadastro','cadastrando','pronto','enviando','incerto')) ORDER BY criado_em DESC LIMIT 1", (chave,time.time()-86400)).fetchone()
+            if not row:
+                return None
+            if row["fingerprint"] != fp:
+                raise HTTPException(409, "idempotency_key ja usada com dados diferentes")
+            controle = conn.execute("SELECT * FROM fila_controle WHERE id=1").fetchone()
+            return {**self.publico(row,controle), "duplicado": True,
+                    "status": "enfileirado" if row["status"] in ATIVOS else row["status"], "estado_fila":row["status"]}
+
     def enfileirar(self, itens, cfg):
         """Transacao unica; retries mantem o email gerado e nao criam novos envios."""
         agora = time.time()

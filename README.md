@@ -277,3 +277,41 @@ template ja cadastrado, busque/selecione novamente ou marque explicitamente o mo
 A deteccao automatica nao classifica cabecalho de midia, botoes dinamicos ou templates
 de autenticacao como texto sem variaveis. O modo nao adiciona suporte a midia nem a
 parametros de cabecalho/botoes; esses formatos requerem implementacao especifica.
+
+## Transbordo opcional entre paineis
+
+Em Configuracoes > Transbordo, configure nome, URL base HTTPS e chave API do destino.
+A chave nao e retornada no GET de configuracao; campo vazio preserva a chave salva.
+A opcao nasce desligada. O teste de conexao consulta disponibilidade sem enviar leads.
+
+Somente novas entradas individuais em `/disparar` podem transbordar, quando nao ha
+canal local disponivel (WhatsApp e fallback SMS). Horario fechado, lote exclusivo,
+falha de cadastro VendeAI, erros de dados e itens ja na fila nao acionam transbordo.
+A prioridade continua local. `/api/pode-disparar` consulta o destino quando necessario.
+
+O encaminhamento ocorre antes de cadastrar na VendeAI da origem. O destino precisa
+ter VendeAI e fila habilitadas, credenciais proprias e disponibilidade. Ele usa seus
+numeros e templates. Dados e variaveis recebidas seguem junto; campos nao informados
+usam os padroes do destino. Templates devem ser compativeis com as variaveis ou
+configurados como estaticos. Nao ha compartilhamento de banco nem tokens da Meta.
+
+O recebedor `/api/transbordo/receber` exige X-API-Key e nunca encaminha novamente.
+Uma recusa retorna `status:recusado`, `aceito:false`, sem fila local ou fallback.
+Um aceite retorna `status:encaminhado`, `aceito:true`, `transbordo_id` e `consultar_em`.
+Isso confirma recebimento no destino, nao envio de mensagem. Consulte
+`GET /api/transbordo/{id}` com a chave da origem para atualizar o resultado remoto.
+O painel mostra os encaminhamentos separadamente e oferece o botao Consultar.
+
+Recomenda-se uma Idempotency-Key estavel por entrada do n8n. A mesma chave com dados
+diferentes gera 409. Sem chave, entradas iguais sao deduplicadas por 24h; pendencias
+e resultados incertos continuam protegidos. Um registro persistente e gravado antes
+da chamada. Timeout, 5xx e resposta inesperada ficam sem confirmacao (`status:pendente`,
+`aceito:null`); nunca geram novo POST ou envio local automatico. Consultar o recibo
+pode recuperar um aceite cuja resposta se perdeu. Um 404 nao prova que o envio nao
+ocorreu, portanto nao libera repeticao automatica. Troca de destino e bloqueada enquanto
+houver encaminhamentos pendentes ou incertos. Redirects nao sao seguidos com dados/chave.
+
+O JSON de entrada do n8n permanece igual, mas o fluxo deve tratar `encaminhado`,
+`recusado` e `pendente` explicitamente. Nao repetir com nova chave apenas por timeout.
+Esta implementacao protege a transferencia entre paineis; nao promete exatamente uma
+entrega final do WhatsApp em falhas externas. A politica `incerto` da fila continua.

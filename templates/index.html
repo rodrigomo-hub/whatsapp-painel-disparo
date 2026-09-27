@@ -99,6 +99,10 @@
 .lote-aviso {font-size:13px;color:#92400e;background:#fffbeb;border-radius:8px;padding:12px;margin:12px 0;}
 .lote-aviso:empty {display:none;}
 @media(max-width:600px){.lote-resumo{grid-template-columns:1fr;gap:8px}.lote-metrica{padding:12px}.lote-metrica strong{font-size:22px}}
+#config-transbordo form {display:block;}
+#config-transbordo form p {margin:14px 0;}
+#config-transbordo label {display:block;font-size:14px;}
+#config-transbordo input:not([type="checkbox"]) {display:block;width:100%;max-width:580px;box-sizing:border-box;margin-top:6px;}
 </style>
 </head>
 <body>
@@ -188,6 +192,12 @@
 </div>
 
 <div class="cartao">
+  <h2>Leads encaminhados</h2>
+  <p style="font-size:13px;color:#64748b;">Encaminhado significa aceito pelo destino, ainda não enviado. Use Consultar para conferir o andamento. Sem confirmação, não reenvie: consulte o recibo primeiro.</p>
+  <div style="overflow-x:auto;max-height:320px;"><table><thead><tr><th>Lead</th><th>Destino</th><th>Situação</th><th>No destino</th><th>Ação</th></tr></thead><tbody id="tabela-transbordos"></tbody></table></div>
+</div>
+
+<div class="cartao">
   <h2>📤 Disparo em lote</h2>
   <p style="color:#888; font-size:13px;">Cole números ou uma lista JSON de leads com telefone, CPF, nome, nascimento, e-mail, produto e campanha. CSV e Excel (.xlsx) aceitam colunas telefone, cpf, nome, nascimento, produto, campanha, email e variavel_1, variavel_2… E-mail vazio é gerado pelo sistema. No Excel, use a primeira aba e formate CPF e telefone como texto.</p>
   <p><a href="/api/lote/modelo.csv">Baixar modelo CSV</a></p>
@@ -237,10 +247,27 @@
   <div class="config-layout">
     <nav class="config-menu" aria-label="Categorias de configuração">
       <a href="#configuracoes-vendeai" data-config="vendeai">Base de campanha<span>Cadastro de leads na VendeAI</span></a>
+      <a href="#configuracoes-transbordo" data-config="transbordo">Transbordo<span>Encaminhar para outro painel</span></a>
       <a href="#configuracoes-sms" data-config="sms">SMS<span>Mensagem, link e fallback</span></a>
       <a href="#configuracoes-horario" data-config="horario">Horários<span>Dias e horários de envio</span></a>
     </nav>
     <div class="config-paineis">
+<section class="cartao config-conteudo" id="config-transbordo" hidden>
+  <h2>Transbordo de leads</h2>
+  <p>Sem capacidade local, encaminha entradas individuais do n8n para outro painel. O destino usa seus próprios números, template e conta VendeAI. Planilhas, bloqueio por lote e fora do horário não acionam transbordo.</p>
+  <form onsubmit="salvarTransbordo(event)">
+    <p><label><input type="checkbox" id="transbordo-habilitado"> Ativar transbordo quando faltar capacidade</label></p>
+    <p><label>Nome do destino <input id="transbordo-nome" placeholder="Simplifica"></label></p>
+    <p><label>Endereço do painel <input id="transbordo-url" type="url" placeholder="https://disparo.simplifica.sbs"></label></p>
+    <p><label>Chave API do destino <input id="transbordo-token" type="password" autocomplete="new-password" placeholder="Vazio mantém a chave atual"></label></p>
+    <p id="transbordo-token-status" style="font-size:13px;"></p>
+    <p><label><input type="checkbox" id="transbordo-remover-token"> Remover chave salva</label></p>
+    <p style="font-size:13px;color:#64748b;">Os dados do lead serão compartilhados com esse destino. As variáveis recebidas seguem junto: o template do destino precisa ser compatível ou configurado sem variáveis. Sem capacidade nos dois painéis, a entrada é recusada. Nenhum retorno automático à origem.</p>
+    <button type="submit" class="btn-toggle">Salvar transbordo</button>
+    <button type="button" class="btn-editar" onclick="testarTransbordo()">Testar conexão salva</button>
+    <p id="transbordo-config-resultado" role="status"></p>
+  </form>
+</section>
 <section class="cartao config-conteudo" id="config-horario" hidden>
   <h2>⏰ Horário de funcionamento</h2>
   <p style="color:#888; font-size:13px;">No modo "respeita horário", disparos feitos fora da janela configurada (via painel ou API/n8n) são recusados automaticamente.</p>
@@ -398,7 +425,7 @@
 <script>
 function mostrarPagina() {
   const categoria = location.hash.replace('#configuracoes-', '');
-  const configuracoes = ['vendeai', 'sms', 'horario'].includes(categoria);
+  const configuracoes = ['vendeai', 'sms', 'horario', 'transbordo'].includes(categoria);
   document.getElementById('pagina-painel').hidden = configuracoes;
   document.getElementById('pagina-configuracoes').hidden = !configuracoes;
   for (const id of ['painel', 'configuracoes']) {
@@ -697,6 +724,52 @@ async function salvarSms(ev) {
     const erro = await res.json();
     alert('Erro ao salvar: ' + (erro.detail || 'erro desconhecido'));
   }
+}
+
+async function carregarTransbordo() {
+  const r=await fetch('/api/configuracao'); const c=await r.json();
+  document.getElementById('transbordo-habilitado').checked=Boolean(c.transbordo_habilitado);
+  document.getElementById('transbordo-nome').value=c.transbordo_nome || '';
+  document.getElementById('transbordo-url').value=c.transbordo_url || '';
+  document.getElementById('transbordo-token').value='';
+  document.getElementById('transbordo-remover-token').checked=false;
+  document.getElementById('transbordo-token-status').textContent=c.transbordo_token_configurado ? 'Chave salva.' : 'Nenhuma chave salva.';
+}
+async function salvarTransbordo(ev) {
+  ev.preventDefault();
+  try {
+    const r=await fetch('/api/configuracao',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      transbordo_habilitado:document.getElementById('transbordo-habilitado').checked,
+      transbordo_nome:document.getElementById('transbordo-nome').value,
+      transbordo_url:document.getElementById('transbordo-url').value,
+      transbordo_token:document.getElementById('transbordo-token').value,
+      transbordo_remover_token:document.getElementById('transbordo-remover-token').checked
+    })});
+    const d=await r.json(); if(!r.ok) throw new Error(d.detail || 'Falha ao salvar');
+    document.getElementById('transbordo-config-resultado').textContent='Configuração salva.';
+    await carregarTransbordo();
+  } catch(e) { document.getElementById('transbordo-config-resultado').textContent=e.message; }
+}
+async function testarTransbordo() {
+  const el=document.getElementById('transbordo-config-resultado'); el.textContent='Testando conexão…';
+  try {
+    const r=await fetch('/api/transbordo/testar',{method:'POST'}); const d=await r.json();
+    el.textContent=d.conectado ? (d.disponivel ? 'Conectado. Destino disponível agora.' : 'Conectado, mas sem disponibilidade: '+d.motivo_codigo) : 'Não foi possível confirmar conexão: '+(d.motivo_codigo || d.detail || 'erro');
+  } catch(e) { el.textContent='Falha de conexão.'; }
+}
+async function carregarTransbordos() {
+  try {
+    const r=await fetch('/api/transbordos'); if(!r.ok)return; const d=await r.json();
+    const t=document.getElementById('tabela-transbordos'); t.replaceChildren();
+    for(const item of d.itens) {
+      const tr=document.createElement('tr');
+      [item.nome+' '+item.telefone,item.destino,item.status+(item.motivo_codigo ? ' · '+item.motivo_codigo:''),item.status_destino || 'Sem confirmação'].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.appendChild(td);});
+      const td=document.createElement('td');const b=document.createElement('button');b.className='btn-editar';b.textContent='Consultar';
+      b.onclick=async()=>{b.disabled=true;b.textContent='Consultando…';try{await fetch(item.consultar_em);await carregarTransbordos();}catch(e){b.textContent='Tentar consulta';b.disabled=false;}};
+      td.appendChild(b);tr.appendChild(td);t.appendChild(tr);
+    }
+    if(!d.itens.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=5;td.textContent='Nenhum lead encaminhado.';tr.appendChild(td);t.appendChild(tr);}
+  }catch(e){}
 }
 
 async function carregarVendeai() {
@@ -1110,8 +1183,10 @@ carregarHistorico();
 carregarHorario();
 carregarSms();
 carregarVendeai();
+carregarTransbordo();
+carregarTransbordos();
 carregarFila();
-setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarSaldoSms(); carregarFila(); }, 10000);
+setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarSaldoSms(); carregarFila(); carregarTransbordos(); }, 10000);
 </script>
 
 </body>

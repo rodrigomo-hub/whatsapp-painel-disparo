@@ -10,6 +10,7 @@ import requests
 import vendeai_mailing
 import fila_disparos
 import planilhas
+import transbordo
 from functools import wraps
 from urllib.parse import urlparse, quote
 from datetime import date, datetime, timedelta
@@ -59,7 +60,7 @@ WEBHOOK_VERIFY_TOKEN = os.environ.get("WEBHOOK_VERIFY_TOKEN", env.get("WEBHOOK_V
 # como manter cookie de sessao. So vale para as rotas em ROTAS_API_KEY -
 # nao da acesso a cadastro/exclusao de numeros nem a mais nada do painel.
 API_KEY = os.environ.get("API_KEY", env.get("API_KEY", ""))
-ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar", "/api/resposta-lead", "/api/vendeai/atualizar-atributos-conversa"}
+ROTAS_API_KEY = {"/disparar", "/api/disparo-lote", "/api/pode-disparar", "/api/resposta-lead", "/api/vendeai/atualizar-atributos-conversa", "/api/transbordo/receber", "/api/transbordo/disponibilidade"}
 # Token da GTI SMS - fallback quando nao ha numero de WhatsApp disponivel
 # ou o envio via Meta falha. Sem esse token configurado, o fallback fica
 # desligado e o comportamento continua identico a hoje (so WhatsApp).
@@ -110,7 +111,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Chamadas automatizadas (n8n etc): aceita X-API-Key valida nas
         # rotas de disparo, sem precisar de login/cookie.
-        if (request.url.path in ROTAS_API_KEY or (request.method == "GET" and re.fullmatch(r"/api/fila/[0-9a-f]{32}", request.url.path))) and API_KEY:
+        if (request.url.path in ROTAS_API_KEY or (request.method == "GET" and re.fullmatch(r"/api/(?:fila|transbordo|transbordo/recebidos)/[0-9a-f]{32}", request.url.path))) and API_KEY:
             chave_recebida = request.headers.get("X-API-Key", "")
             if secrets.compare_digest(chave_recebida, API_KEY):
                 return await call_next(request)
@@ -303,6 +304,7 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN template_sem_variaveis INTEGER NOT NULL DEFAULT 0")
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
+    transbordo.migrar(conn)
     conn.commit()
     conn.close()
 
@@ -355,6 +357,7 @@ def carregar_configuracao() -> dict:
     cfg["sms_habilitado"] = bool(cfg["sms_habilitado"])
     cfg["vendeai_habilitado"] = bool(cfg["vendeai_habilitado"])
     cfg["fila_habilitada"] = bool(cfg["fila_habilitada"])
+    cfg["transbordo_habilitado"] = bool(cfg["transbordo_habilitado"])
     return cfg
 
 
@@ -937,6 +940,12 @@ def pode_disparar():
     cfg = carregar_configuracao()
     sms_disponivel = cfg["sms_habilitado"] and bool(SMS_GTI_TOKEN)
 
+    if not disponiveis and not sms_disponivel and cfg['transbordo_habilitado']:
+        destino = testar_destino_transbordo(cfg)
+        return {'pode_disparar': destino.get('disponivel') is True,
+                'motivo_codigo': None if destino.get('disponivel') else 'transbordo_indisponivel',
+                'motivo': 'Consulta ao painel de destino; capacidade sera conferida novamente na entrada',
+                'numeros_disponiveis':0,'canal_provavel':'transbordo' if destino.get('disponivel') else None}
     if not disponiveis and not sms_disponivel:
         return {
             "pode_disparar": False,
@@ -1181,6 +1190,22 @@ async def disparar(request: Request):
 
     if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone):
         raise HTTPException(400, "Telefone brasileiro invalido")
+
+    chave = request.headers.get("Idempotency-Key") or body.get("idempotency_key")
+    anterior = transbordo.Transbordo(get_db).buscar(body,chave)
+    if anterior:
+        return transbordo.Transbordo.publico(anterior)
+    existente = obter_fila().existente(preparado,body,cfg,chave)
+    if existente:
+        return JSONResponse(existente,status_code=202 if existente['status']=='enfileirado' else 200)
+    impedimento = impedimento_fila()
+    if cfg['transbordo_habilitado'] and impedimento and impedimento['motivo_codigo']=='nenhum_numero_disponivel':
+        if request.headers.get('X-Transbordo-Hop') or body.get('_transbordo'):
+            return {**impedimento,'aceito':False,'motivo_codigo':'transbordo_sem_reencaminhamento'}
+        if urlparse(cfg['transbordo_url']).hostname == request.url.hostname:
+            return {'status':'erro','aceito':False,'motivo_codigo':'transbordo_destino_proprio'}
+        transbordo.validar_lead(lead)
+        return await asyncio.to_thread(transbordo.Transbordo(get_db).encaminhar,body,chave,cfg,lead)
 
     if variaveis_vazias_impedem(variaveis):
         indices_vazios = [i for i, v in enumerate(variaveis, start=1) if not str(v).strip()]
@@ -1623,6 +1648,7 @@ def pagina_estatisticas(request: Request):
 @app.get("/api/configuracao")
 def obter_configuracao():
     cfg = carregar_configuracao()
+    cfg["transbordo_token_configurado"] = bool(cfg.pop("transbordo_token", ""))
     token_painel = cfg.pop("vendeai_mailing_token", "")
     cfg["vendeai_token_configurado"] = bool(token_painel or VENDEAI_API_TOKEN)
     cfg["vendeai_token_origem"] = "painel" if token_painel else ("ambiente" if VENDEAI_API_TOKEN else "ausente")
@@ -1639,6 +1665,28 @@ async def atualizar_configuracao(request: Request):
     if "fila_intervalo_segundos" in body and (type(body["fila_intervalo_segundos"]) is not int or not 60 <= body["fila_intervalo_segundos"] <= 3600):
         raise HTTPException(400, "fila_intervalo_segundos deve estar entre 60 e 3600")
     atual = carregar_configuracao()
+    if 'transbordo_habilitado' in body and type(body['transbordo_habilitado']) is not bool:
+        raise HTTPException(400,'transbordo_habilitado deve ser booleano')
+    for campo in ('transbordo_url','transbordo_nome','transbordo_token'):
+        if campo in body:
+            if not isinstance(body[campo],str):
+                raise HTTPException(400,campo+' deve ser texto')
+            body[campo]=body[campo].strip()
+    if body.get('transbordo_token') == '':
+        del body['transbordo_token']
+    if body.get('transbordo_remover_token') is True:
+        body['transbordo_token']=''
+    if body.get('transbordo_url'):
+        body['transbordo_url']=transbordo.validar_url(body['transbordo_url'])
+        if urlparse(body['transbordo_url']).hostname == request.url.hostname:
+            raise HTTPException(400,'Destino nao pode ser este mesmo painel')
+    prevista_transbordo={**atual,**body}
+    if prevista_transbordo['transbordo_habilitado'] and not (prevista_transbordo['transbordo_url'] and prevista_transbordo['transbordo_token']):
+        raise HTTPException(400,'Informe URL e chave API do destino antes de ativar o transbordo')
+    if 'transbordo_url' in body and body['transbordo_url'] != atual['transbordo_url']:
+        with closing(get_db()) as c:
+            if c.execute("SELECT COUNT(*) FROM transbordos WHERE status IN ('encaminhado','incerto','enviando')").fetchone()[0]:
+                raise HTTPException(409,'Consulte e resolva os transbordos pendentes antes de trocar o destino')
     if any(k in body and body[k].strip() != str(atual[k]).strip() for k in ("vendeai_account_id", "vendeai_mailing_url") if isinstance(body.get(k), str)):
         with closing(get_db()) as conn:
             pendentes = conn.execute("SELECT COUNT(*) FROM fila_disparos WHERE status IN ('aguardando_cadastro','cadastrando','pronto','enviando')").fetchone()[0]
@@ -1703,7 +1751,7 @@ async def atualizar_configuracao(request: Request):
         "sms_habilitado", "sms_modo", "sms_template", "whatsapp_destino",
         "whatsapp_mensagem_template", "link_base_url",
         "vendeai_habilitado", "vendeai_url", "vendeai_account_id", "vendeai_inbox_id",
-        *vendeai_mailing.CONFIG_COLUMNS, *fila_disparos.CONFIG_COLUMNS,
+        *vendeai_mailing.CONFIG_COLUMNS, *fila_disparos.CONFIG_COLUMNS, *transbordo.CONFIG_COLUMNS,
     }
     atualizacoes = {k: v for k, v in body.items() if k in campos_validos}
     if not atualizacoes:
@@ -2028,3 +2076,88 @@ def consultar_fila(identificador: str):
 @app.post("/api/fila/{identificador}/cancelar")
 def cancelar_fila(identificador: str):
     return obter_fila().cancelar(identificador)
+
+
+def exigir_chave_transbordo(request):
+    if not API_KEY or not secrets.compare_digest(request.headers.get('X-API-Key',''),API_KEY):
+        raise HTTPException(401,'Chave API obrigatoria')
+
+
+def disponibilidade_transbordo():
+    cfg=carregar_configuracao()
+    if not cfg['vendeai_habilitado'] or not cfg['fila_habilitada'] or not cfg['vendeai_account_id'] or not (cfg['vendeai_mailing_token'] or VENDEAI_API_TOKEN):
+        return {'disponivel':False,'motivo_codigo':'destino_nao_configurado'}
+    if estado_lote()['lote']:
+        return {'disponivel':False,'motivo_codigo':'lote_em_andamento'}
+    impedimento=impedimento_fila()
+    return {'disponivel':not bool(impedimento),'motivo_codigo':impedimento['motivo_codigo'] if impedimento else None}
+
+
+@app.get('/api/transbordo/disponibilidade')
+def consultar_disponibilidade_transbordo(request: Request):
+    exigir_chave_transbordo(request)
+    return disponibilidade_transbordo()
+
+
+@app.post('/api/transbordo/receber')
+@entrada_exclusiva
+async def receber_transbordo(request: Request):
+    exigir_chave_transbordo(request)
+    body=await request.json()
+    if not isinstance(body,dict) or not isinstance(body.get('id'),str) or not re.fullmatch('[0-9a-f]{32}',body['id']) or not isinstance(body.get('lead'),dict):
+        raise HTTPException(400,'Recibo e lead invalidos')
+    cfg=carregar_configuracao()
+    lead=transbordo.dados_lead(body['lead'])
+    preparado=vendeai_mailing.preparar_lead(lead,cfg)
+    transbordo.validar_lead(preparado['mailing'])
+    chave='transbordo:'+body['id']
+    existente=obter_fila().existente(preparado,lead,cfg,chave)
+    if existente:
+        return {**existente,'recibo':body['id']}
+    disponibilidade=disponibilidade_transbordo()
+    if not disponibilidade['disponivel']:
+        return JSONResponse({'status':'erro','aceito':False,**disponibilidade},status_code=409)
+    if variaveis_vazias_impedem(preparado['variaveis_template']):
+        raise HTTPException(400,'Variaveis incompativeis com o template do destino')
+    item=obter_fila().enfileirar([(preparado,lead,'individual',[],chave)],cfg)[0]
+    return JSONResponse({**item,'recibo':body['id']},status_code=202)
+
+
+@app.get('/api/transbordo/recebidos/{recibo}')
+def recibo_transbordo(recibo: str,request: Request):
+    exigir_chave_transbordo(request)
+    with closing(get_db()) as c:
+        row=c.execute('SELECT id FROM fila_disparos WHERE chave=?',('exp:transbordo:'+recibo,)).fetchone()
+    if not row:
+        raise HTTPException(404,'Recibo nao encontrado')
+    item=obter_fila().consultar(row['id'])
+    return {'recibo':recibo,'status':item['status']}
+
+
+@app.get('/api/transbordos')
+def listar_transbordos():
+    return {'itens':transbordo.Transbordo(get_db).listar()}
+
+
+@app.get('/api/transbordo/{id}')
+async def consultar_transbordo(id: str):
+    return await asyncio.to_thread(transbordo.Transbordo(get_db).consultar_destino,id,carregar_configuracao())
+
+
+def testar_destino_transbordo(cfg):
+    if not cfg['transbordo_url'] or not cfg['transbordo_token']:
+        return {'conectado':False,'disponivel':False,'motivo_codigo':'configuracao_incompleta'}
+    try:
+        r=requests.get(cfg['transbordo_url']+'/api/transbordo/disponibilidade',headers={'X-API-Key':cfg['transbordo_token']},timeout=(5,10),allow_redirects=False)
+        if r.status_code==200:
+            d=r.json()
+            if type(d.get('disponivel')) is bool:
+                return {'conectado':True,'disponivel':d['disponivel'],'motivo_codigo':d.get('motivo_codigo')}
+        return {'conectado':False,'disponivel':False,'motivo_codigo':'destino_http_'+str(r.status_code)}
+    except (requests.RequestException,ValueError,AttributeError):
+        return {'conectado':False,'disponivel':False,'motivo_codigo':'falha_comunicacao'}
+
+
+@app.post('/api/transbordo/testar')
+async def testar_transbordo():
+    return await asyncio.to_thread(testar_destino_transbordo,carregar_configuracao())
