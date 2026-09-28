@@ -14,6 +14,8 @@ class StatusMetaTests(unittest.TestCase):
         with patch.object(main.requests,'get',return_value=Mock(status_code=200,json=Mock(return_value={'quality_rating':'GREEN','status':'BANNED'}))):
             self.assertEqual(main.verificar_qualidade(self.numero()),'GREEN')
         self.assertEqual(self.numero()['status_envio_meta'],'BANNED')
+        self.assertEqual(self.numero()['ativo'],0)
+        self.assertEqual(self.numero()['pausado_por_qualidade'],0)
         self.assertFalse(main.disponivel_agora(self.numero()))
         self.assertEqual(main.capacidade_lote()['capacidade_agora'],0)
     def test_waba_bloqueada_com_numero_conectado(self):

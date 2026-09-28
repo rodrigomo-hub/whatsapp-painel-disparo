@@ -606,6 +606,8 @@ def verificar_qualidade(numero) -> str:
         pass
     with closing(get_db()) as conn, conn:
         conn.execute('UPDATE numeros SET status_envio_meta=? WHERE id=?', (estado, numero['id']))
+        if estado in ('BANNED', 'BLOCKED', 'DISCONNECTED'):
+            conn.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0 WHERE id=?', (numero['id'],))
     return qualidade
 
 
