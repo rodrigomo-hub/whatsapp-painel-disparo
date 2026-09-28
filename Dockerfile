@@ -10,6 +10,7 @@ COPY vendeai_mailing.py .
 COPY fila_disparos.py .
 COPY planilhas.py .
 COPY transbordo.py .
+COPY imagens_template.py .
 COPY templates ./templates
 
 EXPOSE 80

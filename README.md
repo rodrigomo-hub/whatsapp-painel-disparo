@@ -329,3 +329,18 @@ No n8n: HTTP Request -> IF consultar_nova_vida is true -> Nova Vida -> /disparar
 No ramo false, encerre o processamento antes da consulta paga.
 A resposta informa destino_provavel, nome_destino, motivo_codigo e motivo_destino.
 Nao reserva capacidade nem garante entrega: a entrada confere novamente.
+
+## Templates com imagem
+
+Ao buscar templates, cabecalhos IMAGE exibem o anexo obrigatorio JPEG/PNG (ate 5 MB).
+O servidor confirma o template/idioma na Meta ao salvar; sem imagem a configuracao
+nao e aceita. A imagem fica privada no banco persistente, com preview autenticado.
+Uploads sao feitos ao endpoint /PHONE_ID/media; mensagens usam header image.id.
+IDs de midia sao renovados apos 20 dias com a copia salva. Falha no upload impede
+o envio da mensagem. Nao ha envio de teste durante a configuracao.
+Trocar template ou idioma exige anexar novamente; editar o mesmo preserva a imagem.
+Numeros com cabecalho IMAGE conhecido e sem imagem nao contam na capacidade local,
+na planilha, na preconsulta paga ou na disponibilidade para receber encaminhamentos.
+Cada painel usa sua propria imagem; o n8n nao precisa enviar imagem com cada lead.
+Para numeros antigos, Atualizar todos identifica o cabecalho; depois use Editar,
+Buscar templates, selecione o template e anexe a imagem.

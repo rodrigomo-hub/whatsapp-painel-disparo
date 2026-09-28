@@ -172,7 +172,13 @@
     <select id="novo-template" required onchange="mostrarPreview('novo-template', 'preview-novo')">
       <option value="">Selecione um template...</option>
     </select>
-    <label style="font-size:13px;"><input type="checkbox" id="novo-sem-variaveis"> Template de texto sem variáveis (ignorar parâmetros recebidos)</label>
+    <label style="font-size:13px;"><input type="checkbox" id="novo-sem-variaveis"> Texto do template sem variáveis (ignorar parâmetros recebidos)</label>
+    <div id="novo-imagem-box" style="display:none;width:100%;padding:10px;background:#f8fafc;border-radius:8px;">
+      <label style="display:block;">Imagem do template (obrigatória)</label>
+      <input type="file" style="display:block;width:100%;box-sizing:border-box;" id="novo-imagem" accept="image/jpeg,image/png" onchange="previewImagemTemplate('novo')">
+      <small style="display:block;margin-top:6px;" id="novo-imagem-status">Anexe uma imagem JPEG ou PNG de até 5 MB.</small>
+      <img id="novo-imagem-preview" alt="Imagem que será enviada no template" style="display:none;max-width:240px;max-height:160px;margin-top:8px;object-fit:contain;">
+    </div>
     <div id="preview-novo" style="width:100%; background:#f8f9fa; border:1px solid #eee; border-radius:8px; padding:12px; margin-top:8px; font-size:13px; white-space:pre-wrap; display:none;"></div>
     <input type="number" id="novo-limite" placeholder="Limite diário" value="250" required>
     <input type="number" id="novo-limite-hora" placeholder="Limite por hora" value="20" required>
@@ -414,8 +420,14 @@
       <select id="editar-template" onchange="mostrarPreview('editar-template', 'preview-editar')">
         <option value="">Selecione um template...</option>
       </select>
-    <label style="font-size:13px;"><input type="checkbox" id="editar-sem-variaveis"> Template de texto sem variáveis (ignorar parâmetros recebidos)</label>
-      <div id="preview-editar" style="background:#f8f9fa; border:1px solid #eee; border-radius:8px; padding:12px; margin-bottom:10px; font-size:13px; white-space:pre-wrap; display:none;"></div>
+    <label style="font-size:13px;"><input type="checkbox" id="editar-sem-variaveis"> Texto do template sem variáveis (ignorar parâmetros recebidos)</label>
+      <div id="editar-imagem-box" style="display:none;width:100%;padding:10px;background:#f8fafc;border-radius:8px;">
+      <label style="display:block;">Imagem do template (obrigatória)</label>
+      <input type="file" style="display:block;width:100%;box-sizing:border-box;" id="editar-imagem" accept="image/jpeg,image/png" onchange="previewImagemTemplate('editar')">
+      <small style="display:block;margin-top:6px;" id="editar-imagem-status">Anexe uma imagem JPEG ou PNG de até 5 MB.</small>
+      <img id="editar-imagem-preview" alt="Imagem que será enviada no template" style="display:none;max-width:240px;max-height:160px;margin-top:8px;object-fit:contain;">
+    </div>
+    <div id="preview-editar" style="background:#f8f9fa; border:1px solid #eee; border-radius:8px; padding:12px; margin-bottom:10px; font-size:13px; white-space:pre-wrap; display:none;"></div>
       <label>Limite diário</label>
       <input type="number" id="editar-limite">
       <label>Limite por hora</label>
@@ -478,8 +490,9 @@ async function popularSelectTemplates(selectId, accessToken, wabaId) {
       const opt = document.createElement('option');
       opt.value = t.nome;
       opt.dataset.semVariaveis = String(t.sem_variaveis);
+      opt.dataset.header = t.header || "";
       opt.dataset.idioma = t.idioma || "pt_BR";
-      opt.textContent = `${t.nome} — ${t.idioma} — ${cat} — ${t.status}${t.sem_variaveis ? " — Sem variáveis" : ""}`;
+      opt.textContent = `${t.nome} — ${t.idioma} — ${cat} — ${t.status}${t.header === "IMAGE" ? " — Imagem obrigatória" : ""}${t.sem_variaveis ? " — Sem variáveis" : ""}`;
       select.appendChild(opt);
       templatesEncontrados[t.nome] = t.texto;
     });
@@ -488,11 +501,34 @@ async function popularSelectTemplates(selectId, accessToken, wabaId) {
   }
 }
 
+function configurarImagemTemplate(tipo) {
+  const opt=document.getElementById(tipo+'-template').selectedOptions[0];
+  const imagem=opt?.dataset.header==='IMAGE';
+  const n=tipo==='editar' ? numerosCache.find(n=>n.id===Number(document.getElementById('editar-id').value)) : null;
+  const mantida=Boolean(imagem && n?.template_imagem && n.template_nome===opt?.value && (n.template_idioma || 'pt_BR')===(opt?.dataset.idioma || 'pt_BR'));
+  const input=document.getElementById(tipo+'-imagem');input.value='';input.required=imagem&&!mantida;
+  document.getElementById(tipo+'-imagem-box').style.display=imagem?'block':'none';
+  document.getElementById(tipo+'-imagem-status').textContent=mantida?'Imagem salva. Anexe outra se quiser substituir.':'Anexe uma imagem JPEG ou PNG de até 5 MB.';
+  const img=document.getElementById(tipo+'-imagem-preview');img.style.display=mantida?'block':'none';
+  if(mantida)img.src='/api/numeros/'+n.id+'/imagem-template';else img.removeAttribute('src');
+}
+async function lerImagemTemplate(tipo) {
+  const file=document.getElementById(tipo+'-imagem').files[0];
+  if(!file)return undefined;
+  if(!['image/jpeg','image/png'].includes(file.type)||file.size>5000000)throw new Error('Envie JPEG ou PNG de até 5 MB.');
+  return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>reject(new Error('Não foi possível ler a imagem.'));r.readAsDataURL(file);});
+}
+async function previewImagemTemplate(tipo) {
+  try{const data=await lerImagemTemplate(tipo);const img=document.getElementById(tipo+'-imagem-preview');img.src=data||'';img.style.display=data?'block':'none';}
+  catch(e){document.getElementById(tipo+'-imagem').value='';alert(e.message);}
+}
+
 function mostrarPreview(selectId, previewId) {
   const select = document.getElementById(selectId);
   const preview = document.getElementById(previewId);
   const tipo = selectId.startsWith('novo') ? 'novo' : 'editar';
   document.getElementById(tipo + '-sem-variaveis').checked = select.selectedOptions[0]?.dataset.semVariaveis === 'true';
+  configurarImagemTemplate(tipo);
   const texto = templatesEncontrados[select.value];
 
   if (texto) {
@@ -939,7 +975,7 @@ function renderizarNumeros() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${n.nome}</td>
-      <td>${n.template_nome}</td>
+      <td>${n.template_nome}${n.template_header === "IMAGE" ? (n.template_imagem ? "<br><small>Imagem configurada</small>" : "<br><strong>Falta anexar imagem</strong>") : ""}</td>
       <td>${traduzirCategoria(n.template_categoria)}<br><small style="color:#888">${n.template_status}</small></td>
       <td><span class="bolinha bolinha-${n.qualidade}"></span>${traduzirQualidade(n.qualidade)}</td>
       <td>${n.enviados_hoje} / ${n.limite_diario}<br><div class="barra"><div class="barra-preenchida" style="width:${pct}%"></div></div></td>
@@ -1023,7 +1059,9 @@ function abrirModal(id) {
   atual.value = n.template_nome; atual.textContent = n.template_nome;
   atual.dataset.idioma = n.template_idioma || 'pt_BR';
   atual.dataset.semVariaveis = String(Boolean(n.template_sem_variaveis));
+  atual.dataset.header=n.template_header || '';
   select.replaceChildren(atual);
+  configurarImagemTemplate("editar");
   document.getElementById('editar-sem-variaveis').checked = Boolean(n.template_sem_variaveis);
   document.getElementById('editar-limite').value = n.limite_diario;
   document.getElementById('editar-limite-hora').value = n.limite_hora;
@@ -1036,11 +1074,15 @@ function fecharModal() {
 
 document.getElementById('form-editar').addEventListener('submit', async (e) => {
   e.preventDefault();
+  const botao=e.target.querySelector('button[type="submit"]');botao.disabled=true;
+  try {
+  const imagem=await lerImagemTemplate('editar');
   const id = document.getElementById('editar-id').value;
-  await fetch(`/api/numeros/${id}`, {
+  const resposta=await fetch(`/api/numeros/${id}`, {
     method: 'PATCH',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
+      imagem_base64: imagem,
       template_nome: document.getElementById('editar-template').value,
       template_sem_variaveis: document.getElementById('editar-sem-variaveis').checked,
       template_idioma: document.getElementById('editar-template').selectedOptions[0]?.dataset.idioma || 'pt_BR',
@@ -1048,16 +1090,22 @@ document.getElementById('form-editar').addEventListener('submit', async (e) => {
       limite_hora: parseInt(document.getElementById('editar-limite-hora').value),
     })
   });
+  if(!resposta.ok){const erro=await resposta.json();throw new Error(erro.detail || 'Não foi possível salvar.');}
   fecharModal();
   carregarNumeros();
+  } catch(erro){alert(erro.message);} finally{botao.disabled=false;}
 });
 
 document.getElementById('form-numero').addEventListener('submit', async (e) => {
   e.preventDefault();
-  await fetch('/api/numeros', {
+  const botao=e.target.querySelector('button[type="submit"]');botao.disabled=true;
+  try {
+  const imagem=await lerImagemTemplate('novo');
+  const resposta=await fetch('/api/numeros', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
+      imagem_base64: imagem,
       nome: document.getElementById('novo-nome').value,
       phone_number_id: document.getElementById('novo-phone-id').value,
       access_token: document.getElementById('novo-token').value,
@@ -1069,8 +1117,11 @@ document.getElementById('form-numero').addEventListener('submit', async (e) => {
       limite_hora: parseInt(document.getElementById('novo-limite-hora').value),
     })
   });
+  if(!resposta.ok){const erro=await resposta.json();throw new Error(erro.detail || 'Não foi possível salvar.');}
   e.target.reset();
   carregarNumeros();
+  configurarImagemTemplate("novo");
+  } catch(erro){alert(erro.message);} finally{botao.disabled=false;}
 });
 
 let errosImportacao = false;

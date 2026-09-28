@@ -11,6 +11,7 @@ import vendeai_mailing
 import fila_disparos
 import planilhas
 import transbordo
+import imagens_template
 from functools import wraps
 from urllib.parse import urlparse, quote
 from datetime import date, datetime, timedelta
@@ -302,6 +303,7 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_wamid ON disparos(wamid)")
     if "template_sem_variaveis" not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN template_sem_variaveis INTEGER NOT NULL DEFAULT 0")
+    imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
     transbordo.migrar(conn)
@@ -337,6 +339,8 @@ def contagem_ultima_hora(numero_id: int) -> int:
 
 
 def disponivel_agora(numero: sqlite3.Row) -> bool:
+    if dict(numero).get("template_header")=="IMAGE" and not dict(numero).get("template_imagem"):
+        return False
     if not numero["ativo"]:
         return False
     if numero["qualidade"] == "RED":
@@ -442,6 +446,12 @@ def enviar_whatsapp(numero, telefone_destino, variaveis_template):
         payload["template"]["components"] = [{"type": "body", "parameters": [
             {"type": "text", "text": v} for v in variaveis_template
         ]}]
+    if dict(numero).get('template_header')=='IMAGE':
+        try:
+            media=imagens_template.media_id(get_db,numero)
+        except HTTPException as exc:
+            return False,str(exc.detail),''
+        payload['template'].setdefault('components',[]).insert(0,{'type':'header','parameters':[{'type':'image','image':{'id':media}}]})
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=15)
         if resp.status_code == 200:
@@ -493,6 +503,9 @@ def verificar_template_info(numero) -> tuple:
         candidatos = aprovados or dados
         escolhido = next((d for d in candidatos if d.get("language") == "pt_BR"), candidatos[0])
 
+        header=next((c.get('format','') for c in escolhido.get('components',[]) if c.get('type')=='HEADER'),'')
+        with closing(get_db()) as c,c:
+            c.execute('UPDATE numeros SET template_header=? WHERE id=? AND template_nome=? AND template_idioma=?',(header,numero['id'],numero['template_nome'],escolhido.get('language')))
         return escolhido.get("category", "UNKNOWN"), escolhido.get("status", "UNKNOWN"), escolhido.get("language")
     except Exception:
         return "UNKNOWN", "UNKNOWN", None
@@ -1103,7 +1116,7 @@ def capacidade_lote(selecionados=None):
             continue
         dia = max(0, n['limite_diario'] - contagem_hoje(n['id']))
         hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
-        elegivel = bool(n['ativo']) and n['qualidade'] != 'RED'
+        elegivel = bool(n['ativo']) and n['qualidade'] != 'RED' and not (n['template_header']=='IMAGE' and not n['template_imagem'])
         detalhes.append({'id': n['id'], 'nome': n['nome'], 'elegivel': elegivel,
                          'restante_dia': dia if elegivel else 0, 'restante_hora': hora if elegivel else 0,
                          'disponivel_agora': min(dia, hora) if elegivel else 0})
@@ -1788,7 +1801,11 @@ def template_estatico(template):
         return False
     if template.get("category") == "AUTHENTICATION":
         return False
+    if not any(c.get("type")=="BODY" for c in componentes):
+        return False
     for c in componentes:
+        if c.get("type")=="HEADER" and c.get("format")=="IMAGE":
+            continue
         if c.get("type") not in ("BODY", "HEADER", "FOOTER", "BUTTONS"):
             return False
         if c.get("type") == "HEADER" and c.get("format") != "TEXT":
@@ -1831,6 +1848,7 @@ async def buscar_templates(request: Request):
                 "texto": corpo,
                 "idioma": t.get("language", "pt_BR"),
                 "sem_variaveis": template_estatico(t),
+                "header": next((c.get("format", "") for c in t.get("components", []) if c.get("type")=="HEADER"), ""),
             })
         return {"templates": templates}
     except Exception as e:
@@ -1893,13 +1911,42 @@ def listar_numeros():
     ]
 
 
+def preparar_imagem_template(body, atual=None):
+    atual=dict(atual or {})
+    previsto={**atual,**body}
+    header=atual.get('template_header','')
+    chave=atual.get('template_imagem','')
+    mudou=any(k in body and body[k]!=atual.get(k) for k in ('template_nome','template_idioma'))
+    if mudou: chave=''
+    if ('template_nome' in body or 'template_idioma' in body or 'imagem_base64' in body) and previsto.get('waba_id'):
+        try:
+            r=requests.get('https://graph.facebook.com/v21.0/'+requests.utils.quote(previsto['waba_id'],safe='')+'/message_templates',
+                params={'name':previsto.get('template_nome','oferta_credito'),'limit':100},headers={'Authorization':'Bearer '+previsto['access_token']},timeout=(5,15),allow_redirects=False)
+            if r.status_code!=200: raise ValueError()
+            t=next((t for t in r.json().get('data',[]) if t.get('name')==previsto.get('template_nome','oferta_credito') and t.get('language')==previsto.get('template_idioma','pt_BR')),None)
+            if not t: raise ValueError()
+        except (requests.RequestException,ValueError,AttributeError):
+            raise HTTPException(400,'Não foi possível confirmar o template na Meta. Busque os templates e selecione novamente.')
+        header=next((c.get('format','') for c in t.get('components',[]) if c.get('type')=='HEADER'),'')
+        body['template_sem_variaveis']=template_estatico(t)
+    elif mudou:
+        header=''
+    if body.get('imagem_base64'):
+        if header!='IMAGE': raise HTTPException(400,'Selecione um template com cabeçalho de imagem na Meta.')
+        chave=imagens_template.salvar(get_db,previsto,body['imagem_base64'])
+    if header=='IMAGE' and not chave:
+        raise HTTPException(400,'Este template exige uma imagem. Anexe um arquivo JPEG ou PNG de até 5 MB.')
+    return header,chave if header=='IMAGE' else ''
+
+
 @app.post("/api/numeros")
 async def adicionar_numero(request: Request):
     body = await request.json()
     if "template_sem_variaveis" in body and type(body["template_sem_variaveis"]) is not bool:
         raise HTTPException(400, "template_sem_variaveis deve ser booleano")
+    header,imagem=preparar_imagem_template(body)
     conn = get_db()
-    conn.execute(
+    cursor=conn.execute(
         "INSERT INTO numeros (nome, phone_number_id, access_token, template_nome, template_idioma, limite_diario, limite_hora, ativo, qualidade, waba_id, template_sem_variaveis) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'UNKNOWN', ?, ?)",
         (
             body["nome"], body["phone_number_id"], body["access_token"],
@@ -1911,6 +1958,7 @@ async def adicionar_numero(request: Request):
             int(body.get("template_sem_variaveis", False)),
         ),
     )
+    conn.execute("UPDATE numeros SET template_header=?,template_imagem=? WHERE id=?",(header,imagem,cursor.lastrowid))
     conn.commit()
     conn.close()
     return {"status": "ok"}
@@ -1921,6 +1969,13 @@ async def atualizar_numero(numero_id: int, request: Request):
     body = await request.json()
     if "template_sem_variaveis" in body and type(body["template_sem_variaveis"]) is not bool:
         raise HTTPException(400, "template_sem_variaveis deve ser booleano")
+    with closing(get_db()) as consulta:
+        atual=consulta.execute('SELECT * FROM numeros WHERE id=?',(numero_id,)).fetchone()
+    if not atual: raise HTTPException(404,'Número não encontrado')
+    # Permite pausar mesmo quando a imagem ainda não foi configurada.
+    imagem_config=None
+    if any(k in body for k in ('template_nome','template_idioma','imagem_base64')):
+        imagem_config=preparar_imagem_template(body,atual)
     conn = get_db()
     if "ativo" in body:
         # Toggle manual (usuario) - sempre limpa a flag de pausa automatica: se o
@@ -1939,6 +1994,8 @@ async def atualizar_numero(numero_id: int, request: Request):
         conn.execute("UPDATE numeros SET template_sem_variaveis = ? WHERE id = ?", (int(body["template_sem_variaveis"]), numero_id))
     if "template_idioma" in body:
         conn.execute("UPDATE numeros SET template_idioma = ? WHERE id = ?", (body["template_idioma"], numero_id))
+    if imagem_config:
+        conn.execute("UPDATE numeros SET template_header=?,template_imagem=? WHERE id=?",(*imagem_config,numero_id))
     conn.commit()
     conn.close()
     return {"status": "ok"}
@@ -2208,3 +2265,11 @@ def disponibilidade_consulta():
         'capacidade_reservada':False,
         'observacao':'Disponibilidade momentânea. A capacidade será conferida novamente ao receber o lead.'
     },headers={'Cache-Control':'no-store'})
+
+
+@app.get('/api/numeros/{numero_id}/imagem-template')
+def visualizar_imagem_template(numero_id: int):
+    with closing(get_db()) as c:
+        r=c.execute('SELECT i.dados,i.mime FROM numeros n JOIN imagens_template i ON i.id=n.template_imagem WHERE n.id=?',(numero_id,)).fetchone()
+    if not r: raise HTTPException(404,'Imagem não encontrada')
+    return Response(content=r['dados'],media_type=r['mime'],headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
