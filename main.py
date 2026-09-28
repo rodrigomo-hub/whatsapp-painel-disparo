@@ -357,7 +357,7 @@ def disponivel_agora(numero: sqlite3.Row) -> bool:
         return False
     if not numero["ativo"]:
         return False
-    if numero["qualidade"] == "RED":
+    if numero["qualidade"] not in ("GREEN", "YELLOW"):
         return False
     if contagem_hoje(numero["id"]) >= numero["limite_diario"]:
         return False
@@ -484,6 +484,10 @@ def pausar_template(numero):
 
 
 def enviar_whatsapp(numero, telefone_destino, variaveis_template):
+    with closing(get_db()) as conn:
+        atual = conn.execute('SELECT qualidade FROM numeros WHERE id=?', (numero['id'],)).fetchone()
+    if not atual or atual['qualidade'] not in ('GREEN', 'YELLOW'):
+        return False, 'Envio bloqueado: qualidade do numero desconhecida ou baixa.', ''
     url = f"https://graph.facebook.com/v21.0/{numero['phone_number_id']}/messages"
     headers = {
         "Authorization": f"Bearer {numero['access_token']}",
@@ -667,7 +671,7 @@ def _aplicar_pausa_ou_reativacao_qualidade(numero_id, numero_nome, ativo_atual, 
 
     - Se a qualidade caiu pra RED e o numero estava ativo: pausa e marca
       pausado_por_qualidade=1 (pausa automatica, distinta de pausa manual).
-    - Se a qualidade nao esta mais RED e o numero estava pausado POR QUALIDADE
+    - Se a qualidade voltou a GREEN/YELLOW e o numero estava pausado POR QUALIDADE
       (nao manualmente): reativa sozinho.
     - Numeros pausados manualmente (ativo=0, pausado_por_qualidade=0) nunca sao
       mexidos aqui - so o usuario reativa esses.
@@ -683,7 +687,7 @@ def _aplicar_pausa_ou_reativacao_qualidade(numero_id, numero_nome, ativo_atual, 
             conn.commit()
             conn.close()
             registrar_evento(numero_id, "pausado_qualidade", f"Numero '{numero_nome}' pausado automaticamente - qualidade RED")
-    else:
+    elif qualidade in ("GREEN", "YELLOW"):
         if not ativo_atual and pausado_por_qualidade_atual:
             conn = get_db()
             conn.execute("UPDATE numeros SET ativo = 1, pausado_por_qualidade = 0 WHERE id = ? AND pausado_por_template=0", (numero_id,))
@@ -1237,7 +1241,7 @@ def capacidade_lote(selecionados=None):
             continue
         dia = max(0, n['limite_diario'] - contagem_hoje(n['id']))
         hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
-        elegivel = bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] != 'RED' and not (n['template_header']=='IMAGE' and not n['template_imagem'])
+        elegivel = bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
         detalhes.append({'id': n['id'], 'nome': n['nome'], 'elegivel': elegivel,
                          'restante_dia': dia if elegivel else 0, 'restante_hora': hora if elegivel else 0,
                          'disponivel_agora': min(dia, hora) if elegivel else 0})

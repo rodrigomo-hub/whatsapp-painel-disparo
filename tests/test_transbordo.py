@@ -180,6 +180,7 @@ class TransbordoTests(unittest.TestCase):
                 with test_db() as c:
                     c.execute("UPDATE configuracao SET vendeai_habilitado=1,fila_habilitada=1,vendeai_account_id='CONTA-AMIGO',vendeai_mailing_token='crm-amigo',vendeai_campanha_padrao='DESTINO'")
                     c.execute("INSERT INTO numeros(nome,phone_number_id,access_token) VALUES('Amigo','fake','fake')")
+                    c.execute("UPDATE numeros SET qualidade='GREEN' WHERE id=last_insert_rowid()")
             def destino_http(url,**kw):
                 with patch.object(main,'DB_FILE',destino), patch.object(main,'API_KEY','dest-secret'):
                     cliente=TestClient(main.app)

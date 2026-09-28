@@ -12,6 +12,7 @@ class PausaTemplateTests(unittest.TestCase):
             c.execute("UPDATE numeros SET waba_id='w1',template_nome='oferta',template_idioma='pt_BR'")
             for phone,waba,template,idioma in [('p2','w1','oferta','pt_BR'),('p3','w2','oferta','pt_BR'),('p4','w1','outra','pt_BR'),('p5','w1','oferta','en_US')]:
                 c.execute('INSERT INTO numeros(nome,phone_number_id,access_token,waba_id,template_nome,template_idioma) VALUES(?,?,?,?,?,?)',(phone,phone,'token',waba,template,idioma))
+                c.execute("UPDATE numeros SET qualidade='GREEN' WHERE id=last_insert_rowid()")
             self.numero=dict(c.execute('SELECT * FROM numeros WHERE id=1').fetchone())
     def test_132015_pausa_mesma_waba_e_variante(self):
         self.api.return_value=Mock(status_code=400,json=Mock(return_value={'error':{'code':132015}}))
