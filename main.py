@@ -317,6 +317,8 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN presenca_meta TEXT NOT NULL DEFAULT 'nao_verificado'")
     if 'status_envio_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN status_envio_meta TEXT NOT NULL DEFAULT 'UNKNOWN'")
+    if 'observacao' not in colunas_existentes:
+        conn.execute("ALTER TABLE numeros ADD COLUMN observacao TEXT NOT NULL DEFAULT ''")
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -2204,6 +2206,19 @@ async def atualizar_numero(numero_id: int, request: Request):
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+
+@app.patch('/api/numeros/{numero_id}/observacao')
+async def salvar_observacao_numero(numero_id: int, request: Request):
+    body = await request.json()
+    texto = body.get('observacao') if isinstance(body, dict) else None
+    if not isinstance(texto, str) or len(texto) > 5000:
+        raise HTTPException(400, 'Informe um texto de até 5.000 caracteres.')
+    with closing(get_db()) as conn, conn:
+        r = conn.execute('UPDATE numeros SET observacao=? WHERE id=?', (texto, numero_id))
+        if not r.rowcount:
+            raise HTTPException(404, 'Número não encontrado')
+    return {'status': 'ok'}
 
 
 @app.delete("/api/numeros/{numero_id}")

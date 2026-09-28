@@ -420,6 +420,20 @@
   </div>
 </section>
 
+<div class="modal-fundo" id="modal-observacao" role="dialog" aria-modal="true" aria-labelledby="titulo-observacao">
+  <div class="modal-caixa" style="width:460px;max-width:calc(100vw - 60px);">
+    <h3 id="titulo-observacao">Observação do número</h3>
+    <p id="observacao-numero" style="font-size:13px;color:#64748b;"></p>
+    <form onsubmit="salvarObservacao(event)">
+      <textarea id="observacao-texto" maxlength="5000" rows="7" placeholder="Escreva uma anotação sobre este número..." aria-label="Observação" style="width:100%;box-sizing:border-box;resize:vertical;border:1px solid #cbd5e1;border-radius:8px;padding:12px;font:inherit;"></textarea>
+      <p id="observacao-erro" role="alert" style="color:#b42318;"></p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" class="btn-editar" onclick="fecharObservacao()">Cancelar</button>
+        <button type="submit" id="observacao-salvar">Salvar observação</button>
+      </div>
+    </form>
+  </div>
+</div>
 <div class="modal-fundo" id="modal-editar">
   <div class="modal-caixa">
     <h3>Editar número</h3>
@@ -1024,6 +1038,26 @@ function filtrarNumeros(numeros, pesquisa, waba='') {
     return texto.includes(termo) || (telefone && numero.includes(digitos));
   });
 }
+let observacaoNumeroId=null;
+function abrirObservacao(id) {
+  const n=numerosCache.find(n=>n.id===id);if(!n)return;
+  observacaoNumeroId=id;
+  document.getElementById('observacao-numero').textContent=n.nome;
+  document.getElementById('observacao-texto').value=n.observacao || '';
+  document.getElementById('observacao-erro').textContent='';
+  document.getElementById('modal-observacao').style.display='flex';
+  document.getElementById('observacao-texto').focus();
+}
+function fecharObservacao(){document.getElementById('modal-observacao').style.display='none';}
+async function salvarObservacao(ev) {
+  ev.preventDefault();const btn=document.getElementById('observacao-salvar');btn.disabled=true;
+  try {
+    const res=await fetch('/api/numeros/'+observacaoNumeroId+'/observacao',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({observacao:document.getElementById('observacao-texto').value})});
+    if(!res.ok){const d=await res.json();throw new Error(d.detail || 'Não foi possível salvar.');}
+    fecharObservacao();await carregarNumeros();
+  }catch(e){document.getElementById('observacao-erro').textContent=e.message;}
+  finally{btn.disabled=false;}
+}
 function renderizarNumeros() {
   const filtrados = filtrarNumeros(numerosCache, document.getElementById('pesquisa-numero').value, document.getElementById('filtro-waba').value);
   document.getElementById('pesquisa-numero-total').textContent = `${filtrados.length} de ${numerosCache.length} números`;
@@ -1033,7 +1067,7 @@ function renderizarNumeros() {
     const pct = Math.min(100, (n.enviados_hoje / n.limite_diario) * 100);
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${n.nome}</td>
+      <td>${n.nome}<br><button type="button" onclick="abrirObservacao(${n.id})" style="margin-top:5px;background:${n.observacao ? '#eef2ff' : 'transparent'};color:${n.observacao ? '#4338ca' : '#64748b'};border:1px solid ${n.observacao ? '#c7d2fe' : '#e2e8f0'};border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;">${n.observacao ? '📝 Ver observação' : '+ Observação'}</button></td>
       <td>${n.template_nome}${n.template_header === "IMAGE" ? (n.template_imagem ? "<br><small>Imagem configurada</small>" : "<br><strong>Falta anexar imagem</strong>") : ""}</td>
       <td>${traduzirCategoria(n.template_categoria)}<br><small style="color:#888">${n.template_status}</small></td>
       <td><span class="bolinha bolinha-${n.qualidade}"></span>${traduzirQualidade(n.qualidade)}</td>
