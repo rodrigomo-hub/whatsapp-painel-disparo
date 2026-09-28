@@ -309,6 +309,8 @@ def init_db():
     if 'nome' not in colunas_waba: conn.execute("ALTER TABLE wabas_salvas ADD COLUMN nome TEXT NOT NULL DEFAULT ''")
     if 'nome_consultado_em' not in colunas_waba: conn.execute("ALTER TABLE wabas_salvas ADD COLUMN nome_consultado_em REAL NOT NULL DEFAULT 0")
     conn.execute("INSERT OR IGNORE INTO wabas_salvas(waba_id,access_token) SELECT waba_id,access_token FROM numeros WHERE waba_id!='' AND access_token!='' ORDER BY id DESC")
+    if 'pausado_por_template' not in colunas_existentes:
+        conn.execute("ALTER TABLE numeros ADD COLUMN pausado_por_template INTEGER NOT NULL DEFAULT 0")
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -346,6 +348,8 @@ def contagem_ultima_hora(numero_id: int) -> int:
 
 def disponivel_agora(numero: sqlite3.Row) -> bool:
     if dict(numero).get("template_header")=="IMAGE" and not dict(numero).get("template_imagem"):
+        return False
+    if dict(numero).get("pausado_por_template"):
         return False
     if not numero["ativo"]:
         return False
@@ -429,6 +433,19 @@ def proximo_numero_disponivel(ultimo_usado_id, pool=None):
 _ultimo_usado = {"id": None}
 
 
+def pausar_template(numero):
+    n=dict(numero)
+    # O template pertence à WABA; idioma diferencia variantes do mesmo nome.
+    with closing(get_db()) as c,c:
+        rows=c.execute("SELECT id FROM numeros WHERE template_nome=? AND template_idioma=? AND (waba_id=? AND waba_id!='' OR id=?)",
+            (n['template_nome'],n['template_idioma'],n.get('waba_id',''),n['id'])).fetchall()
+        for r in rows:
+            cur=c.execute("UPDATE numeros SET ativo=0,pausado_por_qualidade=0,pausado_por_template=1,template_status='PAUSED' WHERE id=? AND pausado_por_template=0",(r['id'],))
+            if cur.rowcount:
+                c.execute('INSERT INTO eventos(numero_id,tipo,detalhe,criado_em) VALUES(?,?,?,?)',
+                    (r['id'],'pausado_template','Template '+n['template_nome']+' pausado pela Meta por baixa qualidade. Troque o template ou aguarde aprovação antes de reativar.',agora_iso()))
+
+
 def enviar_whatsapp(numero, telefone_destino, variaveis_template):
     url = f"https://graph.facebook.com/v21.0/{numero['phone_number_id']}/messages"
     headers = {
@@ -467,6 +484,12 @@ def enviar_whatsapp(numero, telefone_destino, variaveis_template):
             except (ValueError, IndexError, KeyError):
                 pass
             return True, "", wamid
+        try:
+            erro=resp.json().get('error',{})
+            if str(erro.get('code'))=='132015':
+                pausar_template(numero)
+                return False,'Template pausado pela Meta por baixa qualidade (132015). Número pausado automaticamente.',''
+        except (ValueError,AttributeError,TypeError): pass
         return False, resp.text[:500], ""
     except requests.RequestException as e:
         return False, str(e), ""
@@ -507,7 +530,8 @@ def verificar_template_info(numero) -> tuple:
 
         aprovados = [d for d in dados if d.get("status") == "APPROVED"]
         candidatos = aprovados or dados
-        escolhido = next((d for d in candidatos if d.get("language") == "pt_BR"), candidatos[0])
+        escolhido = next((d for d in dados if d.get('language')==numero['template_idioma']),None) or next((d for d in candidatos if d.get("language") == "pt_BR"), candidatos[0])
+        if escolhido.get('status')=='PAUSED': pausar_template(numero)
 
         header=next((c.get('format','') for c in escolhido.get('components',[]) if c.get('type')=='HEADER'),'')
         with closing(get_db()) as c,c:
@@ -569,6 +593,10 @@ def _aplicar_pausa_ou_reativacao_qualidade(numero_id, numero_nome, ativo_atual, 
     - Numeros pausados manualmente (ativo=0, pausado_por_qualidade=0) nunca sao
       mexidos aqui - so o usuario reativa esses.
     """
+    with closing(get_db()) as c:
+        atual=c.execute('SELECT pausado_por_template FROM numeros WHERE id=?',(numero_id,)).fetchone()
+    if atual and atual['pausado_por_template']:
+        return
     if qualidade == "RED":
         if ativo_atual:
             conn = get_db()
@@ -579,7 +607,7 @@ def _aplicar_pausa_ou_reativacao_qualidade(numero_id, numero_nome, ativo_atual, 
     else:
         if not ativo_atual and pausado_por_qualidade_atual:
             conn = get_db()
-            conn.execute("UPDATE numeros SET ativo = 1, pausado_por_qualidade = 0 WHERE id = ?", (numero_id,))
+            conn.execute("UPDATE numeros SET ativo = 1, pausado_por_qualidade = 0 WHERE id = ? AND pausado_por_template=0", (numero_id,))
             conn.commit()
             conn.close()
             registrar_evento(numero_id, "reativado_qualidade", f"Numero '{numero_nome}' reativado automaticamente - qualidade voltou a {qualidade}")
@@ -1122,7 +1150,7 @@ def capacidade_lote(selecionados=None):
             continue
         dia = max(0, n['limite_diario'] - contagem_hoje(n['id']))
         hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
-        elegivel = bool(n['ativo']) and n['qualidade'] != 'RED' and not (n['template_header']=='IMAGE' and not n['template_imagem'])
+        elegivel = bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] != 'RED' and not (n['template_header']=='IMAGE' and not n['template_imagem'])
         detalhes.append({'id': n['id'], 'nome': n['nome'], 'elegivel': elegivel,
                          'restante_dia': dia if elegivel else 0, 'restante_hora': hora if elegivel else 0,
                          'disponivel_agora': min(dia, hora) if elegivel else 0})
@@ -1969,6 +1997,7 @@ def preparar_imagem_template(body, atual=None):
             raise HTTPException(400,'Não foi possível confirmar o template na Meta. Busque os templates e selecione novamente.')
         header=next((c.get('format','') for c in t.get('components',[]) if c.get('type')=='HEADER'),'')
         body['template_sem_variaveis']=template_estatico(t)
+        body['_template_status_confirmado']=t.get('status','UNKNOWN')
     elif mudou:
         header=''
     if body.get('imagem_base64'):
@@ -2019,6 +2048,7 @@ async def adicionar_numero(request: Request):
 @app.patch("/api/numeros/{numero_id}")
 async def atualizar_numero(numero_id: int, request: Request):
     body = await request.json()
+    body.pop("_template_status_confirmado",None)
     if "template_sem_variaveis" in body and type(body["template_sem_variaveis"]) is not bool:
         raise HTTPException(400, "template_sem_variaveis deve ser booleano")
     with closing(get_db()) as consulta:
@@ -2028,7 +2058,11 @@ async def atualizar_numero(numero_id: int, request: Request):
     imagem_config=None
     if any(k in body for k in ('template_nome','template_idioma','imagem_base64')):
         imagem_config=preparar_imagem_template(body,atual)
+    if body.get('ativo') and atual['pausado_por_template'] and atual['template_status']!='APPROVED':
+        raise HTTPException(400,'Template pausado pela Meta. Selecione outro aprovado ou atualize o status antes de reativar.')
     conn = get_db()
+    if body.get('ativo'):
+        conn.execute('UPDATE numeros SET pausado_por_template=0 WHERE id=?',(numero_id,))
     if "ativo" in body:
         # Toggle manual (usuario) - sempre limpa a flag de pausa automatica: se o
         # usuario esta mexendo aqui, o numero passa a ser controlado manualmente,
@@ -2046,6 +2080,10 @@ async def atualizar_numero(numero_id: int, request: Request):
         conn.execute("UPDATE numeros SET template_sem_variaveis = ? WHERE id = ?", (int(body["template_sem_variaveis"]), numero_id))
     if "template_idioma" in body:
         conn.execute("UPDATE numeros SET template_idioma = ? WHERE id = ?", (body["template_idioma"], numero_id))
+    if body.get('_template_status_confirmado'):
+        conn.execute('UPDATE numeros SET template_status=? WHERE id=?',(body['_template_status_confirmado'],numero_id))
+        if body['_template_status_confirmado']=='APPROVED':
+            conn.execute('UPDATE numeros SET pausado_por_template=0 WHERE id=?',(numero_id,))
     if imagem_config:
         conn.execute("UPDATE numeros SET template_header=?,template_imagem=? WHERE id=?",(*imagem_config,numero_id))
     conn.commit()
