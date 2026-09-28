@@ -161,8 +161,10 @@
   </table>
 
   <form id="form-numero">
-    <input type="text" id="novo-token" placeholder="access_token" required>
-    <input type="text" id="novo-waba-id" placeholder="WABA ID" required>
+    <input type="password" id="novo-token" placeholder="access_token" autocomplete="new-password" required>
+    <input type="text" id="novo-waba-id" placeholder="WABA ID" list="wabas-salvas" onchange="trocarWabaCadastro()" oninput="atualizarTokenSalvo()" required>
+    <datalist id="wabas-salvas"></datalist>
+    <small id="waba-token-status" style="width:100%;color:#64748b;"></small>
     <button type="button" class="btn-editar" onclick="buscarNumerosNovo()">🔍 Buscar números</button>
     <select id="novo-phone-id" required onchange="preencherNomeENumero()">
       <option value="">Selecione um número...</option>
@@ -541,10 +543,32 @@ function mostrarPreview(selectId, previewId) {
 
 let numerosEncontrados = {};
 
+let wabasSalvas=[];
+async function carregarWabasSalvas() {
+  try{const r=await fetch('/api/wabas-salvas');if(!r.ok)return;const d=await r.json();wabasSalvas=d.wabas;
+    const lista=document.getElementById('wabas-salvas');lista.replaceChildren();
+    for(const id of wabasSalvas){const o=document.createElement('option');o.value=id;lista.appendChild(o);}
+    if(!document.getElementById('novo-waba-id').value && wabasSalvas.length===1)document.getElementById('novo-waba-id').value=wabasSalvas[0];
+    atualizarTokenSalvo();
+  }catch(e){}
+}
+function atualizarTokenSalvo() {
+  const salva=wabasSalvas.includes(document.getElementById('novo-waba-id').value.trim());
+  const token=document.getElementById('novo-token');token.required=!salva;
+  token.placeholder=salva?'Token salvo (preencha só para substituir)':'access_token';
+  document.getElementById('waba-token-status').textContent=salva?'WABA salva. O token será usado automaticamente.':'Informe uma WABA nova ou escolha uma já salva.';
+}
+function trocarWabaCadastro() {
+  document.getElementById('novo-phone-id').replaceChildren(new Option('Selecione um número...',''));
+  document.getElementById('novo-template').replaceChildren(new Option('Selecione um template...',''));
+  document.getElementById('novo-nome').value='';
+  configurarImagemTemplate('novo');atualizarTokenSalvo();
+}
+
 async function buscarNumerosNovo() {
   const token = document.getElementById('novo-token').value;
   const waba = document.getElementById('novo-waba-id').value;
-  if (!token || !waba) { alert('Preencha o access_token e o WABA ID primeiro'); return; }
+  if (!waba || (!token && !wabasSalvas.includes(waba.trim()))) { alert('Preencha a WABA e o token, ou escolha uma WABA salva.'); return; }
 
   const select = document.getElementById('novo-phone-id');
   select.innerHTML = '<option value="">Buscando...</option>';
@@ -566,7 +590,9 @@ async function buscarNumerosNovo() {
     dados.numeros.forEach(n => {
       const opt = document.createElement('option');
       opt.value = n.id;
-      opt.textContent = `${n.numero_exibicao} — ${n.nome_verificado || 'sem nome'}`;
+      const cadastrado=numerosCache.some(atual=>atual.phone_number_id===n.id);
+      opt.disabled=cadastrado;
+      opt.textContent = `${n.numero_exibicao} — ${n.nome_verificado || 'sem nome'}${cadastrado ? ' — Já cadastrado' : ''}`;
       select.appendChild(opt);
       numerosEncontrados[n.id] = n;
     });
@@ -586,7 +612,7 @@ function preencherNomeENumero() {
 function buscarTemplatesNovo() {
   const token = document.getElementById('novo-token').value;
   const waba = document.getElementById('novo-waba-id').value;
-  if (!token || !waba) { alert('Preencha o access_token e o WABA ID primeiro'); return; }
+  if (!waba || (!token && !wabasSalvas.includes(waba.trim()))) { alert('Preencha a WABA e o token, ou escolha uma WABA salva.'); return; }
   popularSelectTemplates('novo-template', token, waba);
 }
 
@@ -1118,9 +1144,11 @@ document.getElementById('form-numero').addEventListener('submit', async (e) => {
     })
   });
   if(!resposta.ok){const erro=await resposta.json();throw new Error(erro.detail || 'Não foi possível salvar.');}
-  e.target.reset();
-  carregarNumeros();
-  configurarImagemTemplate("novo");
+  document.getElementById('novo-token').value='';
+  document.getElementById('novo-nome').value='';
+  await carregarNumeros();
+  await carregarWabasSalvas();
+  await buscarNumerosNovo();
   } catch(erro){alert(erro.message);} finally{botao.disabled=false;}
 });
 
@@ -1249,6 +1277,7 @@ async function dispararLote() {
   finally { enviandoLote=false; atualizarPreviaLote(); }
 }
 
+carregarWabasSalvas();
 carregarTotalHoje();
 carregarNumeros();
 carregarHistorico();

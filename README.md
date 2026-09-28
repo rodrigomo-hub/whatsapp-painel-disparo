@@ -344,3 +344,13 @@ na planilha, na preconsulta paga ou na disponibilidade para receber encaminhamen
 Cada painel usa sua propria imagem; o n8n nao precisa enviar imagem com cada lead.
 Para numeros antigos, Atualizar todos identifica o cabecalho; depois use Editar,
 Buscar templates, selecione o template e anexe a imagem.
+
+## Reutilizar WABA no cadastro de numeros
+
+O formulario continua adicionando um numero por vez. O campo WABA sugere contas
+salvas; token vazio reutiliza a credencial no servidor. A lista de WABAs nao expoe
+segredos. As WABAs dos numeros existentes sao importadas automaticamente.
+Apos cadastrar, WABA, template, imagem e limites permanecem para o proximo numero.
+Numeros ja cadastrados ficam desabilitados na busca e a API recusa duplicacao.
+Um token preenchido substitui a credencial salva da WABA apos cadastro bem sucedido,
+sem alterar tokens dos numeros existentes. Cada painel mantem suas proprias WABAs.

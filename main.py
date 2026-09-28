@@ -303,6 +303,8 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_wamid ON disparos(wamid)")
     if "template_sem_variaveis" not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN template_sem_variaveis INTEGER NOT NULL DEFAULT 0")
+    conn.execute("CREATE TABLE IF NOT EXISTS wabas_salvas (waba_id TEXT PRIMARY KEY, access_token TEXT NOT NULL)")
+    conn.execute("INSERT OR IGNORE INTO wabas_salvas SELECT waba_id,access_token FROM numeros WHERE waba_id!='' AND access_token!='' ORDER BY id DESC")
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -1817,11 +1819,25 @@ def template_estatico(template):
     return True
 
 
+def token_waba(body):
+    token=body.get('access_token','').strip()
+    if token: return token
+    with closing(get_db()) as c:
+        row=c.execute('SELECT access_token FROM wabas_salvas WHERE waba_id=?',(body.get('waba_id','').strip(),)).fetchone()
+    return row['access_token'] if row else ''
+
+
+@app.get('/api/wabas-salvas')
+def wabas_salvas():
+    with closing(get_db()) as c:
+        return {'wabas':[r['waba_id'] for r in c.execute('SELECT waba_id FROM wabas_salvas ORDER BY waba_id')]}
+
+
 @app.post("/api/buscar-templates")
 async def buscar_templates(request: Request):
     body = await request.json()
-    access_token = body.get("access_token", "")
-    waba_id = body.get("waba_id", "")
+    access_token = token_waba(body)
+    waba_id = body.get("waba_id", "").strip()
 
     if not access_token or not waba_id:
         raise HTTPException(400, "access_token e waba_id sao obrigatorios")
@@ -1868,8 +1884,8 @@ def numero_token(numero_id: int):
 @app.post("/api/buscar-numeros")
 async def buscar_numeros(request: Request):
     body = await request.json()
-    access_token = body.get("access_token", "")
-    waba_id = body.get("waba_id", "")
+    access_token = token_waba(body)
+    waba_id = body.get("waba_id", "").strip()
 
     if not access_token or not waba_id:
         raise HTTPException(400, "access_token e waba_id sao obrigatorios")
@@ -1944,8 +1960,18 @@ async def adicionar_numero(request: Request):
     body = await request.json()
     if "template_sem_variaveis" in body and type(body["template_sem_variaveis"]) is not bool:
         raise HTTPException(400, "template_sem_variaveis deve ser booleano")
+    body['waba_id']=body.get('waba_id','').strip()
+    body['access_token']=token_waba(body)
+    if not body['access_token']: raise HTTPException(400,'Informe o token para esta WABA.')
+    with closing(get_db()) as consulta:
+        if consulta.execute('SELECT 1 FROM numeros WHERE phone_number_id=?',(body['phone_number_id'],)).fetchone():
+            raise HTTPException(409,'Este número já está cadastrado.')
     header,imagem=preparar_imagem_template(body)
     conn = get_db()
+    conn.execute('BEGIN IMMEDIATE')
+    if conn.execute('SELECT 1 FROM numeros WHERE phone_number_id=?',(body['phone_number_id'],)).fetchone():
+        conn.rollback();conn.close()
+        raise HTTPException(409,'Este número já está cadastrado.')
     cursor=conn.execute(
         "INSERT INTO numeros (nome, phone_number_id, access_token, template_nome, template_idioma, limite_diario, limite_hora, ativo, qualidade, waba_id, template_sem_variaveis) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'UNKNOWN', ?, ?)",
         (
@@ -1959,6 +1985,8 @@ async def adicionar_numero(request: Request):
         ),
     )
     conn.execute("UPDATE numeros SET template_header=?,template_imagem=? WHERE id=?",(header,imagem,cursor.lastrowid))
+    if body['waba_id']:
+        conn.execute('INSERT INTO wabas_salvas VALUES(?,?) ON CONFLICT(waba_id) DO UPDATE SET access_token=excluded.access_token',(body['waba_id'],body['access_token']))
     conn.commit()
     conn.close()
     return {"status": "ok"}
