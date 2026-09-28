@@ -59,7 +59,7 @@ class PlanilhaTests(unittest.TestCase):
         with test_db() as c:
             c.execute('UPDATE numeros SET limite_diario=500, limite_hora=100')
             c.execute("INSERT INTO numeros(nome,phone_number_id,access_token,limite_diario,limite_hora) VALUES('Segundo','2','2',500,100)")
-            c.execute("UPDATE numeros SET qualidade='GREEN' WHERE id=last_insert_rowid()")
+            c.execute("UPDATE numeros SET qualidade='GREEN',status_envio_meta='AVAILABLE' WHERE id=last_insert_rowid()")
         with patch.object(main, 'contagem_hoje', side_effect=lambda n: 490 if n == 1 else 0), patch.object(main, 'contagem_ultima_hora', side_effect=lambda n: 0 if n == 1 else 90):
             r = self.client.post('/api/lote/capacidade', json={}).json()
             self.assertEqual(r['restante_dia'], 510)

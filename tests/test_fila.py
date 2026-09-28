@@ -190,7 +190,7 @@ class FilaTests(unittest.TestCase):
     def test_lote_fila_preserva_numero_selecionado_e_variaveis(self):
         with test_db() as conn:
             conn.execute("INSERT INTO numeros(nome, phone_number_id, access_token) VALUES('Segundo','fake2','token2')")
-            conn.execute("UPDATE numeros SET qualidade='GREEN' WHERE id=last_insert_rowid()")
+            conn.execute("UPDATE numeros SET qualidade='GREEN',status_envio_meta='AVAILABLE' WHERE id=last_insert_rowid()")
         r = self.client.post("/api/disparo-lote", json={"leads": [self.lead], "numeros_selecionados": [2]})
         self.assertEqual(r.status_code, 202)
         self.api.assert_not_called()

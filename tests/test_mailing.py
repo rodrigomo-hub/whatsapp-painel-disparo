@@ -37,7 +37,7 @@ class MailingTests(unittest.TestCase):
         with test_db() as conn:
             conn.execute("UPDATE configuracao SET vendeai_habilitado=1, vendeai_account_id='33393', vendeai_mailing_token='test-secret'")
             conn.execute("INSERT INTO numeros(nome, phone_number_id, access_token) VALUES ('Teste', 'fake-id', 'fake-token')")
-            conn.execute("UPDATE numeros SET qualidade='GREEN' WHERE id=last_insert_rowid()")
+            conn.execute("UPDATE numeros SET qualidade='GREEN',status_envio_meta='AVAILABLE' WHERE id=last_insert_rowid()")
         self.post = patch.object(mailing.requests, "post")
         self.api = self.post.start()
         self.addCleanup(self.post.stop)

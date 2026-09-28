@@ -315,6 +315,8 @@ def init_db():
         conn.execute("ALTER TABLE configuracao ADD COLUMN faixas_horario TEXT NOT NULL DEFAULT '[]'")
     if 'presenca_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN presenca_meta TEXT NOT NULL DEFAULT 'nao_verificado'")
+    if 'status_envio_meta' not in colunas_existentes:
+        conn.execute("ALTER TABLE numeros ADD COLUMN status_envio_meta TEXT NOT NULL DEFAULT 'UNKNOWN'")
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -351,6 +353,8 @@ def contagem_ultima_hora(numero_id: int) -> int:
 
 
 def disponivel_agora(numero: sqlite3.Row) -> bool:
+    if dict(numero).get("status_envio_meta") != "AVAILABLE":
+        return False
     if dict(numero).get("template_header")=="IMAGE" and not dict(numero).get("template_imagem"):
         return False
     if dict(numero).get("pausado_por_template"):
@@ -485,9 +489,9 @@ def pausar_template(numero):
 
 def enviar_whatsapp(numero, telefone_destino, variaveis_template):
     with closing(get_db()) as conn:
-        atual = conn.execute('SELECT qualidade FROM numeros WHERE id=?', (numero['id'],)).fetchone()
-    if not atual or atual['qualidade'] not in ('GREEN', 'YELLOW'):
-        return False, 'Envio bloqueado: qualidade do numero desconhecida ou baixa.', ''
+        atual = conn.execute('SELECT qualidade,status_envio_meta,ativo FROM numeros WHERE id=?', (numero['id'],)).fetchone()
+    if not atual or not atual['ativo'] or atual['status_envio_meta'] != 'AVAILABLE' or atual['qualidade'] not in ('GREEN', 'YELLOW'):
+        return False, 'Envio bloqueado: numero inativo, qualidade ou status da Meta nao permitem envio.', ''
     url = f"https://graph.facebook.com/v21.0/{numero['phone_number_id']}/messages"
     headers = {
         "Authorization": f"Bearer {numero['access_token']}",
@@ -579,14 +583,30 @@ def verificar_presenca_meta():
 
 
 def verificar_qualidade(numero) -> str:
-    url = f"https://graph.facebook.com/v21.0/{numero['phone_number_id']}"
-    headers = {"Authorization": f"Bearer {numero['access_token']}"}
+    estado, qualidade = 'UNKNOWN', 'UNKNOWN'
+    headers = {'Authorization': 'Bearer ' + numero['access_token']}
     try:
-        r = requests.get(url, params={"fields": "quality_rating"}, headers=headers, timeout=15)
+        r = requests.get('https://graph.facebook.com/v21.0/' + numero['phone_number_id'],
+                         params={'fields': 'quality_rating,status'}, headers=headers, timeout=15)
         data = r.json()
-        return data.get("quality_rating", "UNKNOWN")
-    except requests.RequestException:
-        return "UNKNOWN"
+        if r.status_code == 200:
+            qualidade = data.get('quality_rating', 'UNKNOWN')
+            if data.get('status') == 'BANNED':
+                estado = 'BANNED'
+            elif data.get('status') == 'CONNECTED' and numero['waba_id']:
+                w = requests.get('https://graph.facebook.com/v21.0/' + numero['waba_id'],
+                                 params={'fields': 'health_status'}, headers=headers, timeout=15)
+                health = w.json().get('health_status', {}) if w.status_code == 200 else {}
+                envio = health.get('can_send_message')
+                banido = any(e.get('error_code') == 141014 for entity in health.get('entities', []) for e in entity.get('errors', []))
+                estado = 'BANNED' if banido else ('AVAILABLE' if envio == 'AVAILABLE' else 'BLOCKED' if envio == 'BLOCKED' else 'UNKNOWN')
+            elif data.get('status'):
+                estado = 'DISCONNECTED'
+    except (requests.RequestException, ValueError, TypeError, AttributeError):
+        pass
+    with closing(get_db()) as conn, conn:
+        conn.execute('UPDATE numeros SET status_envio_meta=? WHERE id=?', (estado, numero['id']))
+    return qualidade
 
 
 def verificar_template_info(numero) -> tuple:
@@ -677,8 +697,8 @@ def _aplicar_pausa_ou_reativacao_qualidade(numero_id, numero_nome, ativo_atual, 
       mexidos aqui - so o usuario reativa esses.
     """
     with closing(get_db()) as c:
-        atual=c.execute('SELECT pausado_por_template FROM numeros WHERE id=?',(numero_id,)).fetchone()
-    if atual and atual['pausado_por_template']:
+        atual=c.execute('SELECT pausado_por_template,status_envio_meta FROM numeros WHERE id=?',(numero_id,)).fetchone()
+    if atual and (atual['pausado_por_template'] or atual['status_envio_meta'] != 'AVAILABLE'):
         return
     if qualidade == "RED":
         if ativo_atual:
@@ -1241,7 +1261,7 @@ def capacidade_lote(selecionados=None):
             continue
         dia = max(0, n['limite_diario'] - contagem_hoje(n['id']))
         hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
-        elegivel = bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
+        elegivel = n['status_envio_meta'] == 'AVAILABLE' and bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
         detalhes.append({'id': n['id'], 'nome': n['nome'], 'elegivel': elegivel,
                          'restante_dia': dia if elegivel else 0, 'restante_hora': hora if elegivel else 0,
                          'disponivel_agora': min(dia, hora) if elegivel else 0})
