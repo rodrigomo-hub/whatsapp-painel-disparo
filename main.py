@@ -313,6 +313,8 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN pausado_por_template INTEGER NOT NULL DEFAULT 0")
     if 'faixas_horario' not in {r['name'] for r in conn.execute('PRAGMA table_info(configuracao)')}:
         conn.execute("ALTER TABLE configuracao ADD COLUMN faixas_horario TEXT NOT NULL DEFAULT '[]'")
+    if 'presenca_meta' not in colunas_existentes:
+        conn.execute("ALTER TABLE numeros ADD COLUMN presenca_meta TEXT NOT NULL DEFAULT 'nao_verificado'")
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -528,6 +530,48 @@ def enviar_whatsapp(numero, telefone_destino, variaveis_template):
         return False, resp.text[:500], ""
     except requests.RequestException as e:
         return False, str(e), ""
+
+
+def verificar_presenca_meta():
+    """Compara com lista completa da WABA; erro de acesso nunca confirma ausencia."""
+    conn = get_db()
+    numeros = conn.execute('SELECT * FROM numeros').fetchall()
+    conn.close()
+    grupos = {}
+    for n in numeros:
+        grupos.setdefault((n['waba_id'], n['access_token']), []).append(n)
+    for (waba, token), grupo in grupos.items():
+        ids, cursores = set(), set()
+        after = None
+        confirmado = False
+        try:
+            if not waba or not token:
+                raise ValueError('Sem credenciais')
+            for _ in range(100):
+                params = {'fields': 'id', 'limit': 100}
+                if after:
+                    params['after'] = after
+                r = requests.get('https://graph.facebook.com/v21.0/' + requests.utils.quote(waba, safe='') + '/phone_numbers',
+                                 params=params, headers={'Authorization': 'Bearer ' + token}, timeout=(5, 15), allow_redirects=False)
+                dados = r.json()
+                if r.status_code != 200 or not isinstance(dados.get('data'), list):
+                    raise ValueError('Lista indisponivel')
+                ids.update(str(item['id']) for item in dados['data'])
+                if not dados.get('paging', {}).get('next'):
+                    confirmado = True
+                    break
+                after = dados.get('paging', {}).get('cursors', {}).get('after')
+                if not after or after in cursores:
+                    raise ValueError('Paginacao incompleta')
+                cursores.add(after)
+        except (requests.RequestException, ValueError, KeyError, TypeError, AttributeError):
+            pass
+        conn = get_db()
+        for n in grupo:
+            estado = ('presente' if str(n['phone_number_id']) in ids else 'ausente') if confirmado else 'indisponivel'
+            conn.execute('UPDATE numeros SET presenca_meta=? WHERE id=?', (estado, n['id']))
+        conn.commit()
+        conn.close()
 
 
 def verificar_qualidade(numero) -> str:
@@ -917,6 +961,7 @@ async def loop_verificar_qualidade():
     while True:
         await asyncio.sleep(INTERVALO_CHECAGEM_QUALIDADE)
         try:
+            await asyncio.to_thread(verificar_presenca_meta)
             limpar_historico_antigo()
             conn = get_db()
             # Inclui tambem numeros pausados automaticamente por qualidade (nao so os
