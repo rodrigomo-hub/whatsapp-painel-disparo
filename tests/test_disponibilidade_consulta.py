@@ -40,10 +40,16 @@ class DisponibilidadeConsultaTests(unittest.TestCase):
         with patch.object(main.requests,'get',side_effect=requests.Timeout()):
             self.assertFalse(self.consultar()['consultar_nova_vida'])
     def test_fora_horario_e_lote(self):
-        with patch.object(main,'dentro_do_horario_permitido',return_value=(False,'Fora do horario')):
+        with patch.object(main,'dentro_do_horario_permitido',return_value=(False,'Fora do horario')), patch.object(main.requests,'get',side_effect=requests.Timeout()):
             self.assertFalse(self.consultar()['consultar_nova_vida'])
         with patch.object(main,'estado_lote',return_value={'lote':True}):
             self.assertFalse(self.consultar()['consultar_nova_vida'])
+    def test_fora_horario_consulta_destino(self):
+        with patch.object(main,'dentro_do_horario_permitido',return_value=(False,'Fechado')), patch.object(main.requests,'get',return_value=Mock(status_code=200,json=Mock(return_value={'disponivel':True}))):
+            d=self.consultar()
+            self.assertTrue(d['consultar_nova_vida'])
+            self.assertEqual(d['destino_provavel'],'transbordo')
+
     def test_autenticacao_n8n(self):
         self.client.cookies.clear()
         with patch.object(main,'API_KEY','chave-n8n'):

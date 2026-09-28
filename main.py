@@ -311,6 +311,8 @@ def init_db():
     conn.execute("INSERT OR IGNORE INTO wabas_salvas(waba_id,access_token) SELECT waba_id,access_token FROM numeros WHERE waba_id!='' AND access_token!='' ORDER BY id DESC")
     if 'pausado_por_template' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN pausado_por_template INTEGER NOT NULL DEFAULT 0")
+    if 'faixas_horario' not in {r['name'] for r in conn.execute('PRAGMA table_info(configuracao)')}:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN faixas_horario TEXT NOT NULL DEFAULT '[]'")
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -372,7 +374,32 @@ def carregar_configuracao() -> dict:
     cfg["vendeai_habilitado"] = bool(cfg["vendeai_habilitado"])
     cfg["fila_habilitada"] = bool(cfg["fila_habilitada"])
     cfg["transbordo_habilitado"] = bool(cfg["transbordo_habilitado"])
+    cfg["faixas_horario"] = json.loads(cfg["faixas_horario"])
     return cfg
+
+
+def validar_faixas(faixas):
+    if not isinstance(faixas,list) or len(faixas)>20:
+        raise HTTPException(400,'Informe até 20 faixas de funcionamento.')
+    ocupados={d:[] for d in range(1,8)}
+    def minutos(v,final=False):
+        if final and v=='24:00': return 1440
+        if not isinstance(v,str) or not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]',v):
+            raise HTTPException(400,'Horários devem estar em HH:MM; 24:00 só é permitido no fim.')
+        return int(v[:2])*60+int(v[3:])
+    resultado=[]
+    for faixa in faixas:
+        if not isinstance(faixa,dict): raise HTTPException(400,'Faixa inválida.')
+        inicio=minutos(faixa.get('inicio'));fim=minutos(faixa.get('fim'),True)
+        dias=faixa.get('dias')
+        if not isinstance(dias,list) or not dias or not all(type(d) is int and 1<=d<=7 for d in dias):
+            raise HTTPException(400,'Selecione os dias de cada faixa.')
+        if inicio>=fim: raise HTTPException(400,'O fim precisa ser depois do início. Divida faixas que atravessam a meia-noite.')
+        for dia in set(dias):
+            if any(inicio<b and fim>a for a,b in ocupados[dia]): raise HTTPException(400,'Existem faixas sobrepostas no mesmo dia.')
+            ocupados[dia].append((inicio,fim))
+        resultado.append({'inicio':faixa['inicio'],'fim':faixa['fim'],'dias':sorted(set(dias))})
+    return resultado
 
 
 def dentro_do_horario_permitido() -> tuple:
@@ -380,8 +407,8 @@ def dentro_do_horario_permitido() -> tuple:
     Confere se o horario global de funcionamento permite disparo agora.
     Retorna (permitido: bool, motivo: str | None).
     Modo 'automatico' sempre permite (comportamento de sempre, 24/7).
-    Modo 'horario' so permite dentro da janela hora_inicio-hora_fim E no
-    dia da semana configurado (1=segunda ... 7=domingo, ISO).
+    Modo 'horario' usa as faixas por dia, com fim exclusivo. Sem faixas,
+    preserva a janela unica e os dias legados (1=segunda ... 7=domingo).
     Nao suporta janela que cruza a meia-noite (ex: 22:00-06:00) - pensado
     pra horario comercial dentro do mesmo dia.
     """
@@ -390,6 +417,14 @@ def dentro_do_horario_permitido() -> tuple:
         return True, None
 
     agora = datetime.now(TZ)
+    if cfg['faixas_horario']:
+        minuto=agora.hour*60+agora.minute
+        for f in cfg['faixas_horario']:
+            inicio=int(f['inicio'][:2])*60+int(f['inicio'][3:])
+            fim=int(f['fim'][:2])*60+int(f['fim'][3:])
+            if agora.isoweekday() in f['dias'] and inicio<=minuto<fim:
+                return True,None
+        return False,'Fora das faixas de funcionamento do painel (horário de Brasília).'
     dia_semana_hoje = agora.isoweekday()  # 1=segunda ... 7=domingo
 
     if dia_semana_hoje not in cfg["dias_semana"]:
@@ -970,6 +1005,13 @@ def pode_disparar():
     if estado_lote()["lote"]:
         return {"pode_disparar": False, "motivo_codigo": "lote_em_andamento", "motivo": "Lote exclusivo em andamento", "numeros_disponiveis": 0, "canal_provavel": None}
     permitido, motivo_horario = dentro_do_horario_permitido()
+    if not permitido and carregar_configuracao()['transbordo_habilitado']:
+        destino=testar_destino_transbordo(carregar_configuracao())
+        disponivel=destino.get('disponivel') is True
+        return {'pode_disparar':disponivel,'motivo_codigo':None if disponivel else 'transbordo_indisponivel',
+                'motivo':'Origem fora do horário; disponibilidade consultada no destino.',
+                'numeros_disponiveis':0,'canal_provavel':'transbordo' if disponivel else None,
+                'motivo_destino':destino.get('motivo_codigo'),'destino_consultado':True}
     if not permitido:
         return {
             "pode_disparar": False,
@@ -1247,7 +1289,7 @@ async def disparar(request: Request):
     if existente:
         return JSONResponse(existente,status_code=202 if existente['status']=='enfileirado' else 200)
     impedimento = impedimento_fila()
-    if cfg['transbordo_habilitado'] and impedimento and impedimento['motivo_codigo']=='nenhum_numero_disponivel':
+    if cfg['transbordo_habilitado'] and impedimento and impedimento['motivo_codigo'] in ('nenhum_numero_disponivel','fora_do_horario'):
         if request.headers.get('X-Transbordo-Hop') or body.get('_transbordo'):
             return {**impedimento,'aceito':False,'motivo_codigo':'transbordo_sem_reencaminhamento'}
         if urlparse(cfg['transbordo_url']).hostname == request.url.hostname:
@@ -1766,6 +1808,8 @@ async def atualizar_configuracao(request: Request):
     if "modo" in body and body["modo"] not in ("automatico", "horario"):
         raise HTTPException(400, "modo deve ser 'automatico' ou 'horario'")
 
+    if 'faixas_horario' in body:
+        body['faixas_horario']=json.dumps(validar_faixas(body['faixas_horario']))
     for campo in ("hora_inicio", "hora_fim"):
         if campo in body:
             try:
@@ -1795,7 +1839,7 @@ async def atualizar_configuracao(request: Request):
         raise HTTPException(400, "vendeai_url deve comecar com http:// ou https://")
 
     campos_validos = {
-        "modo", "hora_inicio", "hora_fim", "dias_semana",
+        "modo", "hora_inicio", "hora_fim", "dias_semana", "faixas_horario",
         "sms_habilitado", "sms_modo", "sms_template", "whatsapp_destino",
         "whatsapp_mensagem_template", "link_base_url",
         "vendeai_habilitado", "vendeai_url", "vendeai_account_id", "vendeai_inbox_id",

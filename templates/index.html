@@ -290,6 +290,12 @@
       <option value="automatico">🟢 Automático (envia a qualquer hora)</option>
       <option value="horario">🕐 Respeita horário configurado</option>
     </select>
+    <div style="width:100%;">
+      <p>Faixas de funcionamento (Brasília). O início está incluído e o fim encerra os envios. Fora delas, novas entradas podem ser encaminhadas ao destino configurado, respeitando a disponibilidade dele.</p>
+      <div id="faixas-horario"></div>
+      <button type="button" class="btn-editar" onclick="adicionarFaixaHorario()">Adicionar faixa</button>
+      <p style="font-size:12px;">Se houver faixas, elas substituem o horário único abaixo. No modo automático, o envio local continua liberado 24 horas.</p>
+    </div>
     <label style="font-size:13px;">Das</label>
     <input type="time" id="horario-inicio" style="width:100px;">
     <label style="font-size:13px;">até</label>
@@ -671,10 +677,21 @@ const NOMES_DIAS = [
   {v: 5, l: 'Sex'}, {v: 6, l: 'Sáb'}, {v: 7, l: 'Dom'},
 ];
 
+function adicionarFaixaHorario(f={inicio:'00:00',fim:'03:00',dias:[1,2,3,4,5,6,7]}) {
+  const linha=document.createElement('div');linha.className='faixa-horario';linha.style.cssText='padding:10px;margin:8px 0;border:1px solid #ddd;border-radius:8px;';
+  for(const k of ['inicio','fim']){const label=document.createElement('label');label.textContent=k==='inicio'?'Das ':' até ';const input=document.createElement('input');input.type='text';input.placeholder='HH:MM';input.value=f[k];input.className='faixa-'+k;input.style.width='80px';input.required=true;label.appendChild(input);linha.appendChild(label);}
+  const dias=document.createElement('div');
+  for(const d of NOMES_DIAS){const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.value=d.v;check.checked=f.dias.includes(d.v);label.append(check,document.createTextNode(d.l+' '));dias.appendChild(label);}
+  linha.appendChild(dias);const remover=document.createElement('button');remover.type='button';remover.textContent='Remover faixa';remover.onclick=()=>linha.remove();linha.appendChild(remover);
+  document.getElementById('faixas-horario').appendChild(linha);
+}
+
 async function carregarHorario() {
   const res = await fetch('/api/configuracao');
   const cfg = await res.json();
 
+  document.getElementById('faixas-horario').replaceChildren();
+  (cfg.faixas_horario || []).forEach(adicionarFaixaHorario);
   document.getElementById('horario-modo').value = cfg.modo;
   document.getElementById('horario-inicio').value = cfg.hora_inicio;
   document.getElementById('horario-fim').value = cfg.hora_fim;
@@ -705,6 +722,7 @@ async function salvarHorario(ev) {
       hora_inicio: document.getElementById('horario-inicio').value,
       hora_fim: document.getElementById('horario-fim').value,
       dias_semana: dias,
+      faixas_horario: Array.from(document.querySelectorAll(".faixa-horario")).map(el=>({inicio:el.querySelector(".faixa-inicio").value,fim:el.querySelector(".faixa-fim").value,dias:Array.from(el.querySelectorAll("input[type=checkbox]:checked")).map(c=>Number(c.value))})),
     })
   });
 

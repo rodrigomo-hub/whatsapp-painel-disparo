@@ -76,13 +76,19 @@ class TransbordoTests(unittest.TestCase):
         self.assertEqual(a['fila_id'],b['fila_id'])
         self.api.assert_not_called()
 
-    def test_nao_transborda_cpf_invalido_fora_horario_ou_lote(self):
+    def test_nao_transborda_cpf_invalido_ou_lote(self):
         self.sem_capacidade()
         self.assertEqual(self.entrada(cpf='123').status_code,400)
-        with patch.object(main,'dentro_do_horario_permitido',return_value=(False,'Fechado')):
-            self.assertEqual(self.entrada().json()['motivo_codigo'],'fora_do_horario')
         self.client.post('/api/disparo-lote',json={'leads':[self.lead]})
         self.api.assert_not_called()
+
+    def test_fora_horario_encaminha_sem_fila_local(self):
+        self.api.side_effect=self.aceita
+        with patch.object(main,'dentro_do_horario_permitido',return_value=(False,'Fechado')):
+            self.assertEqual(self.entrada().json()['status'],'encaminhado')
+        self.api.assert_called_once()
+        self.assertFalse(self.fila.resumo()['contagens'])
+        self.whatsapp.assert_not_called()
 
     def test_falha_vendeai_local_nao_transborda(self):
         with test_db() as c:
