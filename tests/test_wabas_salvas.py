@@ -8,10 +8,11 @@ class WabaSalvaTests(unittest.TestCase):
     resposta=staticmethod(test_mailing.MailingTests.resposta)
     def setUp(self):
         test_mailing.MailingTests.setUp(self)
-        with test_db() as c:c.execute("INSERT INTO wabas_salvas VALUES('waba-1','segredo-salvo')")
+        with test_db() as c:c.execute("INSERT INTO wabas_salvas(waba_id,access_token,nome,nome_consultado_em) VALUES('waba-1','segredo-salvo','Minha conta',9999999999)")
     def test_lista_nao_expoe_token(self):
         r=self.client.get('/api/wabas-salvas')
-        self.assertEqual(r.json(),{'wabas':['waba-1']})
+        self.assertEqual(r.json()['wabas'],['waba-1'])
+        self.assertEqual(r.json()['detalhes'],[{'id':'waba-1','nome':'Minha conta'}])
         self.assertNotIn('segredo',r.text)
     def test_descoberta_usa_token_salvo(self):
         with patch.object(main.requests,'get',return_value=Mock(status_code=200,json=Mock(return_value={'data':[]}))) as get:
@@ -37,3 +38,13 @@ class WabaSalvaTests(unittest.TestCase):
             c.execute("INSERT INTO numeros(nome,phone_number_id,waba_id,access_token) VALUES('Outro','outro','antiga','recente')")
         main.init_db()
         self.assertEqual(main.token_waba({'waba_id':'antiga'}),'recente')
+
+    def test_nome_meta_e_cache(self):
+        with test_db() as c:c.execute('UPDATE wabas_salvas SET nome_consultado_em=0')
+        with patch.object(main.requests,'get',return_value=Mock(status_code=200,json=Mock(return_value={'id':'waba-1','name':'Nome Meta'}))) as get:
+            self.assertEqual(self.client.get('/api/wabas-salvas').json()['detalhes'][0]['nome'],'Nome Meta')
+            self.client.get('/api/wabas-salvas');get.assert_called_once()
+    def test_falha_preserva_nome(self):
+        with test_db() as c:c.execute('UPDATE wabas_salvas SET nome_consultado_em=0')
+        with patch.object(main.requests,'get',return_value=Mock(status_code=403,json=Mock(return_value={'error':{}}))):
+            self.assertEqual(self.client.get('/api/wabas-salvas').json()['detalhes'][0]['nome'],'Minha conta')

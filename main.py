@@ -13,6 +13,7 @@ import planilhas
 import transbordo
 import imagens_template
 from functools import wraps
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, quote
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -304,7 +305,10 @@ def init_db():
     if "template_sem_variaveis" not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN template_sem_variaveis INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE TABLE IF NOT EXISTS wabas_salvas (waba_id TEXT PRIMARY KEY, access_token TEXT NOT NULL)")
-    conn.execute("INSERT OR IGNORE INTO wabas_salvas SELECT waba_id,access_token FROM numeros WHERE waba_id!='' AND access_token!='' ORDER BY id DESC")
+    colunas_waba={r['name'] for r in conn.execute('PRAGMA table_info(wabas_salvas)')}
+    if 'nome' not in colunas_waba: conn.execute("ALTER TABLE wabas_salvas ADD COLUMN nome TEXT NOT NULL DEFAULT ''")
+    if 'nome_consultado_em' not in colunas_waba: conn.execute("ALTER TABLE wabas_salvas ADD COLUMN nome_consultado_em REAL NOT NULL DEFAULT 0")
+    conn.execute("INSERT OR IGNORE INTO wabas_salvas(waba_id,access_token) SELECT waba_id,access_token FROM numeros WHERE waba_id!='' AND access_token!='' ORDER BY id DESC")
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -1827,10 +1831,30 @@ def token_waba(body):
     return row['access_token'] if row else ''
 
 
+def atualizar_nome_waba(row):
+    nome=None
+    try:
+        r=requests.get('https://graph.facebook.com/v21.0/'+requests.utils.quote(row['waba_id'],safe=''),
+            params={'fields':'id,name'},headers={'Authorization':'Bearer '+row['access_token']},timeout=(3,5),allow_redirects=False)
+        d=r.json()
+        if r.status_code==200 and d.get('id')==row['waba_id'] and isinstance(d.get('name'),str) and d['name'].strip():
+            nome=d['name'].strip()[:250]
+    except (requests.RequestException,ValueError,AttributeError): pass
+    with closing(get_db()) as c,c:
+        c.execute('UPDATE wabas_salvas SET nome=COALESCE(?,nome),nome_consultado_em=? WHERE waba_id=? AND access_token=?',
+            (nome,datetime.now().timestamp(),row['waba_id'],row['access_token']))
+
+
 @app.get('/api/wabas-salvas')
 def wabas_salvas():
     with closing(get_db()) as c:
-        return {'wabas':[r['waba_id'] for r in c.execute('SELECT waba_id FROM wabas_salvas ORDER BY waba_id')]}
+        pendentes=[dict(r) for r in c.execute('SELECT * FROM wabas_salvas WHERE nome_consultado_em<?',(datetime.now().timestamp()-86400,))]
+    if pendentes:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(atualizar_nome_waba,pendentes))
+    with closing(get_db()) as c:
+        rows=c.execute('SELECT waba_id,nome FROM wabas_salvas ORDER BY nome,waba_id').fetchall()
+    return {'wabas':[r['waba_id'] for r in rows], 'detalhes':[{'id':r['waba_id'],'nome':r['nome']} for r in rows]}
 
 
 @app.post("/api/buscar-templates")
@@ -1986,7 +2010,7 @@ async def adicionar_numero(request: Request):
     )
     conn.execute("UPDATE numeros SET template_header=?,template_imagem=? WHERE id=?",(header,imagem,cursor.lastrowid))
     if body['waba_id']:
-        conn.execute('INSERT INTO wabas_salvas VALUES(?,?) ON CONFLICT(waba_id) DO UPDATE SET access_token=excluded.access_token',(body['waba_id'],body['access_token']))
+        conn.execute('INSERT INTO wabas_salvas(waba_id,access_token) VALUES(?,?) ON CONFLICT(waba_id) DO UPDATE SET nome_consultado_em=CASE WHEN access_token!=excluded.access_token THEN 0 ELSE nome_consultado_em END,access_token=excluded.access_token',(body['waba_id'],body['access_token']))
     conn.commit()
     conn.close()
     return {"status": "ok"}

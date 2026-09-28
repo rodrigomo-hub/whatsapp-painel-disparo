@@ -544,10 +544,11 @@ function mostrarPreview(selectId, previewId) {
 let numerosEncontrados = {};
 
 let wabasSalvas=[];
+let nomesWabas={};
 async function carregarWabasSalvas() {
-  try{const r=await fetch('/api/wabas-salvas');if(!r.ok)return;const d=await r.json();wabasSalvas=d.wabas;
+  try{const r=await fetch('/api/wabas-salvas');if(!r.ok)return;const d=await r.json();wabasSalvas=d.wabas;nomesWabas=Object.fromEntries((d.detalhes || []).map(w=>[w.id,w.nome]));
     const lista=document.getElementById('wabas-salvas');lista.replaceChildren();
-    for(const id of wabasSalvas){const o=document.createElement('option');o.value=id;lista.appendChild(o);}
+    for(const id of wabasSalvas){const o=document.createElement('option');o.value=id;o.label=nomesWabas[id] ? nomesWabas[id]+' — '+id : id;o.textContent=o.label;lista.appendChild(o);}
     if(!document.getElementById('novo-waba-id').value && wabasSalvas.length===1)document.getElementById('novo-waba-id').value=wabasSalvas[0];
     atualizarTokenSalvo();
   }catch(e){}
@@ -556,7 +557,7 @@ function atualizarTokenSalvo() {
   const salva=wabasSalvas.includes(document.getElementById('novo-waba-id').value.trim());
   const token=document.getElementById('novo-token');token.required=!salva;
   token.placeholder=salva?'Token salvo (preencha só para substituir)':'access_token';
-  document.getElementById('waba-token-status').textContent=salva?'WABA salva. O token será usado automaticamente.':'Informe uma WABA nova ou escolha uma já salva.';
+  document.getElementById('waba-token-status').textContent=salva?((nomesWabas[document.getElementById('novo-waba-id').value.trim()] || 'WABA salva')+' — token salvo, usado automaticamente.'):'Informe uma WABA nova ou escolha uma já salva.';
 }
 function trocarWabaCadastro() {
   document.getElementById('novo-phone-id').replaceChildren(new Option('Selecione um número...',''));
