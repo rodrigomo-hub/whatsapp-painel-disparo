@@ -321,6 +321,8 @@ def init_db():
     if 'observacao' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN observacao TEXT NOT NULL DEFAULT ''")
     templates_lote.migrar(conn)
+    if 'limite_meta' not in colunas_existentes:
+        conn.execute("ALTER TABLE numeros ADD COLUMN limite_meta TEXT NOT NULL DEFAULT ''")
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -600,14 +602,15 @@ def bloquear_numeros_waba(waba_id, health):
 
 
 def verificar_qualidade(numero) -> str:
-    estado, qualidade = 'UNKNOWN', 'UNKNOWN'
+    estado, qualidade, limite = 'UNKNOWN', 'UNKNOWN', ''
     headers = {'Authorization': 'Bearer ' + numero['access_token']}
     try:
         r = requests.get('https://graph.facebook.com/v21.0/' + numero['phone_number_id'],
-                         params={'fields': 'quality_rating,status'}, headers=headers, timeout=15)
+                         params={'fields': 'quality_rating,status,whatsapp_business_manager_messaging_limit'}, headers=headers, timeout=15)
         data = r.json()
         if r.status_code == 200:
             qualidade = data.get('quality_rating', 'UNKNOWN')
+            limite = data.get('whatsapp_business_manager_messaging_limit', '') or ''
             if data.get('status') == 'BANNED':
                 estado = 'BANNED'
             elif data.get('status') == 'CONNECTED' and numero['waba_id']:
@@ -623,7 +626,7 @@ def verificar_qualidade(numero) -> str:
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         pass
     with closing(get_db()) as conn, conn:
-        conn.execute('UPDATE numeros SET status_envio_meta=? WHERE id=?', (estado, numero['id']))
+        conn.execute('UPDATE numeros SET status_envio_meta=?,limite_meta=? WHERE id=?', (estado, limite, numero['id']))
         if estado in ('BANNED', 'BLOCKED', 'DISCONNECTED'):
             conn.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0 WHERE id=?', (numero['id'],))
     return qualidade
