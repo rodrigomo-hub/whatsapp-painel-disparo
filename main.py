@@ -13,6 +13,7 @@ import planilhas
 import transbordo
 import imagens_template
 import templates_lote
+import vendeai_eventos
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, quote
@@ -320,9 +321,12 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN status_envio_meta TEXT NOT NULL DEFAULT 'UNKNOWN'")
     if 'observacao' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN observacao TEXT NOT NULL DEFAULT ''")
+    vendeai_eventos.migrar(conn)
     templates_lote.migrar(conn)
     if 'limite_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN limite_meta TEXT NOT NULL DEFAULT ''")
+    if 'meta_consultado_em' not in colunas_existentes:
+        conn.execute("ALTER TABLE numeros ADD COLUMN meta_consultado_em TEXT")
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -626,7 +630,7 @@ def verificar_qualidade(numero) -> str:
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         pass
     with closing(get_db()) as conn, conn:
-        conn.execute('UPDATE numeros SET status_envio_meta=?,limite_meta=? WHERE id=?', (estado, limite, numero['id']))
+        conn.execute('UPDATE numeros SET status_envio_meta=?,limite_meta=?,meta_consultado_em=? WHERE id=?', (estado, limite, agora_iso(), numero['id']))
         if estado in ('BANNED', 'BLOCKED', 'DISCONNECTED'):
             conn.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0 WHERE id=?', (numero['id'],))
     return qualidade
@@ -1042,9 +1046,20 @@ async def loop_verificar_qualidade():
             registrar_evento(None, "erro_checagem_qualidade", str(e))
 
 
+async def loop_eventos_new():
+    while True:
+        try:
+            await asyncio.to_thread(vendeai_eventos.processar_um,get_db)
+        except Exception:
+            pass  # O registro persistido permite investigar sem registrar credenciais.
+        await asyncio.sleep(5)
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
+    vendeai_eventos.recuperar_interrompidos(get_db)
+    app.state.eventos_task = asyncio.create_task(loop_eventos_new())
     asyncio.create_task(loop_verificar_qualidade())
     app.state.fila_parar = False
     app.state.fila_task = asyncio.create_task(loop_fila())
@@ -1665,6 +1680,59 @@ def atualizar_todos_status():
         resultados.append({"nome": n["nome"], "qualidade": qualidade, "template_categoria": categoria})
 
     return {"total_atualizado": len(resultados), "resultados": resultados}
+
+
+@app.post('/webhook/vendeai-eventos')
+async def receber_eventos_vendeai(request: Request):
+    cfg=carregar_configuracao()
+    raw=bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw)>2_000_000:
+            raise HTTPException(413,'Evento acima do limite de 2 MB.')
+    return vendeai_eventos.receber(get_db,request.query_params.get('chave',''),bytes(raw),cfg['vendeai_account_id'])
+
+
+@app.get('/api/vendeai-eventos')
+def listar_eventos_vendeai():
+    return vendeai_eventos.listar(get_db)
+
+
+@app.get('/api/vendeai-eventos/config')
+def configuracao_eventos_vendeai(request: Request):
+    with closing(get_db()) as c:
+        cfg=c.execute('SELECT token,new_habilitado FROM vendeai_webhook_config WHERE id=1').fetchone()
+        token=cfg['token']
+    return JSONResponse({'webhook_path':'/webhook/vendeai-eventos?chave='+token,'new_habilitado':bool(cfg['new_habilitado'])},headers={'Cache-Control':'no-store'})
+
+
+@app.get('/api/vendeai-new')
+def listar_envios_new():
+    with closing(get_db()) as c:
+        return [dict(r) for r in c.execute('SELECT id,evento_id,proposta_id,estado,detalhe,http_status,enviado_em,resposta FROM vendeai_new_outbox ORDER BY id DESC LIMIT 100')]
+
+
+@app.patch('/api/vendeai-eventos/config')
+def configurar_eventos_new(body: dict):
+    if type(body.get('new_habilitado')) is not bool:raise HTTPException(400,'Informe new_habilitado booleano.')
+    with closing(get_db()) as c,c:
+        cfg=json.loads(c.execute('SELECT new_config FROM vendeai_webhook_config WHERE id=1').fetchone()['new_config'])
+        if body['new_habilitado'] and not cfg.get('modelo'):raise HTTPException(400,'Integração New ainda não configurada.')
+        c.execute('UPDATE vendeai_webhook_config SET new_habilitado=? WHERE id=1',(int(body['new_habilitado']),))
+    return {'ok':True}
+
+
+@app.get('/api/vendeai-eventos/{ident}')
+def evento_vendeai_original(ident: int):
+    with closing(get_db()) as c:
+        row=c.execute('SELECT payload_raw FROM vendeai_eventos WHERE id=?',(ident,)).fetchone()
+    if not row:raise HTTPException(404,'Evento não encontrado.')
+    return Response(content=row['payload_raw'],media_type='application/json',headers={'Cache-Control':'no-store'})
+
+
+@app.get('/eventos-vendeai',response_class=HTMLResponse)
+def pagina_eventos_vendeai(request: Request):
+    return templates.TemplateResponse(request,'eventos_vendeai.html',{})
 
 
 @app.get("/webhook")

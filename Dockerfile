@@ -12,6 +12,7 @@ COPY planilhas.py .
 COPY transbordo.py .
 COPY imagens_template.py .
 COPY templates_lote.py .
+COPY vendeai_eventos.py .
 COPY templates ./templates
 
 EXPOSE 80
