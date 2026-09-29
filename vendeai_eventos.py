@@ -25,6 +25,9 @@ def migrar(c):
         produto TEXT NOT NULL, banco TEXT NOT NULL, proposta_id TEXT NOT NULL,
         payload_raw BLOB NOT NULL, fingerprint TEXT NOT NULL, repetido_de INTEGER)''')
     c.execute('CREATE INDEX IF NOT EXISTS vendeai_eventos_hash ON vendeai_eventos(fingerprint)')
+    cols={r['name'] for r in c.execute('PRAGMA table_info(vendeai_eventos)')}
+    if 'conta_confirmada' not in cols:
+        c.execute('ALTER TABLE vendeai_eventos ADD COLUMN conta_confirmada INTEGER')
     c.execute('''CREATE TABLE IF NOT EXISTS vendeai_new_outbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, evento_id INTEGER NOT NULL,
         account_id TEXT NOT NULL, proposta_id TEXT NOT NULL,
@@ -51,7 +54,9 @@ def receber(get_db,token,raw,conta):
     if not isinstance(d,dict):raise HTTPException(400,'O evento deve ser um objeto JSON.')
     chat=objeto(d.get('chat_summary'));p=objeto(d.get('proposal'))
     account=str(chat.get('account_id') or '')
-    if conta and account!=str(conta):raise HTTPException(403,'Evento de outra conta.')
+    # A validação pode não trazer a conta de um evento real. A chave autentica
+    # o recebimento; a conta só autoriza o encaminhamento ao CRM.
+    conta_confirmada=bool(conta and account and account==str(conta))
     evento=str(d.get('event') or '')
     produto=str(chat.get('product') or '')
     banco=str(p.get('bank') or '')
@@ -61,16 +66,16 @@ def receber(get_db,token,raw,conta):
     with closing(get_db()) as c,c:
         c.execute('BEGIN IMMEDIATE')
         anterior=c.execute('SELECT id FROM vendeai_eventos WHERE fingerprint=? ORDER BY id LIMIT 1',(fingerprint,)).fetchone()
-        cursor=c.execute('INSERT INTO vendeai_eventos(recebido_em,evento,account_id,chat_id,produto,banco,proposta_id,payload_raw,fingerprint,repetido_de) VALUES(?,?,?,?,?,?,?,?,?,?)',
-                         (agora,evento,account,str(chat.get('chat_id') or ''),produto,banco,proposta,raw,fingerprint,anterior['id'] if anterior else None))
-        if evento=='proposal_created' and produto=='clt' and banco=='facta' and proposta:
+        cursor=c.execute('INSERT INTO vendeai_eventos(recebido_em,evento,account_id,chat_id,produto,banco,proposta_id,payload_raw,fingerprint,repetido_de,conta_confirmada) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                         (agora,evento,account,str(chat.get('chat_id') or ''),produto,banco,proposta,raw,fingerprint,anterior['id'] if anterior else None,int(conta_confirmada)))
+        if conta_confirmada and evento=='proposal_created' and produto=='clt' and banco=='facta' and proposta:
             c.execute("INSERT INTO vendeai_new_outbox(evento_id,account_id,proposta_id,criado_em,estado) VALUES(?,?,?,?,'PENDENTE') ON CONFLICT(account_id,proposta_id) DO UPDATE SET evento_id=excluded.evento_id,estado='PENDENTE' WHERE vendeai_new_outbox.estado='DADOS_INCOMPLETOS'",(cursor.lastrowid,account,proposta,agora))
     return {'ok':True}
 
 
 def listar(get_db):
     with closing(get_db()) as c:
-        rows=c.execute('''SELECT e.id,e.recebido_em,e.evento,e.account_id,e.chat_id,e.produto,e.banco,e.proposta_id,e.repetido_de,
+        rows=c.execute('''SELECT e.id,e.recebido_em,e.evento,e.account_id,e.chat_id,e.produto,e.banco,e.proposta_id,e.repetido_de,e.conta_confirmada,
             o.estado as new_estado FROM vendeai_eventos e LEFT JOIN vendeai_new_outbox o ON o.account_id=e.account_id AND o.proposta_id=e.proposta_id
             ORDER BY e.id DESC LIMIT 100''').fetchall()
         total=c.execute('SELECT count(*) FROM vendeai_eventos').fetchone()[0]

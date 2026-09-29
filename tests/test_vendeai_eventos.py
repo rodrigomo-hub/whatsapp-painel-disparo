@@ -55,11 +55,19 @@ class EventosTests(unittest.TestCase):
             self.assertEqual(rows[0]['payload_raw'], json.dumps(self.event).encode())
             self.assertEqual(c.execute('SELECT count(*) FROM vendeai_new_outbox').fetchone()[0], 1)
 
-    def test_wrong_token_and_account_rejected(self):
-        for token, account in [('wrong', 'test'), (self.token, 'other')]:
-            with self.assertRaises(HTTPException):
-                eventos.receber(self.db, token, json.dumps(self.event).encode(), account)
+    def test_wrong_token_rejected(self):
+        with self.assertRaises(HTTPException):
+            eventos.receber(self.db, 'wrong', json.dumps(self.event).encode(), 'test')
         self.assertEqual(eventos.listar(self.db)['total'], 0)
+
+    def test_validation_and_other_account_are_saved_but_never_forwarded(self):
+        for payload, account in [({}, 'test'), ({'event': 'test'}, 'test'),
+                                 (self.event, 'other'), (self.event, '')]:
+            result = eventos.receber(self.db, self.token, json.dumps(payload).encode(), account)
+            self.assertTrue(result['ok'])
+        with self.db() as c:
+            self.assertEqual(c.execute('SELECT count(*) FROM vendeai_new_outbox').fetchone()[0], 0)
+            self.assertEqual(c.execute('SELECT count(*) FROM vendeai_eventos WHERE conta_confirmada=0').fetchone()[0], 4)
 
     def test_other_events_saved_without_forwarding(self):
         self.event['event'] = 'stage_updated'
