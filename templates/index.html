@@ -207,11 +207,6 @@
   <div style="overflow-x:auto;max-height:320px;"><table><thead><tr><th>Recebido em</th><th>Lead</th><th>Telefone</th><th>Situação</th><th>Motivo</th></tr></thead><tbody id="tabela-transbordos-recebidos"></tbody></table></div>
 </div>
 
-<div class="cartao">
-  <h2>Leads encaminhados</h2>
-  <p style="font-size:13px;color:#64748b;">Encaminhado significa aceito pelo destino, ainda não enviado. Use Consultar para conferir o andamento. Sem confirmação, não reenvie: consulte o recibo primeiro.</p>
-  <div style="overflow-x:auto;max-height:320px;"><table><thead><tr><th>Lead</th><th>Destino</th><th>Situação</th><th>No destino</th><th>Ação</th></tr></thead><tbody id="tabela-transbordos"></tbody></table></div>
-</div>
 
 <div class="cartao">
   <h2>📤 Disparo em lote</h2>
@@ -875,22 +870,6 @@ async function carregarTransbordosRecebidos() {
   }catch(e){t.replaceChildren();const td=t.insertRow().insertCell();td.colSpan=5;td.textContent='Não foi possível atualizar os leads recebidos.';}
 }
 
-async function carregarTransbordos() {
-  carregarTransbordosRecebidos();
-  try {
-    const r=await fetch('/api/transbordos'); if(!r.ok)return; const d=await r.json();
-    const t=document.getElementById('tabela-transbordos'); t.replaceChildren();
-    for(const item of d.itens) {
-      const tr=document.createElement('tr');
-      [item.nome+' '+item.telefone,item.destino,item.status+(item.motivo_codigo ? ' · '+item.motivo_codigo:''),item.status_destino || 'Sem confirmação'].forEach(v=>{const td=document.createElement('td');td.textContent=v;tr.appendChild(td);});
-      const td=document.createElement('td');const b=document.createElement('button');b.className='btn-editar';b.textContent='Consultar';
-      b.onclick=async()=>{b.disabled=true;b.textContent='Consultando…';try{await fetch(item.consultar_em);await carregarTransbordos();}catch(e){b.textContent='Tentar consulta';b.disabled=false;}};
-      td.appendChild(b);tr.appendChild(td);t.appendChild(tr);
-    }
-    if(!d.itens.length){const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=5;td.textContent='Nenhum lead encaminhado.';tr.appendChild(td);t.appendChild(tr);}
-  }catch(e){}
-}
-
 async function carregarVendeai() {
   const res = await fetch('/api/configuracao');
   const cfg = await res.json();
@@ -1353,9 +1332,9 @@ carregarHorario();
 carregarSms();
 carregarVendeai();
 carregarTransbordo();
-carregarTransbordos();
+carregarTransbordosRecebidos();
 carregarFila();
-setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarSaldoSms(); carregarFila(); carregarTransbordos(); }, 10000);
+setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarSaldoSms(); carregarFila(); carregarTransbordosRecebidos(); }, 10000);
 </script>
 
 </body>
