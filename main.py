@@ -1990,6 +1990,75 @@ def atualizar_nome_waba(row):
             (nome,datetime.now().timestamp(),row['waba_id'],row['access_token']))
 
 
+@app.get('/wabas', response_class=HTMLResponse)
+def pagina_wabas(request: Request):
+    return templates.TemplateResponse(request, 'wabas.html', {})
+
+
+def consultar_meta_waba(waba_id, token, edge='', fields='id,name'):
+    params = {'fields': fields, 'limit': 100} if edge else {'fields': fields}
+    itens, cursores = [], set()
+    for _ in range(100):
+        try:
+            r = requests.get('https://graph.facebook.com/v21.0/' + quote(waba_id, safe='') + edge,
+                             params=params, headers={'Authorization': 'Bearer ' + token}, timeout=(5, 15), allow_redirects=False)
+            data = r.json()
+            if r.status_code != 200 or not isinstance(data, dict) or 'error' in data:
+                return {'erro': 'Consulta indisponível. Verifique token e permissões.', 'http_status': r.status_code}
+            if not edge:
+                return {'dados': data}
+            if not isinstance(data.get('data'), list):
+                return {'erro': 'Resposta inesperada da Meta.'}
+            itens.extend(data['data'])
+            if not data.get('paging', {}).get('next'):
+                return {'dados': itens}
+            cursor = data.get('paging', {}).get('cursors', {}).get('after')
+            if not cursor or cursor in cursores:
+                return {'erro': 'A Meta não permitiu concluir a paginação.'}
+            cursores.add(cursor)
+            params['after'] = cursor
+        except (requests.RequestException, ValueError, AttributeError, TypeError):
+            return {'erro': 'Não foi possível consultar a Meta agora.'}
+    return {'erro': 'Lista muito extensa para concluir esta consulta.'}
+
+
+@app.post('/api/wabas-painel')
+def salvar_waba_painel(body: dict):
+    waba_id = str(body.get('waba_id', '')).strip()
+    token = body.get('access_token', '')
+    if not waba_id.isdigit() or not isinstance(token, str):
+        raise HTTPException(400, 'Informe um ID de WABA válido e um token.')
+    token = token.strip()
+    if not token:
+        token = token_waba({'waba_id': waba_id})
+    if not token:
+        raise HTTPException(400, 'Informe o token para cadastrar esta WABA.')
+    resultado = consultar_meta_waba(waba_id, token)
+    if 'erro' in resultado or str(resultado.get('dados', {}).get('id')) != waba_id:
+        raise HTTPException(400, 'Não foi possível validar a WABA. Confira ID, token e permissões.')
+    nome = str(resultado['dados'].get('name', ''))[:250]
+    with closing(get_db()) as conn, conn:
+        conn.execute('INSERT INTO wabas_salvas(waba_id,access_token,nome,nome_consultado_em) VALUES(?,?,?,?) ON CONFLICT(waba_id) DO UPDATE SET access_token=excluded.access_token,nome=excluded.nome,nome_consultado_em=excluded.nome_consultado_em',
+                     (waba_id, token, nome, datetime.now().timestamp()))
+    return {'id': waba_id, 'nome': nome}
+
+
+@app.get('/api/wabas-painel/{waba_id}')
+def detalhes_waba_painel(waba_id: str):
+    with closing(get_db()) as conn:
+        row = conn.execute('SELECT * FROM wabas_salvas WHERE waba_id=?', (waba_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, 'WABA não cadastrada.')
+    tarefas = [('', 'id,name,status,account_review_status,business_verification_status'),
+               ('', 'health_status'),
+               ('/phone_numbers', 'id,display_phone_number,verified_name,quality_rating,status'),
+               ('/message_templates', 'id,name,status,category,language,components')]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        resultados = list(pool.map(lambda tarefa: consultar_meta_waba(waba_id, row['access_token'], *tarefa), tarefas))
+    return JSONResponse({'id': waba_id, 'nome': row['nome'], 'consultado_em': agora_iso(),
+                         **dict(zip(['conta', 'saude', 'numeros', 'templates'], resultados))}, headers={'Cache-Control': 'no-store'})
+
+
 @app.get('/api/wabas-salvas')
 def wabas_salvas():
     with closing(get_db()) as c:
