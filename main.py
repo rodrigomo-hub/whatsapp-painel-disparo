@@ -584,6 +584,19 @@ def verificar_presenca_meta():
         conn.close()
 
 
+def bloquear_numeros_waba(waba_id, health):
+    if not waba_id or not isinstance(health, dict):
+        return
+    entidades = health.get('entities', [])
+    banida = any(e.get('error_code') == 141014 for item in entidades for e in item.get('errors', []))
+    bloqueada = health.get('can_send_message') == 'BLOCKED' or any(
+        item.get('entity_type') == 'WABA' and item.get('can_send_message') == 'BLOCKED' for item in entidades)
+    if banida or bloqueada:
+        with closing(get_db()) as conn, conn:
+            conn.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0,status_envio_meta=? WHERE waba_id=?',
+                         ('BANNED' if banida else 'BLOCKED', waba_id))
+
+
 def verificar_qualidade(numero) -> str:
     estado, qualidade = 'UNKNOWN', 'UNKNOWN'
     headers = {'Authorization': 'Bearer ' + numero['access_token']}
@@ -599,6 +612,7 @@ def verificar_qualidade(numero) -> str:
                 w = requests.get('https://graph.facebook.com/v21.0/' + numero['waba_id'],
                                  params={'fields': 'health_status'}, headers=headers, timeout=15)
                 health = w.json().get('health_status', {}) if w.status_code == 200 else {}
+                bloquear_numeros_waba(numero['waba_id'], health)
                 envio = health.get('can_send_message')
                 banido = any(e.get('error_code') == 141014 for entity in health.get('entities', []) for e in entity.get('errors', []))
                 estado = 'BANNED' if banido else ('AVAILABLE' if envio == 'AVAILABLE' else 'BLOCKED' if envio == 'BLOCKED' else 'UNKNOWN')
@@ -2055,6 +2069,7 @@ def detalhes_waba_painel(waba_id: str):
                ('/message_templates', 'id,name,status,category,language,components')]
     with ThreadPoolExecutor(max_workers=4) as pool:
         resultados = list(pool.map(lambda tarefa: consultar_meta_waba(waba_id, row['access_token'], *tarefa), tarefas))
+    bloquear_numeros_waba(waba_id, resultados[1].get('dados', {}).get('health_status', {}))
     return JSONResponse({'id': waba_id, 'nome': row['nome'], 'consultado_em': agora_iso(),
                          **dict(zip(['conta', 'saude', 'numeros', 'templates'], resultados))}, headers={'Cache-Control': 'no-store'})
 

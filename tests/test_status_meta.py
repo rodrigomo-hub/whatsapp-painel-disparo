@@ -28,3 +28,15 @@ class StatusMetaTests(unittest.TestCase):
         with test_db() as c:c.execute("UPDATE numeros SET status_envio_meta='BANNED'")
         self.assertFalse(main.enviar_whatsapp(antigo,'5511999999999',[])[0])
         self.api.assert_not_called()
+
+    def test_bloqueio_pagamento_pausa_toda_waba_sem_afetar_outra(self):
+        with test_db() as c:
+            c.execute("INSERT INTO numeros(nome,phone_number_id,access_token,waba_id,ativo) VALUES('Mesmo','2','token','waba',1)")
+            c.execute("INSERT INTO numeros(nome,phone_number_id,access_token,waba_id,ativo) VALUES('Outra','3','token','outra',1)")
+        main.bloquear_numeros_waba('waba',{'can_send_message':'BLOCKED','entities':[{'entity_type':'WABA','errors':[{'error_code':141006}]}]})
+        with test_db() as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM numeros WHERE waba_id='waba' AND ativo=1").fetchone()[0],0)
+            self.assertEqual(c.execute("SELECT ativo FROM numeros WHERE waba_id='outra'").fetchone()[0],1)
+        main.bloquear_numeros_waba('waba',{'can_send_message':'AVAILABLE'})
+        with test_db() as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM numeros WHERE waba_id='waba' AND ativo=1").fetchone()[0],0)
