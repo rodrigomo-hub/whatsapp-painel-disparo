@@ -32,6 +32,8 @@ def migrar(c):
     CREATE TABLE IF NOT EXISTS optout_passos(id INTEGER PRIMARY KEY, tarefa_id INTEGER, chat_id TEXT, passo TEXT, http_status INTEGER, duracao_ms INTEGER, desde_recebimento_ms INTEGER, criado_em REAL, resultado TEXT);
     CREATE INDEX IF NOT EXISTS idx_optout_pendente ON optout_tarefas(estado,tentar_em);
     ''')
+    if 'teste_excluir_restantes' not in {r['name'] for r in c.execute('PRAGMA table_info(optout_config)')}:
+        c.execute('ALTER TABLE optout_config ADD COLUMN teste_excluir_restantes INTEGER NOT NULL DEFAULT 0')
 
 
 def bloqueado(get_db, numero):
@@ -61,7 +63,10 @@ def receber(c, d, evento_id):
                 if telefone(json.loads(r['payload'])['mailing']['phone']) == p:
                     c.execute("UPDATE fila_disparos SET status='cancelado',atualizado_em=?,resultado=? WHERE id=?", (time.time(),json.dumps({'motivo_codigo':'optout','status':'bloqueado'}),r['id']))
     if not chat_id.isdigit() or not account.isdigit(): return False
-    c.execute('INSERT OR IGNORE INTO optout_tarefas(account_id,chat_id,evento_id,criado_em,detalhe) VALUES(?,?,?,?,?)', (account,chat_id,evento_id,time.time(),'' if p else 'Telefone ausente: supressão não registrada.'))
+    passo = 'excluir_conversa' if cfg['teste_excluir_restantes'] else 'resolver'
+    cursor=c.execute('INSERT OR IGNORE INTO optout_tarefas(account_id,chat_id,evento_id,criado_em,detalhe,passo) VALUES(?,?,?,?,?,?)', (account,chat_id,evento_id,time.time(),'' if p else 'Telefone ausente: supressão não registrada.',passo))
+    if cursor.rowcount and passo=='excluir_conversa':
+        c.execute('UPDATE optout_config SET teste_excluir_restantes=0 WHERE id=1')
     return True
 
 
@@ -81,13 +86,14 @@ def processar_um(get_db, token, somente_resolver=False):
     if not token: return False
     with closing(get_db()) as c,c:
         c.execute('BEGIN IMMEDIATE')
-        row = c.execute("SELECT * FROM optout_tarefas WHERE estado='pendente' AND tentar_em<=?" + (" AND passo='resolver'" if somente_resolver else "") + " ORDER BY CASE WHEN passo='resolver' THEN 0 ELSE 1 END,criado_em LIMIT 1", (time.time(),)).fetchone()
+        row = c.execute("SELECT * FROM optout_tarefas WHERE estado='pendente' AND tentar_em<=?" + (" AND passo IN ('resolver','excluir_conversa')" if somente_resolver else "") + " ORDER BY CASE WHEN passo IN ('resolver','excluir_conversa') THEN 0 ELSE 1 END,criado_em LIMIT 1", (time.time(),)).fetchone()
         if not row: return False
         t = dict(row)
         c.execute("UPDATE optout_tarefas SET estado='executando' WHERE id=?", (t['id'],))
     step = t['passo']; root = BASE+t['account_id']; conv = root+'/conversations/'+t['chat_id']
     method,url,body = 'GET',conv,None
-    if step=='resolver': method,url,body='POST',conv+'/toggle_status',{'status':'resolved'}
+    if step=='excluir_conversa': method='DELETE'
+    elif step=='resolver': method,url,body='POST',conv+'/toggle_status',{'status':'resolved'}
     elif step=='desatribuir': method,url,body='POST',conv+'/assignments',{'assignee_id':None}
     elif step=='ler_labels': url=conv+'/labels'
     elif step=='marcar': method,url,body='POST',conv+'/labels',{'labels':json.loads(t['labels'])}
@@ -96,7 +102,7 @@ def processar_um(get_db, token, somente_resolver=False):
     started=time.monotonic(); status=None; data={}; delay=0; failure=''; ok=False
     try:
         r=requests.request(method,url,json=body,headers={'api_access_token':token,'Content-Type':'application/json'},timeout=(1,2),allow_redirects=False)
-        status=r.status_code; ok=200<=status<300 or status==404
+        status=r.status_code; ok=(status==404) if step=='confirmar_conversa' else (200<=status<300 or status==404)
         delay=retry_after(r.headers.get('Retry-After'))
         if status!=404 and 200<=status<300 and step in ('contato','ler_labels'):
             data=r.json()
@@ -105,7 +111,7 @@ def processar_um(get_db, token, somente_resolver=False):
         ok=False; failure='falha_comunicacao_ou_resposta'
     duration=int((time.monotonic()-started)*1000)
     attempt=t['tentativas']+1
-    retry=(status is None or status==429 or status>=500) and attempt<3
+    retry=(status is None or status==429 or status>=500 or (step=='confirmar_conversa' and status==200)) and attempt<3
     with closing(get_db()) as c,c:
         c.execute('INSERT INTO optout_passos(tarefa_id,chat_id,passo,http_status,duracao_ms,desde_recebimento_ms,criado_em,resultado) VALUES(?,?,?,?,?,?,?,?)',(t['id'],t['chat_id'],step,status,duration,int((time.time()-t['criado_em'])*1000),time.time(),'ok' if ok else failure))
         if not ok and retry:
@@ -113,6 +119,17 @@ def processar_um(get_db, token, somente_resolver=False):
             return True
         detail=t['detalhe']
         if not ok: detail += ' '+step+': '+failure+'.'
+        if step in ('excluir_conversa','confirmar_conversa'):
+            if step=='excluir_conversa':
+                proximo='confirmar_conversa' if ok else 'resolver'
+                estado='pendente'
+                if not ok: detail+=' Retomando encerramento padrão.'
+            else:
+                proximo=step
+                estado='concluido' if ok and not detail.strip() else 'revisar'
+                if not ok: detail+=' Exclusão da conversa não confirmada.'
+            c.execute('UPDATE optout_tarefas SET passo=?,estado=?,tentativas=0,tentar_em=0,detalhe=? WHERE id=?',(proximo,estado,detail.strip(),t['id']))
+            return True
         resolved=t['resolvida'] or (step=='resolver' and ok)
         contact_id=t['contact_id']; labels=t['labels']
         if step=='contato' and ok and status!=404:

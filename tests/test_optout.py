@@ -91,3 +91,38 @@ class OptoutTests(unittest.TestCase):
         self.event['chat_summary']['details']['contact']['phone']='5511987654322';self.receber()
         self.assertFalse(optout.bloqueado(main.get_db,'5511987654322'))
         self.assertTrue(optout.bloqueado(main.get_db,'5511987654321'))
+
+    def test_direct_delete_one_shot_is_first_request_and_no_contact_delete(self):
+        with test_db() as c:c.execute('UPDATE optout_config SET teste_excluir_restantes=1')
+        self.receber()
+        self.assertEqual(self.task()['passo'],'excluir_conversa')
+        with patch.object(optout.requests,'request',side_effect=[self.response(),self.response(404)]) as req:
+            optout.processar_um(main.get_db,'secret',True)
+            optout.processar_um(main.get_db,'secret')
+        self.assertEqual(req.call_args_list[0].args,('DELETE',optout.BASE+'33393/conversations/123'))
+        self.assertEqual(req.call_args_list[1].args,('GET',optout.BASE+'33393/conversations/123'))
+        self.assertEqual(self.task()['estado'],'concluido')
+        self.assertTrue(optout.bloqueado(main.get_db,'11987654321'))
+        self.event['chat_summary']['chat_id']='124';self.receber()
+        with test_db() as c:
+            self.assertEqual(c.execute("SELECT passo FROM optout_tarefas WHERE chat_id='124'").fetchone()[0],'resolver')
+    def test_duplicate_does_not_consume_armed_test(self):
+        self.receber()
+        with test_db() as c:c.execute('UPDATE optout_config SET teste_excluir_restantes=1')
+        self.receber()
+        with test_db() as c:self.assertEqual(c.execute('SELECT teste_excluir_restantes FROM optout_config').fetchone()[0],1)
+    def test_direct_delete_refused_falls_back_to_resolve(self):
+        with test_db() as c:c.execute('UPDATE optout_config SET teste_excluir_restantes=1')
+        self.receber()
+        with patch.object(optout.requests,'request',return_value=self.response(403)):
+            optout.processar_um(main.get_db,'secret')
+        self.assertEqual(self.task()['passo'],'resolver')
+    def test_delete_accepted_but_not_gone_is_not_success(self):
+        with test_db() as c:c.execute('UPDATE optout_config SET teste_excluir_restantes=1')
+        self.receber()
+        with patch.object(optout.requests,'request',return_value=self.response()):
+            optout.processar_um(main.get_db,'secret')
+            for _ in range(3):
+                with test_db() as c:c.execute('UPDATE optout_tarefas SET tentar_em=0')
+                optout.processar_um(main.get_db,'secret')
+        self.assertEqual(self.task()['estado'],'revisar')

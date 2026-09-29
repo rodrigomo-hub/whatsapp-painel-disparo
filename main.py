@@ -1782,6 +1782,16 @@ def consultar_optout():
             'passos':[dict(r) for r in c.execute('SELECT chat_id,passo,http_status,duracao_ms,desde_recebimento_ms,resultado FROM optout_passos ORDER BY id DESC LIMIT 100')]},headers={'Cache-Control':'no-store'})
 
 
+@app.post('/api/optout/testar-exclusao')
+def testar_exclusao_optout():
+    if not VENDEAI_API_TOKEN:raise HTTPException(400,'Token do CRM não configurado.')
+    with closing(get_db()) as c,c:
+        if not c.execute('SELECT habilitado FROM optout_config WHERE id=1').fetchone()[0]:
+            raise HTTPException(400,'Ative o encerramento automático primeiro.')
+        c.execute('UPDATE optout_config SET teste_excluir_restantes=1 WHERE id=1')
+    return {'ok':True,'mensagem':'O próximo novo opt-out vai testar a exclusão direta da conversa.'}
+
+
 @app.patch('/api/optout/config')
 def configurar_optout(body: dict):
     textos=body.get('textos')

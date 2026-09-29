@@ -14,3 +14,7 @@ Ativado somente no painel de origem (conta 33393). Simplifica não recebe esta p
 - A latência externa e o início da IA na VendeAI não são controlados pelo painel; encerramento abaixo de 2s é alvo, não garantia.
 
 Validação: 177 testes na suíte; testes específicos de opt-out e planilhas repetidos após ajustes. CRM consultado somente por GET para verificar credencial. O fluxo destrutivo é coberto por mocks; não foi executado em conversa de cliente como teste. A validação real completa depende de conversa de teste identificada pelo usuário.
+
+## Teste de exclusão direta
+
+`POST /api/optout/testar-exclusao` arma uma tentativa única para o próximo novo opt-out elegível. Duplicatas não consomem o teste. A supressão continua sendo persistida antes de qualquer chamada externa. Nesse modo, a primeira operação é `DELETE /conversations/{chat_id}`, seguida de GET para confirmar 404. Não há consulta prévia nem exclusão do contato nesse teste. Se o DELETE for recusado após as tentativas previstas, retoma-se o fluxo padrão. Um HTTP 200 no DELETE não é registrado como exclusão confirmada sem o GET 404. A eficácia para impedir a resposta da IA depende do teste real.
