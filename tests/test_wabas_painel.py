@@ -13,7 +13,7 @@ class WabasPainelTests(unittest.TestCase):
         with test_db() as c:
             self.assertEqual(c.execute('SELECT count(*) FROM numeros').fetchone()[0],1)
             self.assertEqual(c.execute("SELECT access_token FROM wabas_salvas WHERE waba_id='123'").fetchone()[0],'segredo')
-        with patch.object(main,'consultar_meta_waba',return_value={'dados':[]}):
+        with patch.object(main,'consultar_meta_waba',side_effect=lambda w,t,e='',f='': {'dados': [] if e else {}}):
             d=self.client.get('/api/wabas-painel/123')
         self.assertEqual(d.status_code,200);self.assertNotIn('segredo',d.text)
     def test_token_invalido_nao_salva(self):

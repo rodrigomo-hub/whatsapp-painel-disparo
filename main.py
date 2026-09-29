@@ -12,6 +12,7 @@ import fila_disparos
 import planilhas
 import transbordo
 import imagens_template
+import templates_lote
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, quote
@@ -319,6 +320,7 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN status_envio_meta TEXT NOT NULL DEFAULT 'UNKNOWN'")
     if 'observacao' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN observacao TEXT NOT NULL DEFAULT ''")
+    templates_lote.migrar(conn)
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -2002,6 +2004,38 @@ def atualizar_nome_waba(row):
     with closing(get_db()) as c,c:
         c.execute('UPDATE wabas_salvas SET nome=COALESCE(?,nome),nome_consultado_em=? WHERE waba_id=? AND access_token=?',
             (nome,datetime.now().timestamp(),row['waba_id'],row['access_token']))
+
+
+@app.get('/wabas/criar-templates', response_class=HTMLResponse)
+def pagina_criar_templates(request: Request):
+    return templates.TemplateResponse(request, 'criar_templates.html', {})
+
+
+@app.post('/api/templates-lotes')
+def criar_templates_lote(body: dict):
+    return templates_lote.criar_lote(get_db, body)
+
+
+@app.get('/api/templates-lotes')
+def listar_templates_lotes():
+    with closing(get_db()) as c:
+        rows=c.execute('SELECT id,payload,criado_em FROM template_lotes ORDER BY criado_em DESC LIMIT 30').fetchall()
+    return [{'id':r['id'],'nome':json.loads(r['payload'])['name'],'criado_em':r['criado_em']} for r in rows]
+
+
+@app.get('/api/templates-lotes/{ident}')
+def resumo_templates_lote(ident: str):
+    return templates_lote.resumo(get_db, ident)
+
+
+@app.post('/api/templates-lotes/{ident}/{waba}/executar')
+def executar_templates_lote(ident: str, waba: str):
+    return templates_lote.executar(get_db, consultar_meta_waba, ident, waba)
+
+
+@app.post('/api/templates-lotes/{ident}/{waba}/consultar')
+def consultar_templates_lote(ident: str, waba: str):
+    return templates_lote.executar(get_db, consultar_meta_waba, ident, waba, apenas_consultar=True)
 
 
 @app.get('/wabas', response_class=HTMLResponse)
