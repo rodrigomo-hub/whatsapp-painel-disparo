@@ -93,7 +93,7 @@ class OptoutTests(unittest.TestCase):
         self.assertTrue(optout.bloqueado(main.get_db,'5511987654321'))
 
     def test_direct_delete_one_shot_is_first_request_and_no_contact_delete(self):
-        with test_db() as c:c.execute('UPDATE optout_config SET teste_excluir_restantes=1')
+        with test_db() as c:c.execute("UPDATE optout_config SET teste_excluir_restantes=1,teste_telefone='5511987654321'")
         self.receber()
         self.assertEqual(self.task()['passo'],'excluir_conversa')
         with patch.object(optout.requests,'request',side_effect=[self.response(),self.response(404)]) as req:
@@ -108,17 +108,17 @@ class OptoutTests(unittest.TestCase):
             self.assertEqual(c.execute("SELECT passo FROM optout_tarefas WHERE chat_id='124'").fetchone()[0],'resolver')
     def test_duplicate_does_not_consume_armed_test(self):
         self.receber()
-        with test_db() as c:c.execute('UPDATE optout_config SET teste_excluir_restantes=1')
+        with test_db() as c:c.execute("UPDATE optout_config SET teste_excluir_restantes=1,teste_telefone='5511987654321'")
         self.receber()
         with test_db() as c:self.assertEqual(c.execute('SELECT teste_excluir_restantes FROM optout_config').fetchone()[0],1)
     def test_direct_delete_refused_falls_back_to_resolve(self):
-        with test_db() as c:c.execute('UPDATE optout_config SET teste_excluir_restantes=1')
+        with test_db() as c:c.execute("UPDATE optout_config SET teste_excluir_restantes=1,teste_telefone='5511987654321'")
         self.receber()
         with patch.object(optout.requests,'request',return_value=self.response(403)):
             optout.processar_um(main.get_db,'secret')
         self.assertEqual(self.task()['passo'],'resolver')
     def test_delete_accepted_but_not_gone_is_not_success(self):
-        with test_db() as c:c.execute('UPDATE optout_config SET teste_excluir_restantes=1')
+        with test_db() as c:c.execute("UPDATE optout_config SET teste_excluir_restantes=1,teste_telefone='5511987654321'")
         self.receber()
         with patch.object(optout.requests,'request',return_value=self.response()):
             optout.processar_um(main.get_db,'secret')
@@ -126,3 +126,22 @@ class OptoutTests(unittest.TestCase):
                 with test_db() as c:c.execute('UPDATE optout_tarefas SET tentar_em=0')
                 optout.processar_um(main.get_db,'secret')
         self.assertEqual(self.task()['estado'],'revisar')
+
+    def test_other_phone_does_not_consume_or_run_targeted_test(self):
+        with test_db() as c:c.execute("UPDATE optout_config SET teste_excluir_restantes=1,teste_telefone='5511987654322'")
+        self.receber()
+        self.assertEqual(self.task()['passo'],'resolver')
+        with test_db() as c:self.assertEqual(c.execute('SELECT teste_excluir_restantes FROM optout_config').fetchone()[0],1)
+    def test_test_endpoint_requires_specific_phone(self):
+        with patch.object(main,'VENDEAI_API_TOKEN','secret'):
+            self.assertEqual(self.client.post('/api/optout/testar-exclusao',json={}).status_code,400)
+
+    def test_general_direct_delete_matches_optout_only_for_all_phones(self):
+        with test_db() as c:c.execute('UPDATE optout_config SET excluir_conversa_primeiro=1')
+        self.receber()
+        self.event['chat_summary']['chat_id']='124';self.event['chat_summary']['details']['contact']['phone']='5511987654322';self.receber()
+        self.event['chat_summary']['chat_id']='125';self.event['first_message']='Consultar detalhes';self.receber()
+        with test_db() as c:
+            rows=c.execute('SELECT passo FROM optout_tarefas').fetchall()
+            self.assertEqual([r['passo'] for r in rows],['excluir_conversa','excluir_conversa'])
+            self.assertEqual(c.execute('SELECT count(*) FROM optout').fetchone()[0],2)

@@ -1783,13 +1783,16 @@ def consultar_optout():
 
 
 @app.post('/api/optout/testar-exclusao')
-def testar_exclusao_optout():
+def testar_exclusao_optout(body: dict):
+    alvo=optout.telefone(body.get("telefone"))
+    if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}",alvo):
+        raise HTTPException(400,"Informe o telefone específico de teste com DDD.")
     if not VENDEAI_API_TOKEN:raise HTTPException(400,'Token do CRM não configurado.')
     with closing(get_db()) as c,c:
         if not c.execute('SELECT habilitado FROM optout_config WHERE id=1').fetchone()[0]:
             raise HTTPException(400,'Ative o encerramento automático primeiro.')
-        c.execute('UPDATE optout_config SET teste_excluir_restantes=1 WHERE id=1')
-    return {'ok':True,'mensagem':'O próximo novo opt-out vai testar a exclusão direta da conversa.'}
+        c.execute('UPDATE optout_config SET teste_excluir_restantes=1,teste_telefone=? WHERE id=1',(alvo,))
+    return {'ok':True,'mensagem':'O próximo novo opt-out desse telefone vai testar a exclusão direta da conversa.'}
 
 
 @app.patch('/api/optout/config')
@@ -1798,8 +1801,12 @@ def configurar_optout(body: dict):
     if type(body.get('habilitado')) is not bool or not isinstance(textos,list) or not 1<=len(textos)<=100 or any(not isinstance(t,str) or not t.strip() or len(t)>200 for t in textos):
         raise HTTPException(400,'Informe a ativação e de 1 a 100 textos, de até 200 caracteres cada.')
     if body['habilitado'] and not VENDEAI_API_TOKEN:raise HTTPException(400,'Configure VENDEAI_API_TOKEN no servidor.')
+    if 'excluir_conversa_primeiro' in body and type(body['excluir_conversa_primeiro']) is not bool:
+        raise HTTPException(400,'Informe excluir_conversa_primeiro booleano.')
     with closing(get_db()) as c,c:
         c.execute('UPDATE optout_config SET habilitado=?,textos=? WHERE id=1',(int(body['habilitado']),json.dumps(list(dict.fromkeys(optout.normalizar(t) for t in textos)))))
+        if 'excluir_conversa_primeiro' in body:
+            c.execute('UPDATE optout_config SET excluir_conversa_primeiro=? WHERE id=1',(int(body['excluir_conversa_primeiro']),))
     return {'ok':True}
 
 

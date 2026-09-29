@@ -34,6 +34,10 @@ def migrar(c):
     ''')
     if 'teste_excluir_restantes' not in {r['name'] for r in c.execute('PRAGMA table_info(optout_config)')}:
         c.execute('ALTER TABLE optout_config ADD COLUMN teste_excluir_restantes INTEGER NOT NULL DEFAULT 0')
+    if 'teste_telefone' not in {r['name'] for r in c.execute('PRAGMA table_info(optout_config)')}:
+        c.execute("ALTER TABLE optout_config ADD COLUMN teste_telefone TEXT NOT NULL DEFAULT ''")
+    if 'excluir_conversa_primeiro' not in {r['name'] for r in c.execute('PRAGMA table_info(optout_config)')}:
+        c.execute('ALTER TABLE optout_config ADD COLUMN excluir_conversa_primeiro INTEGER NOT NULL DEFAULT 0')
 
 
 def bloqueado(get_db, numero):
@@ -63,9 +67,9 @@ def receber(c, d, evento_id):
                 if telefone(json.loads(r['payload'])['mailing']['phone']) == p:
                     c.execute("UPDATE fila_disparos SET status='cancelado',atualizado_em=?,resultado=? WHERE id=?", (time.time(),json.dumps({'motivo_codigo':'optout','status':'bloqueado'}),r['id']))
     if not chat_id.isdigit() or not account.isdigit(): return False
-    passo = 'excluir_conversa' if cfg['teste_excluir_restantes'] else 'resolver'
+    passo = 'excluir_conversa' if cfg['excluir_conversa_primeiro'] or (cfg['teste_excluir_restantes'] and cfg['teste_telefone'] and p==cfg['teste_telefone']) else 'resolver'
     cursor=c.execute('INSERT OR IGNORE INTO optout_tarefas(account_id,chat_id,evento_id,criado_em,detalhe,passo) VALUES(?,?,?,?,?,?)', (account,chat_id,evento_id,time.time(),'' if p else 'Telefone ausente: supressão não registrada.',passo))
-    if cursor.rowcount and passo=='excluir_conversa':
+    if cursor.rowcount and passo=='excluir_conversa' and not cfg['excluir_conversa_primeiro']:
         c.execute('UPDATE optout_config SET teste_excluir_restantes=0 WHERE id=1')
     return True
 
