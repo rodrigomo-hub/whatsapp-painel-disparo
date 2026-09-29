@@ -2051,11 +2051,18 @@ def detalhes_waba_painel(waba_id: str):
         raise HTTPException(404, 'WABA não cadastrada.')
     tarefas = [('', 'id,name,status,account_review_status,business_verification_status'),
                ('', 'health_status'),
-               ('/phone_numbers', 'id,display_phone_number,verified_name,quality_rating,status'),
+               ('/phone_numbers', 'id,display_phone_number,verified_name,quality_rating,status,whatsapp_business_manager_messaging_limit'),
                ('/message_templates', 'id,name,status,category,language,components')]
     with ThreadPoolExecutor(max_workers=4) as pool:
         resultados = list(pool.map(lambda tarefa: consultar_meta_waba(waba_id, row['access_token'], *tarefa), tarefas))
-    return JSONResponse({'id': waba_id, 'nome': row['nome'], 'consultado_em': agora_iso(),
+    with closing(get_db()) as conn:
+        locais = conn.execute('SELECT * FROM numeros WHERE waba_id=?', (waba_id,)).fetchall()
+    capacidade = capacidade_lote([n['id'] for n in locais]) if locais else {'capacidade_agora': 0, 'restante_dia': 0, 'restante_hora': 0}
+    uso = {'numeros_cadastrados': len(locais), 'enviados_hoje': sum(contagem_hoje(n['id']) for n in locais),
+           'enviados_hora': sum(contagem_ultima_hora(n['id']) for n in locais),
+           'limite_diario_configurado': sum(n['limite_diario'] for n in locais),
+           'capacidade_agora': capacidade['capacidade_agora']}
+    return JSONResponse({'id': waba_id, 'nome': row['nome'], 'uso_painel': uso, 'consultado_em': agora_iso(),
                          **dict(zip(['conta', 'saude', 'numeros', 'templates'], resultados))}, headers={'Cache-Control': 'no-store'})
 
 
