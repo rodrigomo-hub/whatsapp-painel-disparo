@@ -14,6 +14,7 @@ import transbordo
 import imagens_template
 import templates_lote
 import vendeai_eventos
+import optout
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, quote
@@ -498,6 +499,8 @@ def pausar_template(numero):
 
 
 def enviar_whatsapp(numero, telefone_destino, variaveis_template):
+    if optout.bloqueado(get_db,telefone_destino):
+        return False,"Bloqueado pela lista negra (opt-out)",""
     with closing(get_db()) as conn:
         atual = conn.execute('SELECT qualidade,status_envio_meta,ativo FROM numeros WHERE id=?', (numero['id'],)).fetchone()
     if not atual or not atual['ativo'] or atual['status_envio_meta'] != 'AVAILABLE' or atual['qualidade'] not in ('GREEN', 'YELLOW'):
@@ -787,7 +790,10 @@ def normalizar_telefone_br(numero: str) -> str:
 
 
 def cadastrar_base_vendeai(leads, cfg):
-    resultados = vendeai_mailing.cadastrar(leads, cfg, VENDEAI_API_TOKEN)
+    permitidos = [lead for lead in leads if not optout.bloqueado(get_db,lead.get('phone'))]
+    respostas = iter(vendeai_mailing.cadastrar(permitidos, cfg, VENDEAI_API_TOKEN) if permitidos else [])
+    telefones_permitidos = {lead['phone'] for lead in permitidos}
+    resultados = [next(respostas) if lead['phone'] in telefones_permitidos else {'status':'erro','motivo':'OPTOUT'} for lead in leads]
     if cfg["vendeai_habilitado"]:
         sucessos = sum(r["status"] == "cadastrado" for r in resultados)
         motivos = sorted({r["motivo"] for r in resultados if r.get("motivo")})
@@ -862,6 +868,8 @@ def consultar_saldo_sms(forcar=False) -> dict:
         if idade < CACHE_SALDO_TTL_SEGUNDOS:
             return _cache_saldo_sms
 
+    if optout.bloqueado(get_db,telefone_destino):
+        return False,"Bloqueado pela lista negra (opt-out)",""
     if not SMS_GTI_TOKEN:
         _cache_saldo_sms.update({"valor": None, "expira_em": None, "atualizado_em": agora, "erro": "SMS_GTI_TOKEN nao configurado"})
         return _cache_saldo_sms
@@ -939,6 +947,8 @@ NUMERO_ID_SMS_FALLBACK = 0  # sentinela: disparo que nao usou nenhum numero de W
 
 
 def tentar_fallback_sms(cpf, nome_lead, telefone, variaveis):
+    if optout.bloqueado(get_db,telefone):
+        return {"status":"bloqueado","motivo_codigo":"optout","aceito":False}
     """
     Tenta o fallback de SMS. So dispara de fato se sms_habilitado estiver
     ligado na configuracao E SMS_GTI_TOKEN estiver setado no ambiente.
@@ -1030,8 +1040,8 @@ async def loop_verificar_qualidade():
             conn.close()
 
             for n in numeros:
-                qualidade = verificar_qualidade(n)
-                categoria, status_template, idioma = verificar_template_info(n)
+                qualidade = await asyncio.to_thread(verificar_qualidade,n)
+                categoria, status_template, idioma = await asyncio.to_thread(verificar_template_info,n)
                 conn = get_db()
                 conn.execute(
                     "UPDATE numeros SET qualidade = ?, template_categoria = ?, template_status = ? WHERE id = ?",
@@ -1046,6 +1056,15 @@ async def loop_verificar_qualidade():
             registrar_evento(None, "erro_checagem_qualidade", str(e))
 
 
+async def loop_optout(prioritario=False):
+    while True:
+        try:
+            fez = await asyncio.to_thread(optout.processar_um,get_db,VENDEAI_API_TOKEN,prioritario)
+        except Exception:
+            fez = False
+        await asyncio.sleep(0 if fez else 0.1)
+
+
 async def loop_eventos_new():
     while True:
         try:
@@ -1058,6 +1077,8 @@ async def loop_eventos_new():
 @app.on_event("startup")
 async def startup():
     init_db()
+    optout.recuperar(get_db)
+    app.state.optout_tasks = [asyncio.create_task(loop_optout(i==0)) for i in range(4)]
     vendeai_eventos.recuperar_interrompidos(get_db)
     app.state.eventos_task = asyncio.create_task(loop_eventos_new())
     asyncio.create_task(loop_verificar_qualidade())
@@ -1337,10 +1358,14 @@ async def importar_planilha(request: Request):
     cfg = carregar_configuracao()
     total_linhas = len(linhas) + len(erros)
     leads, vistos, duplicados = [], set(), 0
+    excluidos_optout = 0
     for row in linhas:
         try:
             preparado = vendeai_mailing.preparar_lead(row['lead'], cfg)
             m = preparado['mailing']
+            if optout.bloqueado(get_db,m['phone']):
+                excluidos_optout += 1
+                continue
             if not re.fullmatch(r'55[1-9][0-9][0-9]{8,9}', m['phone']):
                 raise HTTPException(400, 'Telefone brasileiro invalido')
             if variaveis_vazias_impedem(preparado['variaveis_template']):
@@ -1366,7 +1391,7 @@ async def importar_planilha(request: Request):
         except HTTPException as erro:
             erros.append({'linha': row['linha'], 'motivo': erro.detail})
     return {'leads': leads, 'total_linhas': total_linhas,
-            'validos': len(leads), 'duplicados': duplicados, 'erros': erros,
+            'validos': len(leads), 'duplicados': duplicados, 'excluidos_optout': excluidos_optout, 'erros': erros,
             'pode_importar': bool(leads) and not erros}
 
 
@@ -1388,6 +1413,8 @@ async def disparar(request: Request):
     if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone):
         raise HTTPException(400, "Telefone brasileiro invalido")
 
+    if optout.bloqueado(get_db,telefone):
+        return {"status":"bloqueado","motivo_codigo":"optout","aceito":False}
     chave = request.headers.get("Idempotency-Key") or body.get("idempotency_key")
     anterior = transbordo.Transbordo(get_db).buscar(body,chave)
     if anterior:
@@ -1450,6 +1477,8 @@ def impedimento_fila(origem="individual", numeros=None):
 
 
 def executar_disparo_preparado(preparado, cadastro, origem="individual", numeros=None):
+    if optout.bloqueado(get_db,preparado["mailing"]["phone"]):
+        return {"status":"bloqueado","motivo_codigo":"optout","aceito":False}
     lead = preparado["mailing"]
     telefone = lead["phone"]
     cpf = lead.get("cpf", "")
@@ -1524,6 +1553,7 @@ async def disparo_lote(request: Request):
         raise HTTPException(400, "Envie de 1 a 20000 leads")
 
     formatados = []
+    bloqueados = []
     preparados = {}
     originais = {}
     vistos = set()
@@ -1532,22 +1562,27 @@ async def disparo_lote(request: Request):
         limpo = preparado["mailing"]["phone"]
         if limpo not in vistos:
             vistos.add(limpo)
+            if optout.bloqueado(get_db,limpo):
+                bloqueados.append({"telefone":limpo,"status":"bloqueado","motivo_codigo":"optout"})
+                continue
             formatados.append(limpo)
             preparados[limpo] = preparado
             originais[limpo] = entrada
 
+    if not formatados:
+        return {"total":len(bloqueados),"resultados":bloqueados}
     capacidade = capacidade_lote(numeros_selecionados)
     if len(formatados) > capacidade['capacidade_agora']:
         return JSONResponse({'status': 'erro', 'aceito': False, 'motivo_codigo': 'capacidade_insuficiente',
                              'motivo': 'Lote excede a capacidade restante de envio agora. Reduza o lote.',
-                             'total': len(formatados), 'capacidade': capacidade}, status_code=409)
+                             'total': len(formatados)+len(bloqueados), 'capacidade': capacidade}, status_code=409)
 
     if cfg["vendeai_habilitado"] and cfg["fila_habilitada"]:
         impedimento = impedimento_fila("lote", numeros_selecionados)
         if impedimento:
-            return {"total": len(formatados), "aceito": False, "erro_geral": impedimento["motivo"],
+            return {"total": len(formatados)+len(bloqueados), "aceito": False, "erro_geral": impedimento["motivo"],
                     "resultados": [{"telefone": t, **impedimento} for t in formatados]}
-        itens, invalidos = [], []
+        itens, invalidos = [], list(bloqueados)
         for telefone in formatados:
             preparado = preparados[telefone]
             if not re.fullmatch(r"55[1-9][0-9][0-9]{8,9}", telefone) or variaveis_vazias_impedem(preparado["variaveis_template"], numeros_selecionados):
@@ -1555,12 +1590,12 @@ async def disparo_lote(request: Request):
             else:
                 itens.append((preparado, originais[telefone], "lote", numeros_selecionados, originais[telefone].get("idempotency_key")))
         resultados = obter_fila().enfileirar(itens, cfg) if itens else []
-        return JSONResponse({"total": len(formatados), "resultados": resultados + invalidos}, status_code=202)
+        return JSONResponse({"total": len(formatados)+len(bloqueados), "resultados": resultados + invalidos}, status_code=202)
 
     permitido, motivo_horario = dentro_do_horario_permitido()
     if not permitido:
         return {
-            "total": len(formatados),
+            "total": len(formatados)+len(bloqueados),
             "resultados": [{"telefone": t, "status": "pendente", "motivo": motivo_horario} for t in formatados],
             "erro_geral": motivo_horario,
         }
@@ -1576,7 +1611,7 @@ async def disparo_lote(request: Request):
     conn.close()
 
     if not pool:
-        return {"total": len(formatados), "resultados": [], "erro_geral": "Nenhum numero disponivel/selecionado"}
+        return {"total": len(formatados)+len(bloqueados), "resultados": bloqueados, "erro_geral": "Nenhum numero disponivel/selecionado"}
 
     erros_entrada = {}
     for telefone in formatados:
@@ -1589,7 +1624,7 @@ async def disparo_lote(request: Request):
         cadastrar_base_vendeai, [preparados[t]["mailing"] for t in validos], cfg
     )))
 
-    resultados = []
+    resultados = list(bloqueados)
     idx_rr = 0
     for telefone in formatados:
         if telefone in erros_entrada:
@@ -1624,7 +1659,7 @@ async def disparo_lote(request: Request):
         if not enviado:
             resultados.append({"telefone": telefone, "status": "pendente", "motivo": "Sem numero disponivel no momento", "vendeai": cadastro})
 
-    return {"total": len(formatados), "resultados": resultados}
+    return {"total": len(formatados)+len(bloqueados), "resultados": resultados}
 
 
 @app.post("/api/atualizar-status/{numero_id}")
@@ -1690,7 +1725,7 @@ async def receber_eventos_vendeai(request: Request):
         raw.extend(chunk)
         if len(raw)>2_000_000:
             raise HTTPException(413,'Evento acima do limite de 2 MB.')
-    return vendeai_eventos.receber(get_db,request.query_params.get('chave',''),bytes(raw),cfg['vendeai_account_id'])
+    return await asyncio.to_thread(vendeai_eventos.receber,get_db,request.query_params.get('chave',''),bytes(raw),cfg['vendeai_account_id'])
 
 
 @app.get('/api/vendeai-eventos')
@@ -1728,6 +1763,34 @@ def evento_vendeai_original(ident: int):
         row=c.execute('SELECT payload_raw FROM vendeai_eventos WHERE id=?',(ident,)).fetchone()
     if not row:raise HTTPException(404,'Evento não encontrado.')
     return Response(content=row['payload_raw'],media_type='application/json',headers={'Cache-Control':'no-store'})
+
+
+@app.get('/optout',response_class=HTMLResponse)
+def pagina_optout(request: Request):
+    return templates.TemplateResponse(request,'optout.html',{})
+
+
+@app.get('/api/optout')
+def consultar_optout():
+    with closing(get_db()) as c:
+        cfg=dict(c.execute('SELECT * FROM optout_config WHERE id=1').fetchone())
+        cfg['textos']=json.loads(cfg['textos'])
+        return JSONResponse({'config':cfg,'token_configurado':bool(VENDEAI_API_TOKEN),
+            'total':c.execute('SELECT count(*) FROM optout').fetchone()[0],
+            'contatos':[dict(r) for r in c.execute('SELECT telefone,nome,chat_id,campanha,ultimo_optout_em FROM optout ORDER BY ultimo_optout_em DESC LIMIT 100')],
+            'tarefas':[dict(r) for r in c.execute('SELECT id,chat_id,passo,estado,detalhe FROM optout_tarefas ORDER BY id DESC LIMIT 100')],
+            'passos':[dict(r) for r in c.execute('SELECT chat_id,passo,http_status,duracao_ms,desde_recebimento_ms,resultado FROM optout_passos ORDER BY id DESC LIMIT 100')]},headers={'Cache-Control':'no-store'})
+
+
+@app.patch('/api/optout/config')
+def configurar_optout(body: dict):
+    textos=body.get('textos')
+    if type(body.get('habilitado')) is not bool or not isinstance(textos,list) or not 1<=len(textos)<=100 or any(not isinstance(t,str) or not t.strip() or len(t)>200 for t in textos):
+        raise HTTPException(400,'Informe a ativação e de 1 a 100 textos, de até 200 caracteres cada.')
+    if body['habilitado'] and not VENDEAI_API_TOKEN:raise HTTPException(400,'Configure VENDEAI_API_TOKEN no servidor.')
+    with closing(get_db()) as c,c:
+        c.execute('UPDATE optout_config SET habilitado=?,textos=? WHERE id=1',(int(body['habilitado']),json.dumps(list(dict.fromkeys(optout.normalizar(t) for t in textos)))))
+    return {'ok':True}
 
 
 @app.get('/eventos-vendeai',response_class=HTMLResponse)
@@ -2522,6 +2585,7 @@ async def loop_fila():
 @app.on_event("shutdown")
 async def parar_fila():
     app.state.fila_parar = True
+    for task in getattr(app.state,"optout_tasks",[]): task.cancel()
     task = getattr(app.state, "fila_task", None)
     if task:
         await task
@@ -2583,6 +2647,8 @@ async def receber_transbordo(request: Request):
             cfg=carregar_configuracao()
             lead=transbordo.dados_lead(body['lead'])
             preparado=vendeai_mailing.preparar_lead(lead,cfg)
+            if optout.bloqueado(get_db,preparado['mailing']['phone']):
+                return recusar('optout')
             transbordo.validar_lead(preparado['mailing'])
             chave='transbordo:'+body['id']
             existente=obter_fila().existente(preparado,lead,cfg,chave)

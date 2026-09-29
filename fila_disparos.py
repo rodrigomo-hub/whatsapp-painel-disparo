@@ -4,6 +4,7 @@ import json
 import os
 import time
 import uuid
+import optout
 from contextlib import closing, contextmanager
 from pathlib import Path
 
@@ -132,6 +133,8 @@ class Fila:
         with closing(self.get_db()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
             for preparado, original, origem, numeros, chave_explicita in itens:
+                if conn.execute('SELECT 1 FROM optout WHERE telefone=?',(optout.telefone(preparado['mailing']['phone']),)).fetchone():
+                    raise HTTPException(409,'optout: telefone na lista negra')
                 if chave_explicita is not None and (not isinstance(chave_explicita, str) or not 1 <= len(chave_explicita.strip()) <= 200):
                     raise HTTPException(400, "idempotency_key deve ter de 1 a 200 caracteres")
                 base = json.loads(serializar(preparado))
@@ -281,11 +284,13 @@ class Fila:
         motivo_pausa = ""
         with closing(self.get_db()) as conn, conn:
             for row, resultado in zip(selecionados, resultados):
+                atual = conn.execute("SELECT status FROM fila_disparos WHERE id=?",(row["id"],)).fetchone()
+                if not atual or atual["status"] != "cadastrando": continue
                 if resultado.get("status") == "cadastrado":
                     conn.execute("UPDATE fila_disparos SET status='pronto',cadastro=?,cadastro_em=?,tentar_em=0,atualizado_em=? WHERE id=?", (serializar(resultado), agora, agora, row["id"]))
                     continue
                 motivo = resultado.get("motivo", "RESPOSTA_INVALIDA")
-                permanente = motivo in {"INVALID_CPF", "INVALID_PHONE", "INVALID_EMAIL", "INVALID_BIRTH_DATE", "MISSING_PHONE", "MISSING_PRODUCT", "LEAD_REJEITADO", "HTTP_400", "HTTP_404", "HTTP_422"}
+                permanente = motivo in {"INVALID_CPF", "INVALID_PHONE", "INVALID_EMAIL", "INVALID_BIRTH_DATE", "MISSING_PHONE", "MISSING_PRODUCT", "LEAD_REJEITADO", "OPTOUT", "HTTP_400", "HTTP_404", "HTTP_422"}
                 espera = max(intervalo, int(resultado.get("tentar_apos_segundos", intervalo)))
                 conn.execute("UPDATE fila_disparos SET status=?,cadastro=?,tentar_em=?,atualizado_em=? WHERE id=?", ("erro" if permanente else "aguardando_cadastro", serializar(resultado), 0 if permanente else agora + espera, agora, row["id"]))
                 if not permanente:

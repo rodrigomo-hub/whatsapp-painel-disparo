@@ -117,6 +117,7 @@
   <a href="#configuracoes-vendeai" id="nav-configuracoes">Configurações</a>
   <a href="/wabas">WABAs</a>
   <a href="/eventos-vendeai">Eventos VendeAI</a>
+  <a href="/optout">Lista negra</a>
   <a href="/estatisticas">Estatísticas</a>
 </nav>
 <main id="pagina-painel">
@@ -1293,7 +1294,7 @@ document.getElementById('arquivo-lote').addEventListener('change', async (e) => 
       if (!res.ok) throw new Error(d.detail || 'Falha ao ler arquivo');
       errosImportacao = !d.pode_importar;
       document.getElementById('numeros-lote').value = JSON.stringify(d.leads, null, 2);
-      document.getElementById('previa-planilha').textContent = `${d.total_linhas} linhas · ${d.validos} válidos · ${d.duplicados} duplicados · ${d.erros.length} erros.\n` + d.erros.slice(0,30).map(x=>`Linha ${x.linha}: ${x.motivo}`).join('\n');
+      document.getElementById('previa-planilha').textContent = `${d.total_linhas} linhas · ${d.validos} válidos · ${d.duplicados} duplicados · ${d.excluidos_optout || 0} excluídos pela lista negra · ${d.erros.length} erros.\n` + d.erros.slice(0,30).map(x=>`Linha ${x.linha}: ${x.motivo}`).join('\n');
       resumoImportacao = document.getElementById('previa-planilha').textContent;
       if (d.erros.length) document.getElementById('previa-planilha').textContent += '\nCorrija o arquivo e importe novamente. Nenhum lead foi enviado.';
     } else {

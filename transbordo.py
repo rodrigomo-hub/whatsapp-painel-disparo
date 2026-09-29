@@ -1,3 +1,4 @@
+import optout
 """Encaminhamento com recibo persistente, sem repetir POST de resultado incerto."""
 import hashlib
 import json
@@ -151,6 +152,8 @@ class Transbordo:
         return self.obter(id)
 
     def encaminhar(self, body, chave, cfg, mailing):
+        if optout.bloqueado(self.get_db,mailing.get('phone')):
+            return {'status':'bloqueado','aceito':False,'motivo_codigo':'optout'}
         anterior = self.buscar(body,chave)
         if anterior:
             return self.publico(anterior)
