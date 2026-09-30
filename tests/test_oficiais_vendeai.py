@@ -19,7 +19,8 @@ class OficiaisTests(unittest.TestCase):
         if url.endswith('/inboxes'):return self.response({'payload':[copy.deepcopy(self.inbox)]})
         if url.endswith('/message_templates'):return self.response({'data':[copy.deepcopy(self.t)]})
         if url.endswith('/777'):return self.response({'status':'CONNECTED','quality_rating':'GREEN'})
-        if url.endswith('/888'):return self.response({'health_status':{'can_send_message':'AVAILABLE'}})
+        if url.endswith('/888'):return self.response({'id':'888','name':'Empresa WABA','health_status':{'can_send_message':'AVAILABLE'}})
+        if url.endswith('/999'):return self.response({},403)
         raise AssertionError(url)
     def post_response(self,url,**kw):
         if url.endswith('/inboxes/'):return self.response({'inboxes':[{'id':'77','templates':[copy.deepcopy(self.t)]}]})
@@ -37,6 +38,7 @@ class OficiaisTests(unittest.TestCase):
     def test_discovery_auto_matches_existing_and_redacts_credentials(self):
         oficial.descobrir(main.get_db,self.cfg,'');d=oficial.listar(main.get_db,self.cfg)
         self.assertEqual(d[0]['numero']['id'],1);self.assertNotIn('secret',json.dumps(d));self.assertEqual(self.numero()['vendeai_inbox_id'],'77')
+        self.assertEqual(d[0]['nome'],'Empresa WABA')
     def test_link_preserves_configuration_and_history(self):
         with test_db() as c:c.execute("UPDATE numeros SET ativo=0,limite_diario=81,limite_hora=9,observacao='anotação'")
         antes=self.numero();self.vincular();depois=self.numero()
@@ -56,6 +58,14 @@ class OficiaisTests(unittest.TestCase):
         with test_db() as c:
             n=c.execute('SELECT * FROM numeros WHERE id=?',(r['id'],)).fetchone()
             self.assertEqual(n['ativo'],0);self.assertEqual(n['access_token'],'secret-from-crm');self.assertEqual(n['via_envio'],'meta')
+            self.assertEqual(n['nome'],'Empresa WABA +5511999999999')
+    def test_discovery_replaces_inbox_name_but_preserves_custom_name(self):
+        with test_db() as c:c.execute("UPDATE numeros SET nome='Oficial'")
+        oficial.descobrir(main.get_db,self.cfg,'')
+        self.assertEqual(self.numero()['nome'],'Empresa WABA +5511999999999')
+        with test_db() as c:c.execute("UPDATE numeros SET nome='Nome personalizado'")
+        oficial.descobrir(main.get_db,self.cfg,'')
+        self.assertEqual(self.numero()['nome'],'Nome personalizado')
     def test_official_payload_and_label_task(self):
         self.habilitar();self.assertTrue(self.enviar()[0]);j=self.sends()[0].kwargs['json']
         self.assertEqual(j['payload'],{'type':'whatsapp_oficial','message':'Oi {{1}}!','template_name':'oferta','template_category':'UTILITY','language':'pt_BR','params':{'1':'Maria'}})

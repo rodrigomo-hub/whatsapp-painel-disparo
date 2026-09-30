@@ -56,8 +56,29 @@ def listar_remoto(cfg,token):
         raise HTTPException(502,'Não foi possível obter os templates das conexões oficiais.')
 
 
+def nomes_waba(get_db,items):
+    nomes={}
+    for i in items:
+        waba=i['waba_id']
+        if waba not in nomes:
+            with closing(get_db()) as c:
+                salvo=c.execute('SELECT nome FROM wabas_salvas WHERE waba_id=?',(waba,)).fetchone()
+            nome=salvo['nome'] if salvo else ''
+            if not nome and waba.isdigit() and i['_token']:
+                try:
+                    r=requests.get('https://graph.facebook.com/v21.0/'+waba,
+                        headers={'Authorization':'Bearer '+i['_token']},params={'fields':'id,name'},timeout=(5,15),allow_redirects=False)
+                    d=r.json() if r.status_code==200 else {}
+                    if str(d.get('id'))==waba and isinstance(d.get('name'),str):nome=d['name'].strip()
+                except (requests.RequestException,ValueError,TypeError,AttributeError):pass
+            nomes[waba]=nome or ('WABA '+waba)
+        i['nome_caixa']=i['nome']
+        i['nome']=nomes[waba]
+    return items
+
+
 def descobrir(get_db,cfg,token):
-    items=listar_remoto(cfg,token)
+    items=nomes_waba(get_db,listar_remoto(cfg,token))
     account,_=normal.credenciais(cfg,token)
     with closing(get_db()) as c,c:
         c.execute('BEGIN IMMEDIATE')
@@ -70,6 +91,8 @@ def descobrir(get_db,cfg,token):
             if n and not erro and i['phone_id'].isdigit() and i['waba_id'].isdigit():
                 c.execute('UPDATE numeros SET vendeai_conta=?,vendeai_inbox_id=? WHERE id=?',
                           (account,i['inbox_id'],n['id']))
+                if n['nome']==i['nome_caixa']:
+                    c.execute('UPDATE numeros SET nome=? WHERE id=?',((i['nome']+' '+i['telefone']).strip(),n['id']))
     return len(items)
 
 
@@ -167,6 +190,7 @@ def vincular(get_db,cfg,token,body):
     inbox=str(body.get('inbox_id') or '')
     items=listar_remoto(cfg,token);i=next((i for i in items if i['inbox_id']==inbox),None)
     if not i or not i['phone_id'].isdigit() or not i['waba_id'].isdigit() or not i['_token']:raise HTTPException(400,'Credencial ou IDs da conexão não confirmados.')
+    nomes_waba(get_db,[i])
     with closing(get_db()) as c,c:
         c.execute('BEGIN IMMEDIATE')
         n,erro=correspondencia(c,i)
@@ -187,7 +211,7 @@ def vincular(get_db,cfg,token,body):
         corpo=next((c.get('text','') for c in componentes if c.get('type')=='BODY'),t.get('body',''))
         ident=c.execute('''INSERT INTO numeros(nome,phone_number_id,access_token,waba_id,template_nome,template_idioma,
             template_sem_variaveis,template_header,limite_diario,limite_hora,ativo,vendeai_conta,vendeai_inbox_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?)''',(i['nome'],i['phone_id'],i['_token'],i['waba_id'],nome,idioma,
+            VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?)''',((i['nome']+' '+i['telefone']).strip(),i['phone_id'],i['_token'],i['waba_id'],nome,idioma,
             int('{{' not in corpo),tipo,body['limite_diario'],body['limite_hora'],i['account_id'],inbox)).lastrowid
         c.execute('INSERT OR IGNORE INTO wabas_salvas(waba_id,access_token) VALUES(?,?)',(i['waba_id'],i['_token']))
         return {'id':ident,'novo':True}
