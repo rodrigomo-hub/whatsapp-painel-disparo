@@ -38,7 +38,7 @@ class ConexoesTests(unittest.TestCase):
         normal.descobrir(main.get_db,self.cfg,'')
         self.assertEqual(self.client.get('/api/conexoes-normais').json()['conexoes'],[])
     def test_import_requires_model_limits_connection_and_deduplicates(self):
-        for body in [{**self.body,'limite_hora':0},{**self.body,'modelo_id':999}]:
+        for body in [{**self.body,'limite_hora':-1},{**self.body,'modelo_id':999}]:
             r=self.client.post('/api/conexoes-normais/importar',json=body);self.assertEqual(r.status_code,400)
         r=self.client.post('/api/conexoes-normais/importar',json=self.body);self.assertEqual(r.status_code,200,r.text)
         r=self.client.post('/api/conexoes-normais/importar',json=self.body);self.assertEqual(r.status_code,409)
@@ -139,6 +139,40 @@ class ConexoesTests(unittest.TestCase):
         self.assertIn(self.client.post('/api/conexoes-normais/importar',json=self.body,follow_redirects=False).status_code,(401,303,307))
     def test_invalid_variables_rejected(self):
         with self.assertRaises(main.HTTPException):normal.salvar_modelo(main.get_db,{'nome':'x','texto':'Oi {cpf}'})
+
+    def test_default_zero_limits_import_without_allowing_send(self):
+        self.assertEqual(normal.padrao(main.get_db,self.cfg),{'modelo_id':self.modelo,'limite_diario':0,'limite_hora':0})
+        normal.importar(main.get_db,self.cfg,'',{'inbox_id':'77'})
+        self.api.reset_mock()
+        self.assertEqual(self.numero()['limite_diario'],0)
+        self.assertFalse(main.disponivel_agora(self.numero()))
+        self.assertFalse(self.enviar()[0]);self.api.assert_not_called()
+
+    def test_bulk_import_only_connected_deduplicates_and_preserves_existing(self):
+        import copy
+        self.importar();before=dict(self.numero())
+        items=[copy.deepcopy(self.item) for _ in range(3)]
+        items[1]['id']=78;items[2]['id']=79;items[2]['provider_connection']['connection']='disconnected'
+        self.get.return_value=self.response({'payload':items})
+        self.api.return_value=self.response({'inboxes':[{'id':str(i),'accepts_free_text':True} for i in (77,78,79)]})
+        r=self.client.post('/api/conexoes-normais/importar-todas')
+        self.assertEqual(r.status_code,200);self.assertEqual(r.json()['adicionados'],1)
+        after=dict(self.numero())
+        for k in ('nome','ativo','modelo_normal_id','limite_diario','limite_hora'):self.assertEqual(before[k],after[k])
+        with test_db() as c:
+            n=c.execute("SELECT * FROM numeros WHERE vendeai_inbox_id='78'").fetchone()
+            self.assertEqual(n['limite_diario'],0);self.assertEqual(n['modelo_normal_id'],self.modelo)
+            self.assertFalse(normal.elegivel(main.get_db,n))
+        self.assertEqual(self.client.post('/api/conexoes-normais/importar-todas').json()['adicionados'],0)
+
+    def test_saved_defaults_scoped_and_disabled_model_rejected(self):
+        r=self.client.patch('/api/conexoes-normais/padrao',json={'modelo_id':self.modelo,'limite_diario':30,'limite_hora':5})
+        self.assertEqual(r.status_code,200)
+        self.assertEqual(normal.padrao(main.get_db,self.cfg)['limite_diario'],30)
+        self.assertEqual(normal.padrao(main.get_db,{**self.cfg,'vendeai_account_id':'999'})['limite_diario'],0)
+        with test_db() as c:c.execute('UPDATE modelos_normais SET ativo=0')
+        r=self.client.post('/api/conexoes-normais/importar-todas')
+        self.assertEqual(r.status_code,400);self.assertIsNone(self.numero())
 
     def test_account_change_blocks_send_without_http_post(self):
         self.importar();self.cfg['vendeai_account_id']='999'

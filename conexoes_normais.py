@@ -24,6 +24,7 @@ def migrar(c):
     for name,kind in [('tipo_envio',"TEXT NOT NULL DEFAULT 'meta'"),('vendeai_inbox_id',"TEXT NOT NULL DEFAULT ''"),('vendeai_conta',"TEXT NOT NULL DEFAULT ''"),('modelo_normal_id','INTEGER'),('conexao_status',"TEXT NOT NULL DEFAULT 'unknown'")]:
         if name not in cols:c.execute(f'ALTER TABLE numeros ADD COLUMN {name} {kind}')
     c.execute('CREATE TABLE IF NOT EXISTS modelos_normais(id INTEGER PRIMARY KEY,nome TEXT NOT NULL,texto TEXT NOT NULL,ativo INTEGER NOT NULL DEFAULT 1)')
+    c.execute('CREATE TABLE IF NOT EXISTS padrao_conexoes_normais(conta TEXT PRIMARY KEY,modelo_id INTEGER,limite_diario INTEGER NOT NULL DEFAULT 0,limite_hora INTEGER NOT NULL DEFAULT 0)')
     c.execute('CREATE TABLE IF NOT EXISTS conexoes_vendeai(conta TEXT,inbox_id TEXT,nome TEXT,telefone TEXT,provider TEXT,status TEXT,consultado_em TEXT,PRIMARY KEY(conta,inbox_id))')
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_numero_inbox_normal ON numeros(vendeai_conta,vendeai_inbox_id) WHERE tipo_envio='vendeai_normal'")
 
@@ -84,7 +85,7 @@ def elegivel(get_db,n):
     with closing(get_db()) as c:
         atual=c.execute('SELECT * FROM numeros WHERE id=?',(n['id'],)).fetchone()
         conta=c.execute('SELECT vendeai_account_id FROM configuracao WHERE id=1').fetchone()[0]
-        if not atual or not atual['ativo'] or atual['conexao_status']!='connected' or atual['vendeai_conta']!=str(conta): return False
+        if not atual or not atual['ativo'] or atual['limite_diario']<=0 or atual['limite_hora']<=0 or atual['conexao_status']!='connected' or atual['vendeai_conta']!=str(conta): return False
         try:
             idade=(datetime.now(ZoneInfo('America/Sao_Paulo'))-datetime.fromisoformat(atual['meta_consultado_em'])).total_seconds()
             if idade<0 or idade>1800: return False
@@ -117,14 +118,47 @@ def mensagem(texto,nome):
 
 def validar_numero(c,body):
     for k in ('limite_diario','limite_hora'):
-        if type(body.get(k)) is not int or not 1<=body[k]<=100000:raise HTTPException(400,'Limites diário e por hora devem ser inteiros positivos.')
+        if type(body.get(k)) is not int or not 0<=body[k]<=100000:raise HTTPException(400,'Limites devem ser inteiros de 0 a 100000. Zero impede disparos.')
     if type(body.get('modelo_id')) is not int:raise HTTPException(400,'Escolha um modelo de mensagem.')
     m=c.execute('SELECT * FROM modelos_normais WHERE id=? AND ativo=1',(body['modelo_id'],)).fetchone()
     if not m:raise HTTPException(400,'Escolha um modelo ativo.')
     if 'ativo' in body and type(body['ativo']) is not bool:raise HTTPException(400,'Ativação inválida.')
     return m
 
+def padrao(get_db,cfg):
+    with closing(get_db()) as c:
+        r=c.execute('SELECT modelo_id,limite_diario,limite_hora FROM padrao_conexoes_normais WHERE conta=?',(str(cfg['vendeai_account_id']),)).fetchone()
+        if r:return dict(r)
+        modelos=c.execute('SELECT id FROM modelos_normais WHERE ativo=1').fetchall()
+        return {'modelo_id':modelos[0]['id'] if len(modelos)==1 else None,'limite_diario':0,'limite_hora':0}
+
+
+def salvar_padrao(get_db,cfg,body):
+    with closing(get_db()) as c,c:
+        validar_numero(c,body)
+        c.execute('INSERT INTO padrao_conexoes_normais VALUES(?,?,?,?) ON CONFLICT(conta) DO UPDATE SET modelo_id=excluded.modelo_id,limite_diario=excluded.limite_diario,limite_hora=excluded.limite_hora',
+            (str(cfg['vendeai_account_id']),body['modelo_id'],body['limite_diario'],body['limite_hora']))
+    return padrao(get_db,cfg)
+
+
+def inserir_numero(c,account,i,m,body):
+    inbox=i['inbox_id'];name=(i['nome']+' '+i['telefone']).strip()
+    return c.execute("INSERT INTO numeros(nome,phone_number_id,access_token,tipo_envio,vendeai_conta,vendeai_inbox_id,modelo_normal_id,template_nome,template_sem_variaveis,ativo,limite_diario,limite_hora,conexao_status,meta_consultado_em) VALUES(?,?,'','vendeai_normal',?,?,?,?,1,1,?,?,?,?)",(name,'vendeai:'+account+':'+inbox,account,inbox,m['id'],m['nome'],body['limite_diario'],body['limite_hora'],i['status'],i['consultado_em'])).lastrowid
+
+
+def importar_todas(get_db,cfg,token):
+    account,_=credenciais(cfg,token)
+    descobrir(get_db,cfg,token)
+    with closing(get_db()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        body=padrao(get_db,cfg);m=validar_numero(c,body)
+        items=c.execute("SELECT * FROM conexoes_vendeai v WHERE conta=? AND status='connected' AND NOT EXISTS(SELECT 1 FROM numeros n WHERE n.tipo_envio='vendeai_normal' AND n.vendeai_conta=v.conta AND n.vendeai_inbox_id=v.inbox_id)",(account,)).fetchall()
+        ids=[inserir_numero(c,account,i,m,body) for i in items]
+    return {'adicionados':len(ids),'ids':ids}
+
+
 def importar(get_db,cfg,token,body):
+    body={**padrao(get_db,cfg),**body}
     account,_=credenciais(cfg,token);inbox=str(body.get('inbox_id') or '')
     if not inbox.isdigit():raise HTTPException(400,'Selecione uma conexão.')
     descobrir(get_db,cfg,token)
@@ -133,9 +167,8 @@ def importar(get_db,cfg,token,body):
         i=c.execute('SELECT * FROM conexoes_vendeai WHERE conta=? AND inbox_id=?',(account,inbox)).fetchone()
         if not i or i['status']!='connected':raise HTTPException(400,'Conexão não confirmada. Atualize a lista antes de adicionar.')
         if c.execute("SELECT 1 FROM numeros WHERE tipo_envio='vendeai_normal' AND vendeai_conta=? AND vendeai_inbox_id=?",(account,inbox)).fetchone():raise HTTPException(409,'Este número já foi adicionado.')
-        name=(i['nome']+' '+i['telefone']).strip()
         try:
-            ident=c.execute("INSERT INTO numeros(nome,phone_number_id,access_token,tipo_envio,vendeai_conta,vendeai_inbox_id,modelo_normal_id,template_nome,template_sem_variaveis,ativo,limite_diario,limite_hora,conexao_status,meta_consultado_em) VALUES(?,?,'','vendeai_normal',?,?,?,?,1,1,?,?,?,?)",(name,'vendeai:'+account+':'+inbox,account,inbox,m['id'],m['nome'],body['limite_diario'],body['limite_hora'],i['status'],i['consultado_em'])).lastrowid
+            ident=inserir_numero(c,account,i,m,body)
         except sqlite3.IntegrityError:raise HTTPException(409,'Este número já foi adicionado.')
     return {'id':ident}
 
@@ -155,13 +188,14 @@ def enviar(get_db,n,phone,nome,cfg,token,suprimido):
         atual=c.execute('SELECT * FROM numeros WHERE id=?',(n['id'],)).fetchone()
         m=c.execute('SELECT * FROM modelos_normais WHERE id=? AND ativo=1',(atual['modelo_normal_id'],)).fetchone() if atual else None
     if not atual or not atual['ativo'] or not m:return False,'BLOQUEADO_MODELO: número pausado ou modelo indisponível',''
+    if atual['limite_diario']<=0 or atual['limite_hora']<=0:return False,'SEM_CAPACIDADE: configure limites maiores que zero',''
     try:msg=mensagem(m['texto'],nome)
     except HTTPException as e:return False,'BLOQUEADO_MODELO: '+e.detail,''
     if consultar(get_db,atual,cfg,token)!='connected':return False,'CONEXAO_INDISPONIVEL: sem conexão confirmada na VendeAI',''
     # Consulta externa pode demorar: revalida pausa e supressão antes do POST.
     with closing(get_db()) as c:
-        a=c.execute('SELECT n.ativo,m.texto FROM numeros n JOIN modelos_normais m ON m.id=n.modelo_normal_id AND m.ativo=1 WHERE n.id=?',(n['id'],)).fetchone()
-    if not a or not a['ativo'] or suprimido(phone):return False,'BLOQUEADO_MODELO: envio bloqueado por pausa ou lista negra',''
+        a=c.execute('SELECT n.ativo,n.limite_diario,n.limite_hora,m.texto FROM numeros n JOIN modelos_normais m ON m.id=n.modelo_normal_id AND m.ativo=1 WHERE n.id=?',(n['id'],)).fetchone()
+    if not a or not a['ativo'] or a['limite_diario']<=0 or a['limite_hora']<=0 or suprimido(phone):return False,'BLOQUEADO_MODELO: envio bloqueado por pausa, limites ou lista negra',''
     try: msg=mensagem(a['texto'],nome)
     except HTTPException as e:return False,'BLOQUEADO_MODELO: '+e.detail,''
     account,token=credenciais(cfg,token)

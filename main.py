@@ -2849,7 +2849,7 @@ def pagina_conexoes(request: Request):
 def listar_conexoes_normais():
     cfg=carregar_configuracao()
     with closing(get_db()) as c:
-        return {'conexoes':[dict(r) for r in c.execute('SELECT * FROM conexoes_vendeai WHERE conta=? ORDER BY nome',(str(cfg['vendeai_account_id']),))],
+        return {'padrao':conexoes_normais.padrao(get_db,cfg),'conexoes':[dict(r) for r in c.execute('SELECT * FROM conexoes_vendeai WHERE conta=? ORDER BY nome',(str(cfg['vendeai_account_id']),))],
                 'modelos':[dict(r) for r in c.execute('SELECT * FROM modelos_normais ORDER BY nome')],
                 'numeros':[{**dict(r),'conexao_elegivel':conexoes_normais.elegivel(get_db,r)} for r in c.execute("SELECT id,nome,vendeai_conta,vendeai_inbox_id,modelo_normal_id,limite_diario,limite_hora,ativo,conexao_status,meta_consultado_em FROM numeros WHERE tipo_envio='vendeai_normal'")]}
 
@@ -2868,6 +2868,16 @@ async def importar_conexao(request: Request):
     body=await request.json()
     if not isinstance(body,dict): raise HTTPException(400,'Envie um objeto.')
     return await asyncio.to_thread(conexoes_normais.importar,get_db,carregar_configuracao(),VENDEAI_API_TOKEN,body)
+
+
+@app.patch('/api/conexoes-normais/padrao')
+def salvar_padrao_normal(body: dict):
+    return conexoes_normais.salvar_padrao(get_db,carregar_configuracao(),body)
+
+
+@app.post('/api/conexoes-normais/importar-todas')
+def importar_todas_normais():
+    return conexoes_normais.importar_todas(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)
 
 
 @app.post('/api/modelos-normais')
