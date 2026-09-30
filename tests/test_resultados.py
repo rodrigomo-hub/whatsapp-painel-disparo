@@ -171,6 +171,39 @@ class ResultadosTests(unittest.TestCase):
         self.assertEqual(d['pagamentos']['ia']['quantidade'], 1)
         self.assertNotIn('quantidade', d['pagamentos']['manual'])
 
+    def historico(self, codigo='123', dia='2026-09-30', centavos=50000):
+        with self.db() as c:
+            c.execute('INSERT INTO pagamentos_ia_historicos VALUES(?,?,?,?,?,?,?,?,?)',
+                      ('a', codigo, '', dia, centavos, dia, 'csv', 'hash', dia))
+
+    def test_history_fills_missing_then_late_webhook_does_not_double(self):
+        self.historico()
+        d = self.calc()
+        self.assertEqual(d['pagamentos']['ia']['valor'], 500)
+        self.assertEqual(d['pagamentos']['ia']['quantidade'], 0)
+        self.assertEqual(d['coorte']['valor_pago'], 0)
+        self.event('proposal_status_updated', proposal={'proposal_id': 'uuid', 'proposal_number': '123', 'proposal_status': r.PAGO})
+        d = self.calc()
+        self.assertEqual(d['pagamentos']['ia']['valor'], 500)
+        self.assertEqual(d['pagamentos']['ia']['sem_valor'], 0)
+        self.event('proposal_created', proposal={'proposal_id': 'uuid', 'proposal_number': '123', 'liquid_value': 500})
+        d = self.calc()
+        self.assertEqual(d['pagamentos']['ia']['valor'], 500)
+        self.assertEqual(d['pagamentos']['ia']['ajuste_historico'], 0)
+
+    def test_history_reference_date_moves_value_without_changing_events(self):
+        self.historico(dia='2026-09-29')
+        self.event('proposal_created', proposal={'proposal_id': '123', 'liquid_value': 500, 'proposal_status': r.PAGO})
+        today = self.calc()
+        self.assertEqual(today['pagamentos']['ia']['valor'], 0)
+        self.assertEqual(today['atividade']['valor_pago'], 500)
+        previous = r.calcular(self.db, r.momento('2026-09-29'), r.momento('2026-09-30'))
+        self.assertEqual(previous['pagamentos']['ia']['valor'], 500)
+        month = r.calcular(self.db, r.momento('2026-09-01'), r.momento('2026-10-01'))
+        self.assertEqual(month['pagamentos']['ia']['valor'], 500)
+        with self.db() as c:
+            self.assertEqual(c.execute('SELECT count(*) FROM vendeai_eventos').fetchone()[0], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

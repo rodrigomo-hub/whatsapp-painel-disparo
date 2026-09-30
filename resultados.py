@@ -23,6 +23,42 @@ def migrar(c):
         dia TEXT PRIMARY KEY, quantidade INTEGER NOT NULL CHECK(quantidade>=0),
         valor_centavos INTEGER NOT NULL CHECK(valor_centavos>=0),
         revisao INTEGER NOT NULL DEFAULT 1, atualizado_em TEXT NOT NULL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS pagamentos_ia_historicos (
+        account_id TEXT NOT NULL, codigo TEXT NOT NULL, proposta_id TEXT NOT NULL DEFAULT '',
+        dia TEXT NOT NULL, valor_centavos INTEGER NOT NULL CHECK(valor_centavos>=0),
+        data_referencia TEXT NOT NULL, fonte TEXT NOT NULL, arquivo_sha256 TEXT NOT NULL,
+        importado_em TEXT NOT NULL, PRIMARY KEY(account_id,codigo))''')
+
+
+def conciliar_historico(propostas, historicos, inicio, fim, atividade):
+    """Substitui somente a contribuição financeira de códigos conciliados.
+
+    Não fabrica eventos nem atribui histórico a números/horários. A subtração
+    dinâmica impede duplicação se um webhook do mesmo contrato chegar depois.
+    """
+    aliases = defaultdict(set)
+    for key, p in propostas.items():
+        for codigo in [p['id'], str(p['dados'].get('proposal_number') or '')]:
+            if codigo: aliases[(key[0], codigo)].add(key)
+    delta = 0
+    sem_valor = atividade['pagos_sem_valor']
+    vistos = set()
+    registros = 0
+    for h in historicos:
+        keys = aliases.get((h['account_id'], h['codigo']), set()) | aliases.get((h['account_id'], h['proposta_id']), set())
+        if len(keys) > 1 or (keys and next(iter(keys)) in vistos):
+            raise ValueError('Histórico com identificação de contrato ambígua.')
+        if keys:
+            key = next(iter(keys)); vistos.add(key); p = propostas[key]
+            if p['pago'] and inicio <= p['pago'] < fim:
+                v = valor(p['dados'].get('liquid_value'))
+                if v is None: sem_valor -= 1
+                else: delta -= int(Decimal(str(v))*100)
+        if inicio.date().isoformat() <= h['dia'] < fim.date().isoformat():
+            delta += h['valor_centavos']; registros += 1
+    total = int(Decimal(str(round(atividade['valor_pago'], 2)))*100) + delta
+    return {'quantidade': len(atividade['pagos']), 'valor': total/100,
+            'sem_valor': sem_valor, 'ajuste_historico': delta/100, 'historicos_no_periodo': registros}
 
 
 def validar_dia(dia):
@@ -110,6 +146,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
                            "WHERE d.status='sucesso'").fetchall()
         manuais = [dict(r) for r in c.execute('SELECT * FROM pagamentos_manuais WHERE dia>=? AND dia<? ORDER BY dia DESC',
                                              (inicio.date().isoformat(), fim.date().isoformat()))]
+        historicos = [dict(r) for r in c.execute('SELECT * FROM pagamentos_ia_historicos')]
     chats, propostas, sends, por_fone = {}, {}, {}, defaultdict(list)
     for row in envios:
         r = dict(row); t = momento(r['criado_em'])
@@ -260,11 +297,11 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
     lista.sort(key=lambda p: p['atualizado_em'], reverse=True)
     total = len(lista); pagina = min(pagina, max(1, (total+49)//50))
     manual_valor = sum(m['valor_centavos'] for m in manuais) / 100
-    pagamentos = {'ia': {'quantidade': len(atividade['pagos']), 'valor': round(atividade['valor_pago'], 2),
-                         'sem_valor': atividade['pagos_sem_valor']},
+    ia = conciliar_historico(propostas, historicos, inicio, fim, atividade)
+    pagamentos = {'ia': ia,
                   'manual': {'valor': manual_valor},
-                  'total': {'valor': round(atividade['valor_pago']+manual_valor, 2),
-                            'sem_valor': atividade['pagos_sem_valor']}}
+                  'total': {'valor': round(ia['valor']+manual_valor, 2),
+                            'sem_valor': ia['sem_valor']}}
     return {'atualizado_em': agora.isoformat(), 'primeiro_evento': primeiro_evento.isoformat() if primeiro_evento else None,
             'pagamentos': pagamentos, 'manuais': manuais,
             'atividade': fechar(atividade), 'coorte': fechar(coorte),
