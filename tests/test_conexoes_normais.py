@@ -144,3 +144,62 @@ class ConexoesTests(unittest.TestCase):
         for _ in range(2):fila.processar(main.carregar_configuracao,Mock(),main.executar_disparo_preparado,lambda:(True,''))
         with test_db() as c:self.assertEqual(c.execute('SELECT status FROM fila_disparos').fetchone()[0],'incerto')
         self.assertEqual(self.api.call_count,1)
+    def preparar_etiqueta(self):
+        normal.agendar_etiqueta(main.get_db,'33393','901','77','5511987654321',1)
+        self.labels=['clt','em_atendimento']
+        def get(url,**kw):
+            if url.endswith('/contacts/search'):return self.response({'payload':[{'id':2,'phone_number':'+5511987654321'}]})
+            if url.endswith('/contacts/2/conversations'):return self.response({'payload':[{'id':8,'inbox_id':88},{'id':9,'inbox_id':77}]})
+            if url.endswith('/conversations/9/messages'):return self.response({'payload':[{'id':901,'conversation_id':9}]})
+            if url.endswith('/conversations/9/labels'):return self.response({'payload':list(self.labels)})
+            raise AssertionError('Endpoint inesperado '+url)
+        def post(url,**kw):
+            self.assertTrue(url.endswith('/conversations/9/labels'))
+            self.labels=kw['json']['labels']
+            return self.response({'payload':self.labels})
+        self.get.side_effect=get;self.api.side_effect=post
+    def test_tag_preserves_labels_exact_chat_and_idempotence(self):
+        self.preparar_etiqueta()
+        normal.processar_etiqueta(main.get_db,self.cfg,'')
+        self.assertEqual(self.labels,['clt','em_atendimento','disparo'])
+        self.api.assert_called_once()
+        normal.agendar_etiqueta(main.get_db,'33393','901','77','5511987654321',1)
+        self.assertFalse(normal.processar_etiqueta(main.get_db,self.cfg,''))
+        self.api.assert_called_once()
+        with test_db() as c:self.assertEqual(c.execute('SELECT estado FROM etiquetas_disparo').fetchone()[0],'aplicada')
+    def test_tag_never_guesses_conversation(self):
+        self.preparar_etiqueta();original=self.get.side_effect
+        def get(url,**kw):
+            if url.endswith('/messages'):return self.response({'payload':[]})
+            return original(url,**kw)
+        self.get.side_effect=get
+        normal.processar_etiqueta(main.get_db,self.cfg,'')
+        self.api.assert_not_called()
+        with test_db() as c:self.assertEqual(c.execute('SELECT estado FROM etiquetas_disparo').fetchone()[0],'pendente')
+    def test_tag_retry_reads_latest_labels_and_never_resends(self):
+        self.preparar_etiqueta();self.api.side_effect=requests.Timeout()
+        normal.processar_etiqueta(main.get_db,self.cfg,'')
+        self.labels.append('disparo')
+        with test_db() as c:c.execute('UPDATE etiquetas_disparo SET tentar_em=0')
+        normal.processar_etiqueta(main.get_db,self.cfg,'')
+        self.api.assert_called_once();self.whatsapp.assert_not_called()
+        with test_db() as c:self.assertEqual(c.execute('SELECT estado FROM etiquetas_disparo').fetchone()[0],'aplicada')
+    def test_invalid_labels_do_not_replace_existing_list(self):
+        self.preparar_etiqueta();original=self.get.side_effect
+        self.get.side_effect=lambda url,**kw:self.response({'payload':None}) if url.endswith('/labels') else original(url,**kw)
+        normal.processar_etiqueta(main.get_db,self.cfg,'');self.api.assert_not_called()
+    def test_tag_stops_after_three_failures_and_records_event(self):
+        self.preparar_etiqueta();self.get.side_effect=requests.Timeout()
+        for _ in range(3):
+            with test_db() as c:c.execute('UPDATE etiquetas_disparo SET tentar_em=0')
+            normal.processar_etiqueta(main.get_db,self.cfg,'')
+        with test_db() as c:
+            self.assertEqual(c.execute('SELECT estado FROM etiquetas_disparo').fetchone()[0],'erro')
+            self.assertEqual(c.execute("SELECT count(*) FROM eventos WHERE tipo='erro_etiqueta_disparo'").fetchone()[0],1)
+        self.api.assert_not_called()
+    def test_success_queues_tag_without_delaying_send(self):
+        self.importar();self.api.return_value=self.response({'status':'success','message_id':'901'})
+        self.assertTrue(self.enviar()[0]);self.api.assert_called_once()
+        with test_db() as c:
+            t=c.execute('SELECT * FROM etiquetas_disparo').fetchone()
+            self.assertEqual(t['estado'],'pendente');self.assertEqual(t['message_id'],'901')

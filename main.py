@@ -1092,6 +1092,15 @@ async def loop_eventos_new():
         await asyncio.sleep(5)
 
 
+async def loop_etiquetas_disparo():
+    while True:
+        try:
+            fez=await asyncio.to_thread(conexoes_normais.processar_etiqueta,get_db,carregar_configuracao(),VENDEAI_API_TOKEN)
+        except Exception:
+            fez=False
+        await asyncio.sleep(0.1 if fez else 2)
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -1099,6 +1108,7 @@ async def startup():
     app.state.optout_tasks = [asyncio.create_task(loop_optout(i==0)) for i in range(4)]
     vendeai_eventos.recuperar_interrompidos(get_db)
     app.state.eventos_task = asyncio.create_task(loop_eventos_new())
+    app.state.etiquetas_task = asyncio.create_task(loop_etiquetas_disparo())
     asyncio.create_task(loop_verificar_qualidade())
     app.state.fila_parar = False
     app.state.fila_task = asyncio.create_task(loop_fila())
@@ -2640,6 +2650,7 @@ async def loop_fila():
 @app.on_event("shutdown")
 async def parar_fila():
     app.state.fila_parar = True
+    if getattr(app.state,"etiquetas_task",None): app.state.etiquetas_task.cancel()
     for task in getattr(app.state,"optout_tasks",[]): task.cancel()
     task = getattr(app.state, "fila_task", None)
     if task:

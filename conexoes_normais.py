@@ -1,5 +1,7 @@
 """Conexões de texto livre da VendeAI; nenhum número é ativado por descoberta."""
 import sqlite3
+import time
+import re
 from contextlib import closing
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -12,6 +14,12 @@ API='https://ia.vendeaitecnologia.com.br/api/message-handler/mailing/'
 def agora():return datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat()
 def normal(n):return dict(n).get('tipo_envio')=='vendeai_normal'
 def migrar(c):
+    c.execute("""CREATE TABLE IF NOT EXISTS etiquetas_disparo(
+        account_id TEXT NOT NULL, message_id TEXT NOT NULL, inbox_id TEXT NOT NULL,
+        telefone TEXT NOT NULL, numero_id INTEGER, chat_id TEXT,
+        estado TEXT NOT NULL DEFAULT 'pendente', tentativas INTEGER NOT NULL DEFAULT 0,
+        tentar_em REAL NOT NULL DEFAULT 0, detalhe TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(account_id,message_id))""")
     cols={r['name'] for r in c.execute('PRAGMA table_info(numeros)')}
     for name,kind in [('tipo_envio',"TEXT NOT NULL DEFAULT 'meta'"),('vendeai_inbox_id',"TEXT NOT NULL DEFAULT ''"),('vendeai_conta',"TEXT NOT NULL DEFAULT ''"),('modelo_normal_id','INTEGER'),('conexao_status',"TEXT NOT NULL DEFAULT 'unknown'")]:
         if name not in cols:c.execute(f'ALTER TABLE numeros ADD COLUMN {name} {kind}')
@@ -155,8 +163,82 @@ def enviar(get_db,n,phone,nome,cfg,token,suprimido):
         r=requests.post(API+'send/',json={'account_id':account,'crm_api_access_token':token,'inbox_id':atual['vendeai_inbox_id'],'customer_phone':'+'+phone,'payload':{'type':'whatsapp_nao_oficial','message':msg}},timeout=(5,30),allow_redirects=False)
         if r.status_code==200:
             d=r.json()
-            if d.get('status')=='success' and d.get('message_id'):return True,'',str(d['message_id'])
+            if d.get('status')=='success' and d.get('message_id'):
+                agendar_etiqueta(get_db,account,str(d['message_id']),atual['vendeai_inbox_id'],phone,atual['id'])
+                return True,'',str(d['message_id'])
             return False,'ENVIO_INCERTO: VendeAI não confirmou o identificador da mensagem',''
         if r.status_code>=500 or 300<=r.status_code<400:return False,'ENVIO_INCERTO: resposta VendeAI HTTP '+str(r.status_code),''
         return False,'VendeAI recusou o envio: HTTP '+str(r.status_code),''
     except (requests.RequestException,ValueError,TypeError,AttributeError):return False,'ENVIO_INCERTO: conferir na VendeAI antes de repetir',''
+
+
+def agendar_etiqueta(get_db,account,message_id,inbox,telefone,numero_id):
+    with closing(get_db()) as c,c:
+        c.execute('INSERT OR IGNORE INTO etiquetas_disparo(account_id,message_id,inbox_id,telefone,numero_id) VALUES(?,?,?,?,?)',
+                  (account,message_id,inbox,telefone,numero_id))
+
+
+def _consultar_crm(url,headers,params=None):
+    r=requests.get(url,headers=headers,params=params,timeout=(3,10),allow_redirects=False)
+    if r.status_code!=200: raise ValueError('Consulta CRM HTTP '+str(r.status_code))
+    return r.json()
+
+
+def _localizar_conversa(t,base,headers):
+    # Só a mensagem confirmada identifica o chat; nunca escolher o mais recente.
+    busca=_consultar_crm(base+'/contacts/search',headers,{'q':t['telefone'][-11:]})
+    for contato in busca.get('payload',[]):
+        if re.sub(r'\D','',contato.get('phone_number') or '')!=t['telefone']:continue
+        ident=str(contato.get('id',''))
+        if not ident.isdigit():continue
+        conversas=_consultar_crm(base+'/contacts/'+ident+'/conversations',headers)
+        for conversa in conversas.get('payload',[]):
+            chat=str(conversa.get('id',''))
+            if str(conversa.get('inbox_id'))!=t['inbox_id'] or not chat.isdigit():continue
+            before=None
+            for _ in range(10):
+                pagina=_consultar_crm(base+'/conversations/'+chat+'/messages',headers,{'before':before} if before else None)
+                mensagens=pagina.get('payload',[])
+                if not isinstance(mensagens,list):raise ValueError('Lista de mensagens inválida')
+                if any(str(m.get('id'))==t['message_id'] and str(m.get('conversation_id'))==chat for m in mensagens):return chat
+                ids=[int(m['id']) for m in mensagens if str(m.get('id','')).isdigit()]
+                if not ids or (before is not None and min(ids)>=before):break
+                before=min(ids)
+    raise ValueError('Conversa da mensagem ainda não localizada')
+
+
+def processar_etiqueta(get_db,cfg,token):
+    with closing(get_db()) as c:
+        row=c.execute("SELECT * FROM etiquetas_disparo WHERE estado='pendente' AND tentar_em<=? ORDER BY tentar_em LIMIT 1",(time.time(),)).fetchone()
+    if not row:return False
+    t=dict(row);tentativas=t['tentativas']+1;chat=t['chat_id'];detalhe='';estado_final='aplicada'
+    try:
+        account,token=credenciais(cfg,token)
+        if account!=t['account_id']:raise ValueError('Conta VendeAI alterada; etiqueta não aplicada')
+        base=CRM+account;headers={'api_access_token':token}
+        if not chat:
+            chat=_localizar_conversa(t,base,headers)
+            with closing(get_db()) as c,c:
+                c.execute('UPDATE etiquetas_disparo SET chat_id=? WHERE account_id=? AND message_id=?',(chat,account,t['message_id']))
+        # GET imediatamente antes do POST, pois a API substitui a lista inteira.
+        labels=_consultar_crm(base+'/conversations/'+chat+'/labels',headers).get('payload')
+        if not isinstance(labels,list) or not all(isinstance(v,str) for v in labels):raise ValueError('Etiquetas atuais não confirmadas')
+        if 'disparo' not in labels:
+            r=requests.post(base+'/conversations/'+chat+'/labels',headers=headers,json={'labels':list(dict.fromkeys(labels+['disparo']))},timeout=(3,10),allow_redirects=False)
+            if r.status_code!=200:raise ValueError('Marcação CRM HTTP '+str(r.status_code))
+            confirmado=_consultar_crm(base+'/conversations/'+chat+'/labels',headers).get('payload')
+            if not isinstance(confirmado,list) or 'disparo' not in confirmado:raise ValueError('Etiqueta não confirmada pelo CRM')
+    except HTTPException:
+        detalhe='Credencial VendeAI indisponível'
+    except requests.RequestException:
+        detalhe='Falha de comunicação com o CRM'
+    except (ValueError,KeyError,TypeError,AttributeError):
+        detalhe='Não foi possível localizar ou etiquetar a conversa; conferir no CRM'
+    if detalhe:estado_final='pendente' if tentativas<3 else 'erro'
+    with closing(get_db()) as c,c:
+        c.execute('UPDATE etiquetas_disparo SET estado=?,tentativas=?,tentar_em=?,detalhe=? WHERE account_id=? AND message_id=?',
+                  (estado_final,tentativas,time.time()+5*2**tentativas,detalhe,t['account_id'],t['message_id']))
+        if estado_final=='erro':
+            c.execute('INSERT INTO eventos(numero_id,tipo,detalhe,criado_em) VALUES(?,?,?,?)',
+                      (t['numero_id'],'erro_etiqueta_disparo','Etiqueta disparo pendente de revisão. Mensagem '+t['message_id']+'; conversa '+str(chat or 'não identificada')+'. O envio não será repetido.',agora()))
+    return True
