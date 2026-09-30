@@ -140,12 +140,11 @@
     <div id="enviados-outros-area" hidden style="background:#f1f5f9;color:#475569;padding:10px 18px;border-radius:10px"><strong id="enviados-outros-hoje" style="font-size:24px">—</strong><br><small>Outros / não identificados</small></div>
   </div>
   <div id="total-erro-hoje" style="font-size:13px; color:#dc2626; margin-top:4px;"></div>
-  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:20px;padding-top:18px;border-top:1px solid #eee;text-align:left;">
-    <strong>Resultados de hoje</strong><a href="/resultados" style="font-size:13px;color:#16754a;">Ver propostas e detalhes →</a>
-  </div>
-  <div id="resultados-hoje-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:12px;margin-top:14px;text-align:left;"></div>
-  <p id="resultados-hoje-aviso" role="status" style="font-size:12px;color:#64748b;text-align:left;margin:12px 0 0;">Carregando resultados da VendeAI…</p>
-  <div style="display:flex; justify-content:center; gap:24px; margin-top:16px; padding-top:16px; border-top:1px solid #eee;">
+  <div style="display:flex; justify-content:center; gap:24px; flex-wrap:wrap; margin-top:16px; padding-top:16px; border-top:1px solid #eee;">
+    <div title="Clientes distintos com simulação ofertada hoje, de todas as origens. Horário de Brasília.">
+      <div style="font-size:24px;font-weight:700;color:#7c3aed;" id="simulacoes-hoje">—</div>
+      <a href="/resultados" id="simulacoes-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Clientes com simulação hoje</a>
+    </div>
     <div>
       <div style="font-size:24px; font-weight:700; color:#16a34a;" id="total-positivos-hoje">-</div>
       <div style="font-size:12px; color:#888;">Respostas positivas</div>
@@ -999,26 +998,17 @@ async function carregarTotalHoje() {
 }
 
 async function carregarResultadosHoje() {
-  const aviso=document.getElementById('resultados-hoje-aviso');
+  const total=document.getElementById('simulacoes-hoje'),link=document.getElementById('simulacoes-hoje-link');
   try {
     const res=await fetch('/api/resultados');
     if(!res.ok||res.redirected)throw new Error();
-    const dados=await res.json(), cards=document.getElementById('resultados-hoje-cards');
-    const formato=(v,moeda)=>Number(v||0).toLocaleString('pt-BR',moeda?{style:'currency',currency:'BRL'}:{});
-    cards.replaceChildren();
-    for(const [campo,titulo,moeda] of [['conversas','Conversas iniciadas'],['simulacoes','Clientes com simulação'],['propostas','Propostas geradas'],['pagos','Contratos pagos'],['valor_propostas','Valor das propostas',true],['valor_pago','Valor dos contratos pagos',true]]) {
-      const card=document.createElement('div');card.style.cssText='padding:15px;border:1px solid #e2e8f0;border-radius:10px;background:'+(campo.includes('pago')?'#edf9f2':'#f8fafc');
-      const label=document.createElement('div');label.textContent=titulo;label.style.cssText='font-size:12px;color:#64748b';
-      const total=document.createElement('strong');total.textContent=formato(dados.atividade[campo],moeda);total.style.cssText='display:block;font-size:24px;color:#173d31;margin:7px 0';
-      const tipos=document.createElement('small');tipos.style.cssText='display:block;font-size:11px;color:#64748b;line-height:1.6';
-      tipos.textContent='Normais: '+formato(dados.origens.normais?.[campo],moeda)+' · Oficiais: '+formato(dados.origens.oficiais?.[campo],moeda);
-      card.append(label,total,tipos);
-      const faltam=campo==='valor_pago'?dados.atividade.pagos_sem_valor:campo==='valor_propostas'?dados.atividade.propostas_sem_valor:0;
-      if(faltam){const falta=document.createElement('small');falta.textContent=faltam+' contrato(s) sem valor informado';falta.style.cssText='display:block;color:#986719;margin-top:5px';card.append(falta);}
-      cards.append(card);
-    }
-    aviso.textContent='Todos os atendimentos de hoje, inclusive tráfego e origem não identificada. Pagamentos podem vir de disparos anteriores. Valores líquidos, não comissão. Atualizado às '+new Date(dados.atualizado_em).toLocaleTimeString('pt-BR',{timeZone:'America/Sao_Paulo'})+' (Brasília).';
-  } catch(e) { aviso.textContent='Não foi possível atualizar os resultados da VendeAI. Nova tentativa em um minuto.'; }
+    const dados=await res.json();
+    total.textContent=Number(dados.atividade.simulacoes).toLocaleString('pt-BR');
+    link.title='Ver resultados completos. Atualizado às '+new Date(dados.atualizado_em).toLocaleTimeString('pt-BR',{timeZone:'America/Sao_Paulo'})+' (Brasília).';
+  } catch(e) {
+    total.textContent='—';
+    link.title='Não foi possível atualizar. Clique para consultar os resultados.';
+  }
 }
 carregarResultadosHoje();
 setInterval(()=>{if(!document.hidden)carregarResultadosHoje();},60000);
