@@ -2908,6 +2908,14 @@ async def editar_modelo_normal(modelo_id: int, request: Request):
     return conexoes_normais.salvar_modelo(get_db,body,modelo_id)
 
 
+@app.get('/api/modelos-normais/{modelo_id}/imagem')
+def imagem_modelo_normal(modelo_id: int):
+    with closing(get_db()) as c:
+        r=c.execute("SELECT i.dados,i.mime FROM modelos_normais m JOIN imagens_template i ON i.id=m.imagem AND i.phone_id='modelo-normal' WHERE m.id=?",(modelo_id,)).fetchone()
+    if not r:raise HTTPException(404,'Imagem não encontrada.')
+    return Response(content=r['dados'],media_type=r['mime'],headers={'Cache-Control':'private, no-store'})
+
+
 @app.get('/oficiais-vendeai',response_class=HTMLResponse)
 def pagina_oficiais_vendeai(request: Request):
     return templates.TemplateResponse(request,'oficiais_vendeai.html',{})

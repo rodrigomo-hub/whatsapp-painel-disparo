@@ -6,6 +6,7 @@ from contextlib import closing
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import requests
+import imagens_template
 from fastapi import HTTPException
 
 CRM='https://crm.vendeaitecnologia.com.br/api/v1/accounts/'
@@ -24,6 +25,8 @@ def migrar(c):
     for name,kind in [('tipo_envio',"TEXT NOT NULL DEFAULT 'meta'"),('vendeai_inbox_id',"TEXT NOT NULL DEFAULT ''"),('vendeai_conta',"TEXT NOT NULL DEFAULT ''"),('modelo_normal_id','INTEGER'),('conexao_status',"TEXT NOT NULL DEFAULT 'unknown'")]:
         if name not in cols:c.execute(f'ALTER TABLE numeros ADD COLUMN {name} {kind}')
     c.execute('CREATE TABLE IF NOT EXISTS modelos_normais(id INTEGER PRIMARY KEY,nome TEXT NOT NULL,texto TEXT NOT NULL,ativo INTEGER NOT NULL DEFAULT 1)')
+    if 'imagem' not in {r['name'] for r in c.execute('PRAGMA table_info(modelos_normais)')}:
+        c.execute("ALTER TABLE modelos_normais ADD COLUMN imagem TEXT NOT NULL DEFAULT ''")
     c.execute('CREATE TABLE IF NOT EXISTS padrao_conexoes_normais(conta TEXT PRIMARY KEY,modelo_id INTEGER,limite_diario INTEGER NOT NULL DEFAULT 0,limite_hora INTEGER NOT NULL DEFAULT 0)')
     c.execute('CREATE TABLE IF NOT EXISTS conexoes_vendeai(conta TEXT,inbox_id TEXT,nome TEXT,telefone TEXT,provider TEXT,status TEXT,consultado_em TEXT,PRIMARY KEY(conta,inbox_id))')
     c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_numero_inbox_normal ON numeros(vendeai_conta,vendeai_inbox_id) WHERE tipo_envio='vendeai_normal'")
@@ -103,10 +106,19 @@ def validar_modelo(body):
 
 def salvar_modelo(get_db,body,ident=None):
     values=validar_modelo(body)
+    if 'remover_imagem' in body and type(body['remover_imagem']) is not bool:raise HTTPException(400,'Remoção de imagem inválida.')
+    if body.get('remover_imagem') and body.get('imagem_base64'):raise HTTPException(400,'Escolha anexar ou remover a imagem.')
+    with closing(get_db()) as c:
+        if ident is not None and not c.execute('SELECT 1 FROM modelos_normais WHERE id=?',(ident,)).fetchone():raise HTTPException(404,'Modelo não encontrado.')
+    imagem=None
+    if body.get('imagem_base64'):
+        imagem=imagens_template.salvar(get_db,{'phone_number_id':'modelo-normal'},body['imagem_base64'],somente_local=True)
+    elif body.get('remover_imagem'):imagem=''
     with closing(get_db()) as c,c:
         if ident is None:ident=c.execute('INSERT INTO modelos_normais(nome,texto,ativo) VALUES(?,?,?)',values).lastrowid
         else:
             if not c.execute('UPDATE modelos_normais SET nome=?,texto=?,ativo=? WHERE id=?',(*values,ident)).rowcount:raise HTTPException(404,'Modelo não encontrado.')
+        if imagem is not None:c.execute('UPDATE modelos_normais SET imagem=? WHERE id=?',(imagem,ident))
         c.execute("UPDATE numeros SET template_nome=? WHERE tipo_envio='vendeai_normal' AND modelo_normal_id=?",(values[0],ident))
     return {'id':ident}
 
@@ -194,11 +206,13 @@ def enviar(get_db,n,phone,nome,cfg,token,suprimido):
     if consultar(get_db,atual,cfg,token)!='connected':return False,'CONEXAO_INDISPONIVEL: sem conexão confirmada na VendeAI',''
     # Consulta externa pode demorar: revalida pausa e supressão antes do POST.
     with closing(get_db()) as c:
-        a=c.execute('SELECT n.ativo,n.limite_diario,n.limite_hora,m.texto FROM numeros n JOIN modelos_normais m ON m.id=n.modelo_normal_id AND m.ativo=1 WHERE n.id=?',(n['id'],)).fetchone()
+        a=c.execute('SELECT n.ativo,n.limite_diario,n.limite_hora,m.texto,m.imagem FROM numeros n JOIN modelos_normais m ON m.id=n.modelo_normal_id AND m.ativo=1 WHERE n.id=?',(n['id'],)).fetchone()
     if not a or not a['ativo'] or a['limite_diario']<=0 or a['limite_hora']<=0 or suprimido(phone):return False,'BLOQUEADO_MODELO: envio bloqueado por pausa, limites ou lista negra',''
     try: msg=mensagem(a['texto'],nome)
     except HTTPException as e:return False,'BLOQUEADO_MODELO: '+e.detail,''
     account,token=credenciais(cfg,token)
+    if a['imagem']:
+        return enviar_imagem(get_db,atual,phone,nome,msg,a['imagem'],account,token,suprimido)
     try:
         r=requests.post(API+'send/',json={'account_id':account,'crm_api_access_token':token,'inbox_id':atual['vendeai_inbox_id'],'customer_phone':'+'+phone,'payload':{'type':'whatsapp_nao_oficial','message':msg}},timeout=(5,30),allow_redirects=False)
         if r.status_code==200:
@@ -210,6 +224,64 @@ def enviar(get_db,n,phone,nome,cfg,token,suprimido):
         if r.status_code>=500 or 300<=r.status_code<400:return False,'ENVIO_INCERTO: resposta VendeAI HTTP '+str(r.status_code),''
         return False,'VendeAI recusou o envio: HTTP '+str(r.status_code),''
     except (requests.RequestException,ValueError,TypeError,AttributeError):return False,'ENVIO_INCERTO: conferir na VendeAI antes de repetir',''
+
+
+def enviar_imagem(get_db,n,phone,nome,msg,imagem,account,token,suprimido):
+    if len(msg)>1024:return False,'BLOQUEADO_MODELO: legenda da imagem excede 1024 caracteres',''
+    base=CRM+account;headers={'api_access_token':token};post_iniciado=False
+    def get(path):
+        r=requests.get(base+path,headers=headers,timeout=(3,15),allow_redirects=False)
+        r.raise_for_status();return r.json()
+    def post(path,body):
+        r=requests.post(base+path,headers=headers,json=body,timeout=(5,20),allow_redirects=False)
+        r.raise_for_status();return r.json()
+    try:
+        with closing(get_db()) as c:
+            media=c.execute("SELECT dados,mime FROM imagens_template WHERE id=? AND phone_id='modelo-normal'",(imagem,)).fetchone()
+        if not media:raise ValueError('Imagem indisponível')
+        r=requests.get(base+'/contacts/search',headers=headers,params={'q':phone[-11:]},timeout=(3,15),allow_redirects=False)
+        r.raise_for_status()
+        contatos=[x for x in r.json().get('payload',[]) if re.sub(r'\D','',x.get('phone_number') or '')==phone]
+        if len(contatos)>1:raise ValueError('Contato ambíguo')
+        if contatos:
+            contato=contatos[0]
+        else:
+            d=post('/contacts',{'inbox_id':int(n['vendeai_inbox_id']),'name':nome,'phone_number':'+'+phone})
+            p=d.get('payload',d);contato=p.get('contact',p)
+        ident=str(contato['id'])
+        if not ident.isdigit():raise ValueError('Contato inválido')
+        conversas=get('/contacts/'+ident+'/conversations').get('payload',[])
+        candidatas=[x for x in conversas if str(x.get('inbox_id'))==n['vendeai_inbox_id'] and str(x.get('id','')).isdigit()]
+        if candidatas:
+            chat=str(max(candidatas,key=lambda x:int(x['id']))['id'])
+        else:
+            links=contato.get('contact_inboxes',[])
+            link=next((x for x in links if str(x.get('inbox',{}).get('id'))==n['vendeai_inbox_id']),None)
+            if not link:link=post('/contacts/'+ident+'/contact_inboxes',{'inbox_id':int(n['vendeai_inbox_id']),'source_id':phone})
+            if not link.get('source_id'):raise ValueError('Vínculo indisponível')
+            d=post('/conversations',{'contact_id':int(ident),'inbox_id':int(n['vendeai_inbox_id']),'source_id':link['source_id'],'status':'open'})
+            chat=str(d['id'])
+        if not chat.isdigit():raise ValueError('Conversa inválida')
+        with closing(get_db()) as c:
+            atual=c.execute('SELECT n.*,m.texto,m.imagem,m.ativo AS modelo_ativo FROM numeros n JOIN modelos_normais m ON m.id=n.modelo_normal_id WHERE n.id=?',(n['id'],)).fetchone()
+            cfg=c.execute('SELECT vendeai_account_id,rodizio_tipo FROM configuracao WHERE id=1').fetchone()
+        if not atual or not atual['ativo'] or not atual['modelo_ativo'] or atual['limite_diario']<=0 or atual['limite_hora']<=0 or atual['conexao_status']!='connected' or atual['imagem']!=imagem or atual['vendeai_conta']!=account or atual['vendeai_inbox_id']!=n['vendeai_inbox_id'] or atual['modelo_normal_id']!=n['modelo_normal_id'] or str(cfg['vendeai_account_id'])!=account or cfg['rodizio_tipo']=='oficiais' or suprimido(phone):
+            return False,'BLOQUEADO_MODELO: configuração alterada ou contato bloqueado',''
+        if mensagem(atual['texto'],nome)!=msg:return False,'BLOQUEADO_MODELO: modelo alterado durante envio',''
+        post_iniciado=True
+        r=requests.post(base+'/conversations/'+chat+'/messages',headers=headers,
+            data={'content':msg,'message_type':'outgoing','private':'false'},
+            files={'attachments[]':('imagem.png' if media['mime']=='image/png' else 'imagem.jpg',media['dados'],media['mime'])},
+            timeout=(5,45),allow_redirects=False)
+        if r.status_code>=500 or 300<=r.status_code<400:return False,'ENVIO_INCERTO: conferir imagem na VendeAI antes de repetir',''
+        if r.status_code not in (200,201):return False,'CRM recusou a imagem: HTTP '+str(r.status_code),''
+        d=r.json()
+        if not d.get('id') or not d.get('attachments'):return False,'ENVIO_INCERTO: CRM não confirmou a imagem',''
+        if d.get('status')=='failed':return False,'CRM informou falha no envio da imagem',''
+        agendar_etiqueta(get_db,account,str(d['id']),n['vendeai_inbox_id'],phone,n['id'])
+        return True,'',str(d['id'])
+    except (requests.RequestException,ValueError,KeyError,TypeError,AttributeError,HTTPException):
+        return False,('ENVIO_INCERTO: conferir imagem na VendeAI antes de repetir' if post_iniciado else 'CONEXAO_INDISPONIVEL: não foi possível preparar o envio da imagem'),''
 
 
 def agendar_etiqueta(get_db,account,message_id,inbox,telefone,numero_id):
