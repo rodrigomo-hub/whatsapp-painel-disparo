@@ -19,6 +19,12 @@ STATUS = {'FORMALIZATION_REQUESTED': 'Aguardando formalização',
 
 
 def migrar(c):
+    c.execute('''CREATE TABLE IF NOT EXISTS propostas_ia_importadas (
+        account_id TEXT NOT NULL, codigo TEXT NOT NULL, cliente TEXT NOT NULL,
+        produto TEXT NOT NULL, banco TEXT NOT NULL, valor_centavos INTEGER NOT NULL,
+        status TEXT NOT NULL, data_referencia TEXT NOT NULL, fonte TEXT NOT NULL,
+        arquivo_sha256 TEXT NOT NULL, importado_em TEXT NOT NULL,
+        PRIMARY KEY(account_id,codigo))''')
     c.execute('''CREATE TABLE IF NOT EXISTS ajustes_equipe_mensais (
         mes TEXT PRIMARY KEY, valor_centavos INTEGER NOT NULL,
         motivo TEXT NOT NULL, criado_em TEXT NOT NULL)''')
@@ -62,6 +68,40 @@ def conciliar_historico(propostas, historicos, inicio, fim, atividade):
     total = int(Decimal(str(round(atividade['valor_pago'], 2)))*100) + delta
     return {'quantidade': len(atividade['pagos']), 'valor': total/100,
             'sem_valor': sem_valor, 'ajuste_historico': delta/100, 'historicos_no_periodo': registros}
+
+
+def integrar_propostas_importadas(propostas, importadas):
+    aliases = defaultdict(set)
+    for key, p in propostas.items():
+        for codigo in [p['id'], str(p['dados'].get('proposal_number') or '')]:
+            if codigo: aliases[(key[0], codigo)].add(key)
+    usados = set()
+    for h in importadas:
+        t = momento(h['data_referencia'])
+        if not t:
+            raise ValueError('Proposta importada sem data de referência válida.')
+        keys = aliases.get((h['account_id'], h['codigo']), set())
+        if len(keys) > 1:
+            raise ValueError('Código importado corresponde a mais de uma proposta.')
+        key = next(iter(keys)) if keys else (h['account_id'], 'importado:'+h['codigo'])
+        if key in usados:
+            raise ValueError('Mais de um código importado corresponde à mesma proposta.')
+        usados.add(key)
+        p = propostas.setdefault(key, {'id': h['codigo'], 'chat': None, 'criado': None,
+                                       'pago': None, 'atualizado': t, 'dados': {}, 'status': ''})
+        p['importada'] = True
+        p['nome_importado'] = h['cliente']
+        if p['criado'] is None:
+            p['criado'] = t
+            p['criacao_referencia'] = True
+        for field, val in [('proposal_number', h['codigo']), ('bank', h['banco']),
+                           ('product', h['produto']), ('liquid_value', h['valor_centavos']/100)]:
+            if p['dados'].get(field) in (None, ''): p['dados'][field] = val
+        # Não regride um status recebido depois da referência do arquivo.
+        if t >= p['atualizado']:
+            p['status'] = h['status']; p['atualizado'] = t
+        if h['status'] == PAGO and p['pago'] is None:
+            p['pago'] = t
 
 
 def validar_dia(dia):
@@ -150,6 +190,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
         manuais = [dict(r) for r in c.execute('SELECT * FROM pagamentos_manuais WHERE dia>=? AND dia<? ORDER BY dia DESC',
                                              (inicio.date().isoformat(), fim.date().isoformat()))]
         historicos = [dict(r) for r in c.execute('SELECT * FROM pagamentos_ia_historicos')]
+        importadas = [dict(r) for r in c.execute('SELECT * FROM propostas_ia_importadas')]
         ajustes_mensais = []
         for row in c.execute('SELECT * FROM ajustes_equipe_mensais ORDER BY mes DESC'):
             a = date.fromisoformat(row['mes']+'-01')
@@ -210,6 +251,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
             prop['criado'] = min(prop['criado'] or t, t)
         if estado == PAGO:
             prop['pago'] = min(prop['pago'] or t, t)
+    integrar_propostas_importadas(propostas, importadas)
     # Atribuição conservadora: conversa criada + último envio ao telefone até 7 dias antes.
     # Evidência de anúncio prevalece; campanha isolada não comprova tráfego pago.
     for chat in chats.values():
@@ -268,7 +310,8 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
                 if chat['simulacoes']: m['simulacoes'].add(cliente(key))
     lista = []
     for key, p in propostas.items():
-        chat = chats[p['chat']]; v = valor(p['dados'].get('liquid_value'))
+        chat = chats.get(p['chat'], {'contato': {}, 'origem': 'nao_identificada', 'envio': None, 'campanha': ''})
+        v = valor(p['dados'].get('liquid_value'))
         targets = grupo(chat)
         for m in targets:
             if dentro(p['criado']):
@@ -286,7 +329,8 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
         if not any(dentro(t) for t in [p['criado'], p['pago'], p['atualizado']]):
             continue
         ct = chat['contato']; dados = p['dados']
-        item = {'id': p['id'], 'nome': ct.get('name', ''), 'telefone': ct.get('phone', ''),
+        item = {'id': p['id'], 'nome': ct.get('name') or p.get('nome_importado', ''), 'telefone': ct.get('phone', ''),
+                'importada': bool(p.get('importada')), 'criacao_referencia': bool(p.get('criacao_referencia')),
                 'criado_em': p['criado'].isoformat() if p['criado'] else None,
                 'atualizado_em': p['atualizado'].isoformat(),
                 'pago_em': p['pago'].isoformat() if p['pago'] else None,

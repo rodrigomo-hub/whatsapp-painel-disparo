@@ -176,6 +176,43 @@ class ResultadosTests(unittest.TestCase):
             c.execute('INSERT INTO pagamentos_ia_historicos VALUES(?,?,?,?,?,?,?,?,?)',
                       ('a', codigo, '', dia, centavos, dia, 'csv', 'hash', dia))
 
+    def importar_proposta(self, codigo='123', estado=r.PAGO, centavos=50000):
+        with self.db() as c:
+            c.execute('INSERT INTO propostas_ia_importadas VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                      ('a', codigo, 'Cliente histórico', 'clt', 'facta', centavos, estado,
+                       '2026-09-30T06:00:00-03:00', 'csv', 'hash', '2026-09-30'))
+
+    def test_full_import_counts_all_statuses_and_paid_once_with_old_adjustment(self):
+        self.historico()
+        self.importar_proposta()
+        self.importar_proposta('456', 'CANCELED', 100000)
+        self.importar_proposta('789', 'FORMALIZATION_REQUESTED', 200000)
+        d = self.calc()
+        self.assertEqual(d['atividade']['propostas'], 3)
+        self.assertEqual(d['atividade']['valor_propostas'], 3500)
+        self.assertEqual(d['atividade']['pagos'], 1)
+        self.assertEqual(d['pagamentos']['ia']['valor'], 500)
+        self.assertEqual(d['pagamentos']['ia']['quantidade'], 1)
+        self.assertEqual(d['atividade']['conversas'], 0)
+        self.assertEqual(d['coorte']['pagos'], 0)
+        self.assertTrue(all(p['criacao_referencia'] for p in d['propostas']))
+        self.assertEqual(d['propostas'][0]['nome'], 'Cliente histórico')
+
+    def test_import_merges_by_number_and_preserves_newer_webhook(self):
+        self.importar_proposta(estado='FORMALIZATION_REQUESTED')
+        self.event('proposal_created', proposal={'proposal_id': 'uuid', 'proposal_number': '123',
+                    'proposal_status': 'PROCESSING', 'liquid_value': 500,
+                    'formalization_link': 'https://example.test/link'})
+        self.event('proposal_status_updated', time='2026-09-30T07:00:00-03:00',
+                   proposal={'proposal_id': 'uuid', 'proposal_number': '123', 'proposal_status': r.PAGO})
+        d = self.calc()
+        self.assertEqual(d['total_propostas'], 1)
+        self.assertEqual(d['atividade']['propostas'], 1)
+        self.assertEqual(d['atividade']['valor_propostas'], 500)
+        self.assertEqual(d['propostas'][0]['status'], r.PAGO)
+        self.assertFalse(d['propostas'][0]['criacao_referencia'])
+        self.assertEqual(d['propostas'][0]['link'], 'https://example.test/link')
+
     def test_monthly_team_adjustment_does_not_inflate_daily_results(self):
         r.salvar_manual(self.db, '2026-09-30', {'valor': '7545.53', 'revisao': 0})
         with self.db() as c:
