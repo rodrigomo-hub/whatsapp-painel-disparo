@@ -332,6 +332,7 @@ def init_db():
     if 'observacao' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN observacao TEXT NOT NULL DEFAULT ''")
     vendeai_eventos.migrar(conn)
+    resultados.migrar(conn)
     templates_lote.migrar(conn)
     if 'limite_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN limite_meta TEXT NOT NULL DEFAULT ''")
@@ -1910,6 +1911,16 @@ def consultar_resultados(inicio: str = '', fim: str = '', busca: str = '', orige
                                 datetime.combine(b + timedelta(days=1), datetime.min.time(), TZ),
                                 busca.strip(), origem, status, pagina)
     return JSONResponse(dados, headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/api/resultados/manuais/{dia}')
+def consultar_pagamento_manual(dia: str):
+    return JSONResponse(resultados.manual_dia(get_db, dia), headers={'Cache-Control': 'no-store'})
+
+
+@app.put('/api/resultados/manuais/{dia}')
+def salvar_pagamento_manual(dia: str, body: dict):
+    return JSONResponse(resultados.salvar_manual(get_db, dia, body), headers={'Cache-Control': 'no-store'})
 
 
 @app.get("/webhook")

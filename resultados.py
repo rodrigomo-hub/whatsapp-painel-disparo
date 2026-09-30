@@ -5,7 +5,9 @@ import math
 import re
 from collections import defaultdict
 from contextlib import closing
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from fastapi import HTTPException
 from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo('America/Sao_Paulo')
@@ -14,6 +16,59 @@ STATUS = {'FORMALIZATION_REQUESTED': 'Aguardando formalização',
           'FORMALIZATION_COMPLETED': 'Formalização concluída', 'PROCESSING': 'Em processamento',
           'PENDED_AI_HANDLE': 'Pendência em atendimento', 'PENDED_BANK': 'Pendência no banco',
           'CANCELED': 'Cancelado', PAGO: 'Pago ao cliente'}
+
+
+def migrar(c):
+    c.execute('''CREATE TABLE IF NOT EXISTS pagamentos_manuais (
+        dia TEXT PRIMARY KEY, quantidade INTEGER NOT NULL CHECK(quantidade>=0),
+        valor_centavos INTEGER NOT NULL CHECK(valor_centavos>=0),
+        revisao INTEGER NOT NULL DEFAULT 1, atualizado_em TEXT NOT NULL)''')
+
+
+def validar_dia(dia):
+    try:
+        d = date.fromisoformat(dia)
+        if d.isoformat() != dia or d > datetime.now(TZ).date():
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise HTTPException(400, 'Informe uma data válida, até hoje.')
+    return dia
+
+
+def manual_dia(get_db, dia):
+    validar_dia(dia)
+    with closing(get_db()) as c:
+        row = c.execute('SELECT * FROM pagamentos_manuais WHERE dia=?', (dia,)).fetchone()
+    return dict(row) if row else {'dia': dia, 'quantidade': 0, 'valor_centavos': 0,
+                                 'revisao': 0, 'atualizado_em': None}
+
+
+def salvar_manual(get_db, dia, body):
+    validar_dia(dia)
+    qtd, rev = body.get('quantidade'), body.get('revisao')
+    if type(qtd) is not int or not 0 <= qtd <= 1000000 or type(rev) is not int or rev < 0:
+        raise HTTPException(400, 'Informe quantidade inteira e revisão válidas.')
+    try:
+        v = Decimal(str(body.get('valor')))
+        if not v.is_finite() or not 0 <= v <= Decimal('999999999.99') or v * 100 != (v * 100).to_integral_value():
+            raise ValueError()
+        centavos = int(v * 100)
+    except (ValueError, InvalidOperation):
+        raise HTTPException(400, 'Informe um valor válido com até duas casas decimais.')
+    if (qtd == 0) != (centavos == 0):
+        raise HTTPException(400, 'Quantidade e valor devem ser positivos, ou ambos zero para zerar o dia.')
+    with closing(get_db()) as c, c:
+        c.execute('BEGIN IMMEDIATE')
+        row = c.execute('SELECT * FROM pagamentos_manuais WHERE dia=?', (dia,)).fetchone()
+        if row and row['quantidade'] == qtd and row['valor_centavos'] == centavos:
+            return dict(row)
+        if rev != (row['revisao'] if row else 0):
+            raise HTTPException(409, 'Este dia foi alterado em outra tela. Reabra o lançamento antes de salvar.')
+        c.execute('''INSERT INTO pagamentos_manuais(dia,quantidade,valor_centavos,revisao,atualizado_em)
+                     VALUES(?,?,?,?,?) ON CONFLICT(dia) DO UPDATE SET quantidade=excluded.quantidade,
+                     valor_centavos=excluded.valor_centavos,revisao=excluded.revisao,atualizado_em=excluded.atualizado_em''',
+                  (dia, qtd, centavos, rev+1, datetime.now(TZ).isoformat()))
+        return dict(c.execute('SELECT * FROM pagamentos_manuais WHERE dia=?', (dia,)).fetchone())
 
 
 def objeto(v):
@@ -56,6 +111,8 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
                            "COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio,'') tipo_envio,"
                            "n.nome FROM disparos d LEFT JOIN numeros n ON n.id=d.numero_id "
                            "WHERE d.status='sucesso'").fetchall()
+        manuais = [dict(r) for r in c.execute('SELECT * FROM pagamentos_manuais WHERE dia>=? AND dia<? ORDER BY dia DESC',
+                                             (inicio.date().isoformat(), fim.date().isoformat()))]
     chats, propostas, sends, por_fone = {}, {}, {}, defaultdict(list)
     for row in envios:
         r = dict(row); t = momento(r['criado_em'])
@@ -205,7 +262,16 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
 
     lista.sort(key=lambda p: p['atualizado_em'], reverse=True)
     total = len(lista); pagina = min(pagina, max(1, (total+49)//50))
+    manual_qtd = sum(m['quantidade'] for m in manuais)
+    manual_valor = sum(m['valor_centavos'] for m in manuais) / 100
+    pagamentos = {'ia': {'quantidade': len(atividade['pagos']), 'valor': round(atividade['valor_pago'], 2),
+                         'sem_valor': atividade['pagos_sem_valor']},
+                  'manual': {'quantidade': manual_qtd, 'valor': manual_valor},
+                  'total': {'quantidade': len(atividade['pagos'])+manual_qtd,
+                            'valor': round(atividade['valor_pago']+manual_valor, 2),
+                            'sem_valor': atividade['pagos_sem_valor']}}
     return {'atualizado_em': agora.isoformat(), 'primeiro_evento': primeiro_evento.isoformat() if primeiro_evento else None,
+            'pagamentos': pagamentos, 'manuais': manuais,
             'atividade': fechar(atividade), 'coorte': fechar(coorte),
             'origens': {k: fechar(v) for k, v in grupos.items()},
             'numeros': [fechar(v) for v in numeros.values()],
