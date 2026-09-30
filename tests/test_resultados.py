@@ -176,6 +176,23 @@ class ResultadosTests(unittest.TestCase):
             c.execute('INSERT INTO pagamentos_ia_historicos VALUES(?,?,?,?,?,?,?,?,?)',
                       ('a', codigo, '', dia, centavos, dia, 'csv', 'hash', dia))
 
+    def test_monthly_team_adjustment_does_not_inflate_daily_results(self):
+        r.salvar_manual(self.db, '2026-09-30', {'valor': '7545.53', 'revisao': 0})
+        with self.db() as c:
+            c.execute('INSERT INTO ajustes_equipe_mensais VALUES(?,?,?,?)',
+                      ('2026-09', 10544285, 'Fechamento aprovado', '2026-09-30'))
+        day = self.calc()
+        self.assertEqual(day['pagamentos']['manual']['valor'], 7545.53)
+        self.assertFalse(day['ajustes_mensais'][0]['incluido'])
+        month = r.calcular(self.db, r.momento('2026-09-01'), r.momento('2026-10-01'))
+        self.assertEqual(month['pagamentos']['manual']['valor'], 112988.38)
+        self.assertTrue(month['ajustes_mensais'][0]['incluido'])
+        self.assertEqual(month['coorte']['valor_pago'], 0)
+        next_month = r.calcular(self.db, r.momento('2026-10-01'), r.momento('2026-11-01'))
+        self.assertEqual(next_month['pagamentos']['manual']['valor'], 0)
+        year = r.calcular(self.db, r.momento('2026-01-01'), r.momento('2027-01-01'))
+        self.assertEqual(year['pagamentos']['manual']['valor'], 112988.38)
+
     def test_history_fills_missing_then_late_webhook_does_not_double(self):
         self.historico()
         d = self.calc()

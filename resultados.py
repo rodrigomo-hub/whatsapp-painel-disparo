@@ -19,6 +19,9 @@ STATUS = {'FORMALIZATION_REQUESTED': 'Aguardando formalização',
 
 
 def migrar(c):
+    c.execute('''CREATE TABLE IF NOT EXISTS ajustes_equipe_mensais (
+        mes TEXT PRIMARY KEY, valor_centavos INTEGER NOT NULL,
+        motivo TEXT NOT NULL, criado_em TEXT NOT NULL)''')
     c.execute('''CREATE TABLE IF NOT EXISTS pagamentos_manuais (
         dia TEXT PRIMARY KEY, quantidade INTEGER NOT NULL CHECK(quantidade>=0),
         valor_centavos INTEGER NOT NULL CHECK(valor_centavos>=0),
@@ -147,6 +150,12 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
         manuais = [dict(r) for r in c.execute('SELECT * FROM pagamentos_manuais WHERE dia>=? AND dia<? ORDER BY dia DESC',
                                              (inicio.date().isoformat(), fim.date().isoformat()))]
         historicos = [dict(r) for r in c.execute('SELECT * FROM pagamentos_ia_historicos')]
+        ajustes_mensais = []
+        for row in c.execute('SELECT * FROM ajustes_equipe_mensais ORDER BY mes DESC'):
+            a = date.fromisoformat(row['mes']+'-01')
+            b = date(a.year+a.month//12, a.month%12+1, 1)
+            if a < fim.date() and b > inicio.date():
+                ajustes_mensais.append(dict(row, incluido=inicio.date() <= a and fim.date() >= b))
     chats, propostas, sends, por_fone = {}, {}, {}, defaultdict(list)
     for row in envios:
         r = dict(row); t = momento(r['criado_em'])
@@ -296,14 +305,15 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
 
     lista.sort(key=lambda p: p['atualizado_em'], reverse=True)
     total = len(lista); pagina = min(pagina, max(1, (total+49)//50))
-    manual_valor = sum(m['valor_centavos'] for m in manuais) / 100
+    ajuste_mensal = sum(m['valor_centavos'] for m in ajustes_mensais if m['incluido'])
+    manual_valor = (sum(m['valor_centavos'] for m in manuais) + ajuste_mensal) / 100
     ia = conciliar_historico(propostas, historicos, inicio, fim, atividade)
     pagamentos = {'ia': ia,
                   'manual': {'valor': manual_valor},
                   'total': {'valor': round(ia['valor']+manual_valor, 2),
                             'sem_valor': ia['sem_valor']}}
     return {'atualizado_em': agora.isoformat(), 'primeiro_evento': primeiro_evento.isoformat() if primeiro_evento else None,
-            'pagamentos': pagamentos, 'manuais': manuais,
+            'pagamentos': pagamentos, 'manuais': manuais, 'ajustes_mensais': ajustes_mensais,
             'atividade': fechar(atividade), 'coorte': fechar(coorte),
             'origens': {k: fechar(v) for k, v in grupos.items()},
             'numeros': [fechar(v) for v in numeros.values()],
