@@ -53,6 +53,12 @@ def descobrir(get_db,cfg,token):
             for i in found:
                 c.execute('INSERT INTO conexoes_vendeai VALUES(?,?,?,?,?,?,?) ON CONFLICT(conta,inbox_id) DO UPDATE SET nome=excluded.nome,telefone=excluded.telefone,provider=excluded.provider,status=excluded.status,consultado_em=excluded.consultado_em',
                     (account,str(i['id']),i.get('name',''),i.get('phone_number',''),i['provider'],estado(i),agora()))
+            # A descoberta também precisa retirar conexões indisponíveis do rodízio.
+            # A preferência de ativação manual permanece intacta.
+            c.execute("""UPDATE numeros SET
+                conexao_status=COALESCE((SELECT status FROM conexoes_vendeai v
+                    WHERE v.conta=numeros.vendeai_conta AND v.inbox_id=numeros.vendeai_inbox_id),'unknown'),
+                meta_consultado_em=? WHERE tipo_envio='vendeai_normal' AND vendeai_conta=?""",(agora(),account))
         return len(found)
     except (requests.RequestException,ValueError,KeyError,TypeError,AttributeError):
         raise HTTPException(502,'Não foi possível consultar as conexões na VendeAI. Nenhum número foi adicionado.')

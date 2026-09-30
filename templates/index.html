@@ -1078,7 +1078,7 @@ function renderizarNumeros() {
       tr.innerHTML=`<td>${esc(n.nome)}<br><button class="btn-editar" onclick="abrirObservacao(${n.id})">${n.observacao?'Ver observação':'+ Observação'}</button></td>
         <td>${esc(n.template_nome)}</td><td>Conexão normal<br><small>Mensagem de texto</small></td><td>Não se aplica</td>
         <td>${n.enviados_hoje} / ${n.limite_diario}</td><td>${n.enviados_hora} / ${n.limite_hora}</td>
-        <td><span class="badge ${n.ativo?'badge-ativo':'badge-pausado'}">${n.ativo?'Ativo':'Pausado'}</span><br><small>${estado}</small>${n.modelo_normal_ativo?'':'<br><small>Modelo desativado ou ausente</small>'}</td>
+        <td><span class="badge ${n.conexao_elegivel?'badge-ativo':'badge-pausado'}">${!n.ativo?'Pausado':n.conexao_elegivel?'Ativo':'Fora do rodízio'}</span><br><small>${estado}</small>${n.ativo&&!n.conexao_elegivel?'<br><small>Envio bloqueado até confirmar conexão e modelo</small>':''}${n.modelo_normal_ativo?'':'<br><small>Modelo desativado ou ausente</small>'}</td>
         <td><small style="display:block;color:#64748b;font-size:11px;margin-bottom:6px">${ultimaConsultaMeta(n.meta_consultado_em)}</small>
         <button class="btn-editar" onclick="abrirModal(${n.id})">Editar</button>
         <button class="btn-toggle" onclick="toggleNumero(${n.id},${n.ativo?0:1})">${n.ativo?'Pausar':'Ativar'}</button>

@@ -80,6 +80,32 @@ class ConexoesTests(unittest.TestCase):
         normal.consultar(main.get_db,self.numero(),self.cfg,'')
         with test_db() as c:c.execute("UPDATE configuracao SET vendeai_account_id='999'")
         self.assertFalse(main.disponivel_agora(self.numero()))
+
+    def test_discovery_updates_registered_connection_and_ui_eligibility(self):
+        ident=self.importar()
+        self.item['provider_connection']['connection']='disconnected'
+        self.get.return_value=self.response({'payload':[self.item]})
+        self.api.return_value=self.response({'inboxes':[{'id':'77','accepts_free_text':True}]})
+        normal.descobrir(main.get_db,self.cfg,'')
+        self.assertEqual(self.numero()['conexao_status'],'disconnected')
+        self.assertFalse(main.disponivel_agora(self.numero()))
+        self.assertEqual(self.numero()['ativo'],1)
+        self.assertFalse(next(n for n in self.client.get('/api/numeros').json() if n['id']==ident)['conexao_elegivel'])
+        self.assertFalse(self.client.get('/api/conexoes-normais').json()['numeros'][0]['conexao_elegivel'])
+        normal.editar(main.get_db,self.numero(),{'ativo':False})
+        self.item['provider_connection']['connection']='connected'
+        normal.descobrir(main.get_db,self.cfg,'')
+        self.assertEqual(self.numero()['conexao_status'],'connected')
+        self.assertEqual(self.numero()['ativo'],0)
+        self.assertFalse(main.disponivel_agora(self.numero()))
+
+    def test_missing_connection_in_discovery_blocks_registered_number(self):
+        self.importar()
+        self.get.return_value=self.response({'payload':[]})
+        self.api.return_value=self.response({'inboxes':[]})
+        normal.descobrir(main.get_db,self.cfg,'')
+        self.assertEqual(self.numero()['conexao_status'],'unknown')
+        self.assertFalse(main.disponivel_agora(self.numero()))
     def test_mixed_rotation_and_capacity_limits(self):
         ident=self.importar()
         self.assertEqual(main.proximo_numero_disponivel(1)['id'],ident)

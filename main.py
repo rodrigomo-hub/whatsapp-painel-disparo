@@ -2419,6 +2419,7 @@ def listar_numeros():
             "access_token": n["access_token"][:10] + "..." if n["access_token"] else "",
             "enviados_hoje": contagem_hoje(n["id"]),
             "enviados_hora": contagem_ultima_hora(n["id"]),
+            "conexao_elegivel": conexoes_normais.elegivel(get_db,n) if conexoes_normais.normal(n) else None,
         }
         for n in numeros
     ]
@@ -2850,7 +2851,7 @@ def listar_conexoes_normais():
     with closing(get_db()) as c:
         return {'conexoes':[dict(r) for r in c.execute('SELECT * FROM conexoes_vendeai WHERE conta=? ORDER BY nome',(str(cfg['vendeai_account_id']),))],
                 'modelos':[dict(r) for r in c.execute('SELECT * FROM modelos_normais ORDER BY nome')],
-                'numeros':[dict(r) for r in c.execute("SELECT id,nome,vendeai_conta,vendeai_inbox_id,modelo_normal_id,limite_diario,limite_hora,ativo,conexao_status,meta_consultado_em FROM numeros WHERE tipo_envio='vendeai_normal'")]}
+                'numeros':[{**dict(r),'conexao_elegivel':conexoes_normais.elegivel(get_db,r)} for r in c.execute("SELECT id,nome,vendeai_conta,vendeai_inbox_id,modelo_normal_id,limite_diario,limite_hora,ativo,conexao_status,meta_consultado_em FROM numeros WHERE tipo_envio='vendeai_normal'")]}
 
 
 @app.post('/api/conexoes-normais/atualizar')

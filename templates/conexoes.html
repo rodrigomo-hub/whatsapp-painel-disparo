@@ -23,7 +23,7 @@ function linha(nome,sub,acao){const e=document.createElement('div');e.className=
 function render(){for(const id of ['disponiveis','cadastrados','modelos'])$(id).replaceChildren();
 for(const c of dados.conexoes){if(dados.numeros.some(n=>n.vendeai_conta===c.conta&&n.vendeai_inbox_id===c.inbox_id))continue;
 const b=botao('Configurar',()=>abrirNumero(c));b.disabled=c.status!=='connected';$('disponiveis').append(linha(c.nome+' '+c.telefone,status(c.status)+' · Consultado em '+data(c.consultado_em),b));}
-for(const n of dados.numeros){const m=dados.modelos.find(m=>m.id===n.modelo_normal_id);$('cadastrados').append(linha(n.nome,(n.ativo?'Ativo':'Pausado')+' · '+status(n.conexao_status)+' · '+(m?.nome||'Sem modelo')+(!m?.ativo?' (modelo desativado)':'')+' · '+n.limite_diario+'/dia · '+n.limite_hora+'/hora',botao('Configurar',()=>abrirNumero(null,n))));}
+for(const n of dados.numeros){const m=dados.modelos.find(m=>m.id===n.modelo_normal_id);$('cadastrados').append(linha(n.nome,(!n.ativo?'Pausado':n.conexao_elegivel?'Ativo':'Fora do rodízio — envio bloqueado')+' · '+status(n.conexao_status)+' · '+(m?.nome||'Sem modelo')+(!m?.ativo?' (modelo desativado)':'')+' · '+n.limite_diario+'/dia · '+n.limite_hora+'/hora',botao('Configurar',()=>abrirNumero(null,n))));}
 for(const m of dados.modelos)$('modelos').append(linha(m.nome,(m.ativo?'Ativo':'Desativado')+' · '+m.texto.slice(0,100),botao('Editar',()=>abrirModelo(m))));
 for(const id of ['disponiveis','cadastrados','modelos'])if(!$(id).children.length)$(id).append(texto('div',id==='disponiveis'?'Nenhuma nova conexão encontrada. Use “Atualizar conexões” para consultar a VendeAI.':id==='modelos'?'Crie seu primeiro modelo de mensagem.':'Nenhuma conexão normal foi adicionada ao rodízio.','vazio'));
 }
