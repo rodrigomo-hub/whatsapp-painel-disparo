@@ -27,7 +27,7 @@ class ResultadosApiTests(unittest.TestCase):
                 self.assertEqual(d['coorte']['pagos'], 0)
                 self.assertEqual(client.put(url, json=dict(body, valor='4000')).status_code, 409)
                 self.assertEqual(client.put(url, json=dict(body, valor='1.001')).status_code, 400)
-                self.assertIn('Pagamentos manuais', client.get('/resultados').text)
+                self.assertIn('Pagamentos da equipe', client.get('/resultados').text)
             finally:
                 main.sessoes_ativas.discard('test-resultados')
                 client.close()

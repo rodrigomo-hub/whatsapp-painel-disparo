@@ -147,11 +147,15 @@
     </div>
     <div>
       <div style="font-size:24px; font-weight:700; color:#16a34a;" id="pago-ia-hoje">—</div>
-      <a href="/resultados" id="pago-ia-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Pago pela IA hoje</a><small id="pago-ia-incompleto" style="display:none;font-size:11px;color:#986719;margin-top:4px;"></small>
+      <a href="/resultados" id="pago-ia-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Pago pela IA hoje</a><small id="pago-ia-percentual" style="display:block;font-size:11px;color:#64748b;margin-top:4px;">—</small><small id="pago-ia-incompleto" style="display:none;font-size:11px;color:#986719;margin-top:4px;"></small>
     </div>
     <div>
       <div style="font-size:24px; font-weight:700; color:#2563eb;" id="pago-manual-hoje">—</div>
-      <a href="/resultados" id="pago-manual-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Pago manualmente hoje</a>
+      <a href="/resultados" id="pago-manual-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Pago pela equipe hoje</a><small id="pago-equipe-percentual" style="display:block;font-size:11px;color:#64748b;margin-top:4px;">—</small>
+    </div>
+    <div>
+      <div style="font-size:24px;font-weight:700;color:#16754a;" id="pago-total-hoje">—</div>
+      <a href="/resultados" id="pago-total-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Total pago hoje</a>
     </div>
   </div>
 </div>
@@ -1002,16 +1006,20 @@ async function carregarResultadosHoje() {
     if(!res.ok||res.redirected)throw new Error();
     const dados=await res.json();
     total.textContent=Number(dados.atividade.simulacoes).toLocaleString('pt-BR');
-    for(const [tipo,id] of [['ia','pago-ia-hoje'],['manual','pago-manual-hoje']]) {
+    for(const [tipo,id] of [['ia','pago-ia-hoje'],['manual','pago-manual-hoje'],['total','pago-total-hoje']]) {
       document.getElementById(id).textContent=Number(dados.pagamentos[tipo].valor).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
       document.getElementById(id+'-link').title='Valor líquido pago hoje, não comissão. Horário de Brasília.';
     }
+    const valorTotal=Number(dados.pagamentos.total.valor),pctIA=valorTotal>0?Math.round(Number(dados.pagamentos.ia.valor)/valorTotal*1000)/10:null;
+    for(const [id,pct] of [['pago-ia-percentual',pctIA],['pago-equipe-percentual',pctIA===null?null:100-pctIA]])document.getElementById(id).textContent=pct===null?'—':pct.toLocaleString('pt-BR',{maximumFractionDigits:1})+'% do total pago';
+    document.getElementById('pago-total-hoje-link').title=dados.pagamentos.ia.sem_valor?'Total parcial: há contratos da IA sem valor informado.':'IA + equipe. Valor líquido pago hoje.';
     const aviso=document.getElementById('pago-ia-incompleto'),faltam=dados.pagamentos.ia.sem_valor;
     aviso.textContent=faltam?faltam+' contrato(s) sem valor informado':'';aviso.style.display=faltam?'block':'none';
     link.title='Ver resultados completos. Atualizado às '+new Date(dados.atualizado_em).toLocaleTimeString('pt-BR',{timeZone:'America/Sao_Paulo'})+' (Brasília).';
   } catch(e) {
     total.textContent='—';
-    for(const id of ['pago-ia-hoje','pago-manual-hoje']){document.getElementById(id).textContent='—';document.getElementById(id+'-link').title='Não foi possível atualizar. Clique para consultar os resultados.';}
+    for(const id of ['pago-ia-percentual','pago-equipe-percentual'])document.getElementById(id).textContent='—';
+    for(const id of ['pago-ia-hoje','pago-manual-hoje','pago-total-hoje']){document.getElementById(id).textContent='—';document.getElementById(id+'-link').title='Não foi possível atualizar. Clique para consultar os resultados.';}
     document.getElementById('pago-ia-incompleto').style.display='none';
     link.title='Não foi possível atualizar. Clique para consultar os resultados.';
   }
