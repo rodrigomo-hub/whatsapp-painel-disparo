@@ -146,12 +146,12 @@
       <a href="/resultados" id="simulacoes-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Clientes com simulação hoje</a>
     </div>
     <div>
-      <div style="font-size:24px; font-weight:700; color:#16a34a;" id="total-positivos-hoje">-</div>
-      <div style="font-size:12px; color:#888;">Respostas positivas</div>
+      <div style="font-size:24px; font-weight:700; color:#16a34a;" id="pago-ia-hoje">—</div>
+      <a href="/resultados" id="pago-ia-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Pago pela IA hoje</a><small id="pago-ia-incompleto" style="display:none;font-size:11px;color:#986719;margin-top:4px;"></small>
     </div>
     <div>
-      <div style="font-size:24px; font-weight:700; color:#dc2626;" id="total-negativos-hoje">-</div>
-      <div style="font-size:12px; color:#888;">Respostas negativas</div>
+      <div style="font-size:24px; font-weight:700; color:#2563eb;" id="pago-manual-hoje">—</div>
+      <a href="/resultados" id="pago-manual-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Pago manualmente hoje</a>
     </div>
   </div>
 </div>
@@ -993,8 +993,6 @@ async function carregarTotalHoje() {
   document.getElementById('enviados-outros-area').hidden=!dados.total_outros_hoje;
   document.getElementById('total-erro-hoje').textContent =
     dados.total_erro_hoje > 0 ? `${dados.total_erro_hoje} erro(s)` : '';
-  document.getElementById('total-positivos-hoje').textContent = dados.total_positivos_hoje;
-  document.getElementById('total-negativos-hoje').textContent = dados.total_negativos_hoje;
 }
 
 async function carregarResultadosHoje() {
@@ -1004,9 +1002,17 @@ async function carregarResultadosHoje() {
     if(!res.ok||res.redirected)throw new Error();
     const dados=await res.json();
     total.textContent=Number(dados.atividade.simulacoes).toLocaleString('pt-BR');
+    for(const [tipo,id] of [['ia','pago-ia-hoje'],['manual','pago-manual-hoje']]) {
+      document.getElementById(id).textContent=Number(dados.pagamentos[tipo].valor).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+      document.getElementById(id+'-link').title='Valor líquido pago hoje, não comissão. Horário de Brasília.';
+    }
+    const aviso=document.getElementById('pago-ia-incompleto'),faltam=dados.pagamentos.ia.sem_valor;
+    aviso.textContent=faltam?faltam+' contrato(s) sem valor informado':'';aviso.style.display=faltam?'block':'none';
     link.title='Ver resultados completos. Atualizado às '+new Date(dados.atualizado_em).toLocaleTimeString('pt-BR',{timeZone:'America/Sao_Paulo'})+' (Brasília).';
   } catch(e) {
     total.textContent='—';
+    for(const id of ['pago-ia-hoje','pago-manual-hoje']){document.getElementById(id).textContent='—';document.getElementById(id+'-link').title='Não foi possível atualizar. Clique para consultar os resultados.';}
+    document.getElementById('pago-ia-incompleto').style.display='none';
     link.title='Não foi possível atualizar. Clique para consultar os resultados.';
   }
 }
