@@ -368,3 +368,15 @@ Envio: `/api/message-handler/mailing/send/`, com `payload.type=whatsapp_nao_ofic
 Migração aditiva: campos de tipo/inbox/modelo/status em `numeros`, tabelas `conexoes_vendeai` e `modelos_normais`. Números existentes permanecem do tipo `meta`. A atualização do código não importa nem ativa números automaticamente.
 
 Todo envio confirmado por conexão normal agenda a etiqueta `disparo` na conversa do CRM. A tarefa persistida em `etiquetas_disparo` cruza telefone, inbox e ID da mensagem (não escolhe apenas a última conversa), lê as etiquetas atuais e acrescenta `disparo`. A marcação roda em segundo plano, com três tentativas e backoff; falhas ficam no banco e em `eventos`, sem reenviar a mensagem. A etiqueta não é parte do texto e não é enviada no payload de mailing, que não documenta esse campo.
+
+## Oficiais vinculados à VendeAI
+
+A área dos números mantém os oficiais e oferece `/oficiais-vendeai` para descoberta/importação. `/conexoes` passa a se chamar **Conexões normais**, mantendo seus modelos locais separados. A descoberta consulta a VendeAI sem cadastrar ou ativar números e guarda somente metadados; nenhuma credencial é devolvida pela lista de importação.
+
+A conciliação usa `phone_number_id` e WABA. IDs duplicados, WABA divergente ou inbox já associada a outra identidade impedem o vínculo. Vincular um existente preserva token, template, limites, histórico, caminho e pausa; novos oficiais recebem a credencial da conexão no servidor e são adicionados pausados para revisão. Não há ativação nem troca de caminho automática.
+
+O campo **Enviar por** no editor oferece Meta ou VendeAI. A opção VendeAI exige vínculo e correspondência do template por nome, idioma, categoria, corpo, variáveis e cabeçalho. Qualidade, status do número, saúde da WABA e aprovação do template são consultados diretamente na Meta antes de cada envio por esse caminho. Divergência, reautorização, qualidade desconhecida ou bloqueio impedem o envio. Variáveis posicionais do n8n viram `params`; templates estáticos usam `{}`. Cabeçalho com variável, vídeo/documento, variáveis nomeadas e botões que exigem parâmetros não são aceitos neste adaptador e geram erro explícito.
+
+Imagens nesse caminho ficam no banco e são expostas somente por URL com token aleatório de 256 bits, válida por uma hora, gerada no envio. O painel precisa estar em HTTPS. Não é necessário subir mídia à Meta ao salvar uma imagem para VendeAI; se o operador voltar ao envio direto, o upload à Meta é feito no primeiro uso. A rota de mídia não expõe IDs de banco nem tokens das integrações.
+
+O envio usa o token CRM e `whatsapp_oficial`, agenda a etiqueta `disparo` e registra o ID retornado pela VendeAI. Falhas incertas mantêm o limite reservado e nunca repetem a mensagem pela Meta ou SMS. Os testes reais de implantação são consultas/leitura: nenhum número é migrado automaticamente e nenhum disparo real é feito sem destino autorizado para o teste.

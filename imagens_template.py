@@ -30,7 +30,7 @@ def upload(numero, dados, mime):
     raise HTTPException(400,'Não foi possível enviar a imagem à Meta. Confira o arquivo, o token e as permissões; a configuração não foi salva.')
 
 
-def salvar(get_db, numero, data_url):
+def salvar(get_db, numero, data_url, somente_local=False):
     if not isinstance(data_url,str) or len(data_url)>7_000_000:
         raise HTTPException(400,'Envie uma imagem JPEG ou PNG de até 5 MB.')
     try:
@@ -42,7 +42,7 @@ def salvar(get_db, numero, data_url):
         if mime=='image/jpeg' and not dados.startswith(b'\xff\xd8\xff'): raise ValueError()
     except (ValueError,KeyError):
         raise HTTPException(400,'Arquivo inválido. Envie uma imagem JPEG ou PNG de até 5 MB.')
-    media=upload(numero,dados,mime)
+    media="" if somente_local else upload(numero,dados,mime)
     chave=uuid.uuid4().hex
     with closing(get_db()) as c,c:
         c.execute('INSERT INTO imagens_template VALUES(?,?,?,?,?,?)',(chave,numero['phone_number_id'],dados,mime,media,time.time()))
@@ -53,7 +53,7 @@ def media_id(get_db,numero):
     with closing(get_db()) as c:
         row=c.execute('SELECT * FROM imagens_template WHERE id=? AND phone_id=?',(numero['template_imagem'],numero['phone_number_id'])).fetchone()
     if not row: raise HTTPException(400,'Anexe a imagem obrigatória deste template antes de disparar.')
-    if time.time()-row['enviado_em']<20*86400: return row['media_id']
+    if row['media_id'] and time.time()-row['enviado_em']<20*86400: return row['media_id']
     media=upload(numero,row['dados'],row['mime'])
     with closing(get_db()) as c,c:
         c.execute('UPDATE imagens_template SET media_id=?,enviado_em=? WHERE id=?',(media,time.time(),row['id']))

@@ -15,6 +15,7 @@ COPY templates_lote.py .
 COPY vendeai_eventos.py .
 COPY optout.py .
 COPY conexoes_normais.py .
+COPY oficiais_vendeai.py .
 COPY templates ./templates
 
 EXPOSE 80

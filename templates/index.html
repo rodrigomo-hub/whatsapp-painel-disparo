@@ -116,7 +116,7 @@
   <a href="#painel" id="nav-painel" aria-current="page">Disparos</a>
   <a href="#configuracoes-vendeai" id="nav-configuracoes">Configurações</a>
   <a href="/wabas">WABAs</a>
-  <a href="/conexoes">Conexões VendeAI</a>
+  <a href="/conexoes">Conexões normais</a>
   <a href="/eventos-vendeai">Eventos VendeAI</a>
   <a href="/optout">Lista negra</a>
   <a href="/estatisticas">Estatísticas</a>
@@ -147,7 +147,8 @@
 </div>
 
 <div class="cartao">
-  <a href="/conexoes" style="float:right;font-size:13px;color:#16754a;">Importar da VendeAI</a>
+  <a href="/conexoes" style="float:right;font-size:13px;color:#16754a;">Conexões normais</a>
+  <a href="/oficiais-vendeai" style="float:right;font-size:13px;color:#16754a;margin-right:18px;">Importar oficiais da VendeAI</a>
   <h2>Números conectados <button class="btn-toggle" onclick="atualizarTodos()" style="font-size:12px;">🔄 Atualizar todos</button></h2>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0;">
     <label for="pesquisa-numero" style="font-size:13px;">Pesquisar número</label>
@@ -439,6 +440,9 @@
     <h3>Editar número</h3>
     <form id="form-editar">
       <input type="hidden" id="editar-id">
+      <label for="editar-via">Enviar por</label>
+      <select id="editar-via"><option value="meta">Direto pela Meta</option><option value="vendeai">Pela VendeAI</option></select>
+      <small id="editar-vinculo" style="display:block;margin-bottom:12px;"></small>
       <label>Template</label>
       <button type="button" class="btn-editar" onclick="buscarTemplatesEditar()" style="margin-bottom:8px;">🔍 Buscar templates</button>
       <select id="editar-template" onchange="mostrarPreview('editar-template', 'preview-editar')">
@@ -991,12 +995,14 @@ async function carregarNumeros() {
   `;
 
   renderizarNumeros();
+  const editarInicial=Number(new URLSearchParams(location.search).get('editar'));
+  if(editarInicial && numerosCache.some(n=>n.id===editarInicial)){history.replaceState(null,'',location.pathname);abrirModal(editarInicial);}
 
   const checkboxes = document.getElementById('checkboxes-numeros');
   const marcados = new Set(Array.from(checkboxes.querySelectorAll('input:checked')).map(x=>x.value));
   checkboxes.innerHTML = '';
   numerosCache.filter(n => n.ativo || marcados.has(String(n.id))).forEach(n => {
-    checkboxes.innerHTML += `<label><input type="checkbox" value="${n.id}" class="chk-numero-lote" ${marcados.has(String(n.id)) ? 'checked' : ''}> ${n.nome}</label>`;
+    checkboxes.innerHTML += `<label><input type="checkbox" value="${n.id}" class="chk-numero-lote" ${marcados.has(String(n.id)) ? 'checked' : ''}> ${escaparNumero(n.nome)}</label>`;
   });
   atualizarPreviaLote();
 }
@@ -1057,6 +1063,7 @@ function ultimaConsultaMeta(valor) {
     year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
   });
 }
+function escaparNumero(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function renderizarNumeros() {
   const filtrados = filtrarNumeros(numerosCache, document.getElementById('pesquisa-numero').value, document.getElementById('filtro-waba').value);
   document.getElementById('pesquisa-numero-total').textContent = `${filtrados.length} de ${numerosCache.length} números`;
@@ -1079,8 +1086,8 @@ function renderizarNumeros() {
       tbody.appendChild(tr);return;
     }
     tr.innerHTML = `
-      <td>${n.nome}<br><button type="button" onclick="abrirObservacao(${n.id})" style="margin-top:5px;background:${n.observacao ? '#eef2ff' : 'transparent'};color:${n.observacao ? '#4338ca' : '#64748b'};border:1px solid ${n.observacao ? '#c7d2fe' : '#e2e8f0'};border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;">${n.observacao ? '📝 Ver observação' : '+ Observação'}</button></td>
-      <td>${n.template_nome}${n.template_header === "IMAGE" ? (n.template_imagem ? "<br><small>Imagem configurada</small>" : "<br><strong>Falta anexar imagem</strong>") : ""}</td>
+      <td>${escaparNumero(n.nome)}<br><button type="button" onclick="abrirObservacao(${n.id})" style="margin-top:5px;background:${n.observacao ? '#eef2ff' : 'transparent'};color:${n.observacao ? '#4338ca' : '#64748b'};border:1px solid ${n.observacao ? '#c7d2fe' : '#e2e8f0'};border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;">${n.observacao ? '📝 Ver observação' : '+ Observação'}</button></td>
+      <td>${escaparNumero(n.template_nome)}<br><small>${n.via_envio==='vendeai'?'Envio pela VendeAI':'Envio pela Meta'}${n.vendeai_inbox_id?' · Vinculado':''}</small>${n.template_header === "IMAGE" ? (n.template_imagem ? "<br><small>Imagem configurada</small>" : "<br><strong>Falta anexar imagem</strong>") : ""}</td>
       <td>${traduzirCategoria(n.template_categoria)}<br><small style="color:#888">${n.template_status}</small></td>
       <td><span class="bolinha bolinha-${n.qualidade}"></span>${traduzirQualidade(n.qualidade)}<br><small style="color:#64748b;" title="Limite informado pela Meta para o portfólio empresarial, compartilhado entre seus números. Não é saldo restante nem limite individual.">Limite Meta: ${traduzirLimiteMeta(n.limite_meta)}</small></td>
       <td>${n.enviados_hoje} / ${n.limite_diario}<br><div class="barra"><div class="barra-preenchida" style="width:${pct}%"></div></div></td>
@@ -1164,6 +1171,9 @@ function abrirModal(id) {
   const n = numerosCache.find(x => x.id === id);
   if(n.tipo_envio === 'vendeai_normal'){location.href='/conexoes?numero='+id;return;}
   document.getElementById('editar-id').value = n.id;
+  const via=document.getElementById('editar-via');via.value=n.via_envio||'meta';
+  via.options[1].disabled=!n.vendeai_inbox_id;
+  document.getElementById('editar-vinculo').textContent=n.vendeai_inbox_id ? 'Vinculado à VendeAI. Qualidade e bloqueios conferidos na Meta.' : 'Para enviar pela VendeAI, use “Importar oficiais da VendeAI” e vincule este cadastro.';
   const select = document.getElementById('editar-template');
   const atual = document.createElement('option');
   atual.value = n.template_nome; atual.textContent = n.template_nome;
@@ -1192,6 +1202,7 @@ document.getElementById('form-editar').addEventListener('submit', async (e) => {
     method: 'PATCH',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
+      via_envio: document.getElementById('editar-via').value,
       imagem_base64: imagem,
       template_nome: document.getElementById('editar-template').value,
       template_sem_variaveis: document.getElementById('editar-sem-variaveis').checked,

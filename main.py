@@ -16,6 +16,7 @@ import templates_lote
 import vendeai_eventos
 import optout
 import conexoes_normais
+import oficiais_vendeai
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, quote
@@ -111,6 +112,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # /webhook precisa ficar livre: quem chama e a Meta, nao um usuario logado
         # no painel, entao nao existe cookie de sessao nessas chamadas.
+        if request.method == 'GET' and re.fullmatch(r'/midia-vendeai/[0-9a-f]{64}',request.url.path):
+            return await call_next(request)
         caminhos_livres = ["/login", "/static", "/webhook"]
         if any(request.url.path.startswith(c) for c in caminhos_livres):
             return await call_next(request)
@@ -330,6 +333,7 @@ def init_db():
     if 'meta_consultado_em' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN meta_consultado_em TEXT")
     conexoes_normais.migrar(conn)
+    oficiais_vendeai.migrar(conn)
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -368,6 +372,8 @@ def contagem_ultima_hora(numero_id: int) -> int:
 def disponivel_agora(numero: sqlite3.Row) -> bool:
     if conexoes_normais.normal(numero):
         return conexoes_normais.elegivel(get_db, numero) and contagem_hoje(numero["id"]) < numero["limite_diario"] and contagem_ultima_hora(numero["id"]) < numero["limite_hora"]
+    if oficiais_vendeai.via(numero) and not oficiais_vendeai.elegivel(get_db,numero):
+        return False
     if dict(numero).get("status_envio_meta") != "AVAILABLE":
         return False
     if dict(numero).get("template_header")=="IMAGE" and not dict(numero).get("template_imagem"):
@@ -1350,6 +1356,7 @@ def capacidade_lote(selecionados=None):
         hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
         elegivel = n['status_envio_meta'] == 'AVAILABLE' and bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
         if conexoes_normais.normal(n): elegivel = conexoes_normais.elegivel(get_db,n)
+        elif oficiais_vendeai.via(n): elegivel = elegivel and oficiais_vendeai.elegivel(get_db,n)
         detalhes.append({'id': n['id'], 'nome': n['nome'], 'elegivel': elegivel,
                          'restante_dia': dia if elegivel else 0, 'restante_hora': hora if elegivel else 0,
                          'disponivel_agora': min(dia, hora) if elegivel else 0})
@@ -1508,6 +1515,8 @@ def impedimento_fila(origem="individual", numeros=None):
 def enviar_por_numero(numero, telefone, variaveis, nome):
     if conexoes_normais.normal(numero):
         return conexoes_normais.enviar(get_db,numero,telefone,nome,carregar_configuracao(),VENDEAI_API_TOKEN,lambda p: optout.bloqueado(get_db,p))
+    if oficiais_vendeai.via(numero):
+        return oficiais_vendeai.enviar(get_db,numero,telefone,variaveis,carregar_configuracao(),VENDEAI_API_TOKEN,atualizar_status_numero,lambda p: optout.bloqueado(get_db,p))
     return enviar_whatsapp(numero,telefone,variaveis)
 
 
@@ -1543,7 +1552,7 @@ def executar_disparo_preparado(preparado, cadastro, origem="individual", numeros
     registrar_disparo(numero["id"], cpf, nome_lead, telefone, status_resultado(sucesso,erro), erro, wamid)
     verificar_qualidade_pos_envio(numero)
 
-    if not sucesso and conexoes_normais.normal(numero):
+    if not sucesso and (conexoes_normais.normal(numero) or oficiais_vendeai.via(numero)):
         return {"status":status_resultado(sucesso,erro),"numero_usado":numero["nome"],"canal":"whatsapp","erro":erro,"vendeai":cadastro}
     if not sucesso:
         resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis) if origem != "lote" else None
@@ -2434,7 +2443,7 @@ def preparar_imagem_template(body, atual=None):
         header=''
     if body.get('imagem_base64'):
         if header!='IMAGE': raise HTTPException(400,'Selecione um template com cabeçalho de imagem na Meta.')
-        chave=imagens_template.salvar(get_db,previsto,body['imagem_base64'])
+        chave=imagens_template.salvar(get_db,previsto,body['imagem_base64'],somente_local=previsto.get('via_envio')=='vendeai')
     if header=='IMAGE' and not chave:
         raise HTTPException(400,'Este template exige uma imagem. Anexe um arquivo JPEG ou PNG de até 5 MB.')
     return header,chave if header=='IMAGE' else ''
@@ -2494,7 +2503,17 @@ async def atualizar_numero(numero_id: int, request: Request):
         imagem_config=preparar_imagem_template(body,atual)
     if body.get('ativo') and atual['pausado_por_template'] and atual['template_status']!='APPROVED':
         raise HTTPException(400,'Template pausado pela Meta. Selecione outro aprovado ou atualize o status antes de reativar.')
+    via=body.get('via_envio',atual['via_envio'])
+    if via not in ('meta','vendeai'):raise HTTPException(400,'Caminho de envio inválido.')
+    base_url=str(request.base_url).rstrip('/')
+    if via=='vendeai' and body != {'ativo':False}:
+        previsto={**dict(atual),**body}
+        if imagem_config:previsto.update(template_header=imagem_config[0],template_imagem=imagem_config[1])
+        t=await asyncio.to_thread(oficiais_vendeai.validar_via,get_db,previsto,carregar_configuracao(),VENDEAI_API_TOKEN,base_url)
+        body['_template_status_confirmado']='APPROVED'
+        body['template_sem_variaveis']=not bool(oficiais_vendeai.estrutura(t)[2])
     conn = get_db()
+    conn.execute('UPDATE numeros SET via_envio=?,envio_base_url=? WHERE id=?',(via,base_url if via=='vendeai' else atual['envio_base_url'],numero_id))
     if body.get('ativo'):
         conn.execute('UPDATE numeros SET pausado_por_template=0 WHERE id=?',(numero_id,))
     if "ativo" in body:
@@ -2858,3 +2877,31 @@ async def editar_modelo_normal(modelo_id: int, request: Request):
     body=await request.json()
     if not isinstance(body,dict): raise HTTPException(400,'Envie um objeto.')
     return conexoes_normais.salvar_modelo(get_db,body,modelo_id)
+
+
+@app.get('/oficiais-vendeai',response_class=HTMLResponse)
+def pagina_oficiais_vendeai(request: Request):
+    return templates.TemplateResponse(request,'oficiais_vendeai.html',{})
+
+
+@app.get('/api/oficiais-vendeai')
+def listar_oficiais_vendeai():
+    return oficiais_vendeai.listar(get_db,carregar_configuracao())
+
+
+@app.post('/api/oficiais-vendeai/atualizar')
+def descobrir_oficiais_vendeai():
+    return {'total':oficiais_vendeai.descobrir(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)}
+
+
+@app.post('/api/oficiais-vendeai/vincular')
+async def vincular_oficial_vendeai(request: Request):
+    body=await request.json()
+    if not isinstance(body,dict):raise HTTPException(400,'Envie um objeto.')
+    return await asyncio.to_thread(oficiais_vendeai.vincular,get_db,carregar_configuracao(),VENDEAI_API_TOKEN,body)
+
+
+@app.get('/midia-vendeai/{token}')
+def midia_publica_vendeai(token: str):
+    row=oficiais_vendeai.midia(get_db,token)
+    return Response(content=row['dados'],media_type=row['mime'],headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
