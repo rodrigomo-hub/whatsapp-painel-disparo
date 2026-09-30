@@ -248,6 +248,8 @@ class ConexoesTests(unittest.TestCase):
         with test_db() as c:c.execute("UPDATE etiquetas_disparo SET etiqueta='disparo_normal'")
         normal.processar_etiqueta(main.get_db,self.cfg,'')
         self.assertEqual(self.labels,['clt','em_atendimento','disparo_normal'])
+        self.api.assert_called_once()
+        with test_db() as c:self.assertEqual(c.execute('SELECT estado FROM etiquetas_disparo').fetchone()[0],'aplicada')
 
     def test_today_counts_normal_official_other_and_keeps_send_type(self):
         ident=self.importar()
@@ -268,8 +270,6 @@ class ConexoesTests(unittest.TestCase):
         ident=self.importar();d=main.registrar_disparo(ident,'','Teste','5511987654321','sucesso')
         with test_db() as c:c.execute("UPDATE disparos SET tipo_envio='' WHERE id=?",(d,))
         self.assertEqual(main.total_hoje()['total_normais_hoje'],1)
-        self.api.assert_called_once()
-        with test_db() as c:self.assertEqual(c.execute('SELECT estado FROM etiquetas_disparo').fetchone()[0],'aplicada')
     def test_tag_never_guesses_conversation(self):
         self.preparar_etiqueta();original=self.get.side_effect
         def get(url,**kw):
