@@ -148,6 +148,22 @@ class ConexoesTests(unittest.TestCase):
         self.assertFalse(main.disponivel_agora(self.numero()))
         self.assertFalse(self.enviar()[0]);self.api.assert_not_called()
 
+    def test_rotation_type_filters_capacity_selection_and_direct_dispatch(self):
+        ident=self.importar()
+        for tipo,esperado,bloqueado in [('normais',ident,1),('oficiais',1,ident)]:
+            r=self.client.patch('/api/configuracao',json={'rodizio_tipo':tipo})
+            self.assertEqual(r.status_code,200)
+            self.assertEqual(main.proximo_numero_disponivel(None)['id'],esperado)
+            detalhes=main.capacidade_lote([bloqueado])['numeros']
+            self.assertFalse(detalhes[0]['elegivel']);self.assertEqual(detalhes[0]['disponivel_agora'],0)
+            with test_db() as c:n=c.execute('SELECT * FROM numeros WHERE id=?',(bloqueado,)).fetchone()
+            with patch.object(main,'enviar_whatsapp') as meta,patch.object(normal,'enviar') as enviar:
+                self.assertFalse(main.enviar_por_numero(n,'5511987654321',[],'Maria')[0]);meta.assert_not_called();enviar.assert_not_called()
+        self.client.patch('/api/configuracao',json={'rodizio_tipo':'todos'})
+        self.assertEqual(main.proximo_numero_disponivel(1)['id'],ident)
+        self.assertEqual(self.client.patch('/api/configuracao',json={'rodizio_tipo':'invalido'}).status_code,400)
+        self.assertEqual(main.carregar_configuracao()['rodizio_tipo'],'todos')
+
     def test_bulk_import_only_connected_deduplicates_and_preserves_existing(self):
         import copy
         self.importar();before=dict(self.numero())

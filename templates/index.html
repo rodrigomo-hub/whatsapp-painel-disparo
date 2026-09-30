@@ -159,6 +159,12 @@
     <span id="pesquisa-numero-total" role="status" style="font-size:13px;color:#64748b;"></span>
   </div>
 
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px;padding:14px;background:#eef6ff;border:1px solid #c9dffc;border-radius:10px">
+    <label for="rodizio-tipo" style="font-weight:600">Rodízio de envio</label>
+    <select id="rodizio-tipo" style="padding:9px;border:1px solid #b6c9e0;border-radius:7px"><option value="todos">Oficiais e conexões normais</option><option value="oficiais">Somente oficiais</option><option value="normais">Somente conexões normais</option></select>
+    <button id="salvar-rodizio" class="btn-editar" onclick="salvarRodizio()">Aplicar</button><span id="rodizio-aviso" role="status" style="font-size:13px"></span>
+    <small style="width:100%;color:#52647a">Vale para envios pelo painel, planilha e API. Os limites e horários continuam sendo respeitados.</small>
+  </div>
   <div id="resumo-numeros" style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px; padding-bottom:16px; border-bottom:1px solid #eee;"></div>
 
   <table>
@@ -977,6 +983,9 @@ async function carregarTotalHoje() {
   document.getElementById('total-negativos-hoje').textContent = dados.total_negativos_hoje;
 }
 
+async function carregarRodizio(){const r=await fetch('/api/configuracao');if(!r.ok||r.redirected)throw new Error('Não foi possível ler o rodízio.');const c=await r.json();document.getElementById('rodizio-tipo').value=c.rodizio_tipo||'todos';}
+async function salvarRodizio(){const b=document.getElementById('salvar-rodizio'),aviso=document.getElementById('rodizio-aviso');b.disabled=true;try{const r=await fetch('/api/configuracao',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({rodizio_tipo:document.getElementById('rodizio-tipo').value})});if(r.redirected)throw new Error('Sessão encerrada.');const d=await r.json();if(!r.ok)throw new Error(d.detail||'Não foi possível salvar.');aviso.textContent='Rodízio atualizado.';await carregarNumeros();}catch(e){aviso.textContent=e.message;}finally{b.disabled=false;}}
+carregarRodizio().catch(e=>document.getElementById('rodizio-aviso').textContent=e.message);
 async function carregarNumeros() {
   const res = await fetch('/api/numeros');
   numerosCache = await res.json();
@@ -984,13 +993,16 @@ async function carregarNumeros() {
 
   const totalAtivos = numerosCache.filter(n => n.ativo).length;
   const totalPausados = numerosCache.filter(n => !n.ativo).length;
-  const totalQualidadeAlta = numerosCache.filter(n => n.qualidade === 'GREEN').length;
-  const totalQualidadeBaixa = numerosCache.filter(n => n.qualidade === 'RED').length;
+  const oficiais=numerosCache.filter(n=>n.tipo_envio!=='vendeai_normal');const normais=numerosCache.filter(n=>n.tipo_envio==='vendeai_normal');
+  const totalQualidadeAlta = oficiais.filter(n => n.qualidade === 'GREEN').length;
+  const totalQualidadeBaixa = oficiais.filter(n => n.qualidade === 'RED').length;
   document.getElementById('resumo-numeros').innerHTML = `
+    <div><span style="font-size:22px;font-weight:700;color:#2563eb">${oficiais.length}</span> <span style="font-size:13px;color:#64748b">oficiais</span></div>
+    <div><span style="font-size:22px;font-weight:700;color:#7c3aed">${normais.length}</span> <span style="font-size:13px;color:#64748b">conexões normais</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#16a34a;">${totalAtivos}</span> <span style="font-size:13px; color:#888;">ativos</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalPausados}</span> <span style="font-size:13px; color:#888;">pausados</span></div>
-    <div><span style="font-size:22px; font-weight:700; color:#16a34a;">${totalQualidadeAlta}</span> <span style="font-size:13px; color:#888;">com qualidade alta</span></div>
-    <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalQualidadeBaixa}</span> <span style="font-size:13px; color:#888;">com qualidade baixa</span></div>
+    <div><span style="font-size:22px; font-weight:700; color:#16a34a;">${totalQualidadeAlta}</span> <span style="font-size:13px; color:#888;">oficiais com qualidade alta</span></div>
+    <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalQualidadeBaixa}</span> <span style="font-size:13px; color:#888;">oficiais com qualidade baixa</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#1a1a2e;">${numerosCache.length}</span> <span style="font-size:13px; color:#888;">total cadastrados</span></div>
   `;
 

@@ -320,6 +320,8 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN pausado_por_template INTEGER NOT NULL DEFAULT 0")
     if 'faixas_horario' not in {r['name'] for r in conn.execute('PRAGMA table_info(configuracao)')}:
         conn.execute("ALTER TABLE configuracao ADD COLUMN faixas_horario TEXT NOT NULL DEFAULT '[]'")
+    if 'rodizio_tipo' not in {r['name'] for r in conn.execute('PRAGMA table_info(configuracao)')}:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN rodizio_tipo TEXT NOT NULL DEFAULT 'todos'")
     if 'presenca_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN presenca_meta TEXT NOT NULL DEFAULT 'nao_verificado'")
     if 'status_envio_meta' not in colunas_existentes:
@@ -369,7 +371,14 @@ def contagem_ultima_hora(numero_id: int) -> int:
     return row["c"]
 
 
+def permitido_no_rodizio(numero, cfg=None):
+    modo=(cfg if cfg is not None else carregar_configuracao()).get('rodizio_tipo','todos')
+    normal=conexoes_normais.normal(numero)
+    return modo=='todos' or (modo=='normais' and normal) or (modo=='oficiais' and not normal)
+
+
 def disponivel_agora(numero: sqlite3.Row) -> bool:
+    if not permitido_no_rodizio(numero):return False
     if conexoes_normais.normal(numero):
         return conexoes_normais.elegivel(get_db, numero) and contagem_hoje(numero["id"]) < numero["limite_diario"] and contagem_ultima_hora(numero["id"]) < numero["limite_hora"]
     if oficiais_vendeai.via(numero) and not oficiais_vendeai.elegivel(get_db,numero):
@@ -1361,6 +1370,7 @@ def capacidade_lote(selecionados=None):
         elegivel = n['status_envio_meta'] == 'AVAILABLE' and bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
         if conexoes_normais.normal(n): elegivel = conexoes_normais.elegivel(get_db,n)
         elif oficiais_vendeai.via(n): elegivel = elegivel and oficiais_vendeai.elegivel(get_db,n)
+        elegivel = elegivel and permitido_no_rodizio(n)
         detalhes.append({'id': n['id'], 'nome': n['nome'], 'elegivel': elegivel,
                          'restante_dia': dia if elegivel else 0, 'restante_hora': hora if elegivel else 0,
                          'disponivel_agora': min(dia, hora) if elegivel else 0})
@@ -1517,6 +1527,8 @@ def impedimento_fila(origem="individual", numeros=None):
 
 
 def enviar_por_numero(numero, telefone, variaveis, nome):
+    if not permitido_no_rodizio(numero):
+        return False,'TIPO_FORA_DO_RODIZIO: este tipo de numero nao esta selecionado',''
     if conexoes_normais.normal(numero):
         return conexoes_normais.enviar(get_db,numero,telefone,nome,carregar_configuracao(),VENDEAI_API_TOKEN,lambda p: optout.bloqueado(get_db,p))
     if oficiais_vendeai.via(numero):
@@ -2106,6 +2118,8 @@ async def atualizar_configuracao(request: Request):
 
     if "modo" in body and body["modo"] not in ("automatico", "horario"):
         raise HTTPException(400, "modo deve ser 'automatico' ou 'horario'")
+    if 'rodizio_tipo' in body and body['rodizio_tipo'] not in ('todos','oficiais','normais'):
+        raise HTTPException(400,'Escolha todos, oficiais ou normais para o rodízio.')
 
     if 'faixas_horario' in body:
         body['faixas_horario']=json.dumps(validar_faixas(body['faixas_horario']))
@@ -2138,7 +2152,7 @@ async def atualizar_configuracao(request: Request):
         raise HTTPException(400, "vendeai_url deve comecar com http:// ou https://")
 
     campos_validos = {
-        "modo", "hora_inicio", "hora_fim", "dias_semana", "faixas_horario",
+        "modo", "hora_inicio", "hora_fim", "dias_semana", "faixas_horario", "rodizio_tipo",
         "sms_habilitado", "sms_modo", "sms_template", "whatsapp_destino",
         "whatsapp_mensagem_template", "link_base_url",
         "vendeai_habilitado", "vendeai_url", "vendeai_account_id", "vendeai_inbox_id",
