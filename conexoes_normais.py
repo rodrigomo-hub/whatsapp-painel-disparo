@@ -21,6 +21,8 @@ def migrar(c):
         estado TEXT NOT NULL DEFAULT 'pendente', tentativas INTEGER NOT NULL DEFAULT 0,
         tentar_em REAL NOT NULL DEFAULT 0, detalhe TEXT NOT NULL DEFAULT '',
         PRIMARY KEY(account_id,message_id))""")
+    if 'etiqueta' not in {r['name'] for r in c.execute('PRAGMA table_info(etiquetas_disparo)')}:
+        c.execute("ALTER TABLE etiquetas_disparo ADD COLUMN etiqueta TEXT NOT NULL DEFAULT 'disparo'")
     cols={r['name'] for r in c.execute('PRAGMA table_info(numeros)')}
     for name,kind in [('tipo_envio',"TEXT NOT NULL DEFAULT 'meta'"),('vendeai_inbox_id',"TEXT NOT NULL DEFAULT ''"),('vendeai_conta',"TEXT NOT NULL DEFAULT ''"),('modelo_normal_id','INTEGER'),('conexao_status',"TEXT NOT NULL DEFAULT 'unknown'")]:
         if name not in cols:c.execute(f'ALTER TABLE numeros ADD COLUMN {name} {kind}')
@@ -218,7 +220,7 @@ def enviar(get_db,n,phone,nome,cfg,token,suprimido):
         if r.status_code==200:
             d=r.json()
             if d.get('status')=='success' and d.get('message_id'):
-                agendar_etiqueta(get_db,account,str(d['message_id']),atual['vendeai_inbox_id'],phone,atual['id'])
+                agendar_etiqueta(get_db,account,str(d['message_id']),atual['vendeai_inbox_id'],phone,atual['id'],'disparo_normal')
                 return True,'',str(d['message_id'])
             return False,'ENVIO_INCERTO: VendeAI não confirmou o identificador da mensagem',''
         if r.status_code>=500 or 300<=r.status_code<400:return False,'ENVIO_INCERTO: resposta VendeAI HTTP '+str(r.status_code),''
@@ -278,16 +280,16 @@ def enviar_imagem(get_db,n,phone,nome,msg,imagem,account,token,suprimido):
         d=r.json()
         if not d.get('id') or not d.get('attachments'):return False,'ENVIO_INCERTO: CRM não confirmou a imagem',''
         if d.get('status')=='failed':return False,'CRM informou falha no envio da imagem',''
-        agendar_etiqueta(get_db,account,str(d['id']),n['vendeai_inbox_id'],phone,n['id'])
+        agendar_etiqueta(get_db,account,str(d['id']),n['vendeai_inbox_id'],phone,n['id'],'disparo_normal')
         return True,'',str(d['id'])
     except (requests.RequestException,ValueError,KeyError,TypeError,AttributeError,HTTPException):
         return False,('ENVIO_INCERTO: conferir imagem na VendeAI antes de repetir' if post_iniciado else 'CONEXAO_INDISPONIVEL: não foi possível preparar o envio da imagem'),''
 
 
-def agendar_etiqueta(get_db,account,message_id,inbox,telefone,numero_id):
+def agendar_etiqueta(get_db,account,message_id,inbox,telefone,numero_id,etiqueta='disparo'):
     with closing(get_db()) as c,c:
-        c.execute('INSERT OR IGNORE INTO etiquetas_disparo(account_id,message_id,inbox_id,telefone,numero_id) VALUES(?,?,?,?,?)',
-                  (account,message_id,inbox,telefone,numero_id))
+        c.execute('INSERT OR IGNORE INTO etiquetas_disparo(account_id,message_id,inbox_id,telefone,numero_id,etiqueta) VALUES(?,?,?,?,?,?)',
+                  (account,message_id,inbox,telefone,numero_id,etiqueta))
 
 
 def _consultar_crm(url,headers,params=None):
@@ -335,11 +337,12 @@ def processar_etiqueta(get_db,cfg,token):
         # GET imediatamente antes do POST, pois a API substitui a lista inteira.
         labels=_consultar_crm(base+'/conversations/'+chat+'/labels',headers).get('payload')
         if not isinstance(labels,list) or not all(isinstance(v,str) for v in labels):raise ValueError('Etiquetas atuais não confirmadas')
-        if 'disparo' not in labels:
-            r=requests.post(base+'/conversations/'+chat+'/labels',headers=headers,json={'labels':list(dict.fromkeys(labels+['disparo']))},timeout=(3,10),allow_redirects=False)
+        etiqueta=t['etiqueta']
+        if etiqueta not in labels:
+            r=requests.post(base+'/conversations/'+chat+'/labels',headers=headers,json={'labels':list(dict.fromkeys(labels+[etiqueta]))},timeout=(3,10),allow_redirects=False)
             if r.status_code!=200:raise ValueError('Marcação CRM HTTP '+str(r.status_code))
             confirmado=_consultar_crm(base+'/conversations/'+chat+'/labels',headers).get('payload')
-            if not isinstance(confirmado,list) or 'disparo' not in confirmado:raise ValueError('Etiqueta não confirmada pelo CRM')
+            if not isinstance(confirmado,list) or etiqueta not in confirmado:raise ValueError('Etiqueta não confirmada pelo CRM')
     except HTTPException:
         detalhe='Credencial VendeAI indisponível'
     except requests.RequestException:

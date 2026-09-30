@@ -50,6 +50,7 @@ class ImagensNormaisTests(unittest.TestCase):
         self.assertEqual(k['data']['message_type'],'outgoing')
         self.assertEqual(k['files']['attachments[]'][2],'image/png')
         with test_db() as c:self.assertEqual(c.execute('SELECT message_id FROM etiquetas_disparo').fetchone()[0],'123')
+        with test_db() as c:self.assertEqual(c.execute('SELECT etiqueta FROM etiquetas_disparo').fetchone()[0],'disparo_normal')
 
     def test_new_contact_and_conversation_created_without_text_only_message(self):
         self.preparar(False);self.assertTrue(self.enviar()[0])

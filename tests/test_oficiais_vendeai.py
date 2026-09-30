@@ -71,6 +71,7 @@ class OficiaisTests(unittest.TestCase):
         self.assertEqual(j['payload'],{'type':'whatsapp_oficial','message':'Oi {{1}}!','template_name':'oferta','template_category':'UTILITY','language':'pt_BR','params':{'1':'Maria'}})
         self.assertEqual(j['inbox_id'],'77')
         with test_db() as c:self.assertEqual(c.execute('SELECT message_id FROM etiquetas_disparo').fetchone()[0],'901')
+        with test_db() as c:self.assertEqual(c.execute('SELECT etiqueta FROM etiquetas_disparo').fetchone()[0],'disparo')
     def test_static_ignores_incoming_variables(self):
         self.habilitar();self.t['components'][0]['text']='Olá!'
         self.assertTrue(self.enviar(['ignored'])[0]);self.assertEqual(self.sends()[0].kwargs['json']['payload']['params'],{})

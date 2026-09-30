@@ -51,6 +51,7 @@ class ConexoesTests(unittest.TestCase):
         self.assertEqual(j['payload'],{'type':'whatsapp_nao_oficial','message':'Oi, *Maria*!'})
         self.assertEqual(j['customer_phone'],'+5511987654321')
         self.assertEqual(j['inbox_id'],'77');self.whatsapp.assert_not_called()
+        with test_db() as c:self.assertEqual(c.execute('SELECT etiqueta FROM etiquetas_disparo').fetchone()[0],'disparo_normal')
     def test_missing_name_blacklist_and_model_disabled_prevent_send(self):
         self.importar()
         self.assertFalse(self.enviar('')[0]);self.api.assert_not_called()
@@ -241,6 +242,12 @@ class ConexoesTests(unittest.TestCase):
         self.api.assert_called_once()
         normal.agendar_etiqueta(main.get_db,'33393','901','77','5511987654321',1)
         self.assertFalse(normal.processar_etiqueta(main.get_db,self.cfg,''))
+
+    def test_normal_tag_uses_persisted_name_and_preserves_existing_labels(self):
+        self.preparar_etiqueta()
+        with test_db() as c:c.execute("UPDATE etiquetas_disparo SET etiqueta='disparo_normal'")
+        normal.processar_etiqueta(main.get_db,self.cfg,'')
+        self.assertEqual(self.labels,['clt','em_atendimento','disparo_normal'])
         self.api.assert_called_once()
         with test_db() as c:self.assertEqual(c.execute('SELECT estado FROM etiquetas_disparo').fetchone()[0],'aplicada')
     def test_tag_never_guesses_conversation(self):
