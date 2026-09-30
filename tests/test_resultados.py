@@ -135,26 +135,25 @@ class ResultadosTests(unittest.TestCase):
         self.assertEqual(r.calcular(readonly, r.momento('2026-09-30'), r.momento('2026-10-01'))['atividade']['valor_propostas'], 123.45)
 
     def test_manual_daily_upsert_edit_no_double_count_and_no_attribution(self):
-        body = {'quantidade': 10, 'valor': '3534.27', 'revisao': 0}
+        body = {'valor': '3534.27', 'revisao': 0}
         first = r.salvar_manual(self.db, '2026-09-29', body)
         self.assertEqual(first['valor_centavos'], 353427)
         self.assertEqual(r.salvar_manual(self.db, '2026-09-29', body)['revisao'], 1)
         r.salvar_manual(self.db, '2026-09-29', dict(body, quantidade=11, valor='4000.10', revisao=1))
         d = r.calcular(self.db, r.momento('2026-09-29'), r.momento('2026-10-01'))
-        self.assertEqual(d['pagamentos']['manual'], {'quantidade': 11, 'valor': 4000.10})
-        self.assertEqual(d['pagamentos']['total']['quantidade'], 11)
+        self.assertEqual(d['pagamentos']['manual'], {'valor': 4000.10})
+        self.assertNotIn('quantidade', d['pagamentos']['total'])
         self.assertEqual(d['atividade']['pagos'], 0)
         self.assertEqual(d['coorte']['pagos'], 0)
         self.assertEqual(d['numeros'], [])
-        self.assertEqual(self.calc()['pagamentos']['manual']['quantidade'], 0)
+        self.assertEqual(self.calc()['pagamentos']['manual']['valor'], 0)
         r.salvar_manual(self.db, '2026-09-29', {'quantidade': 0, 'valor': '0', 'revisao': 2})
         self.assertEqual(r.manual_dia(self.db, '2026-09-29')['valor_centavos'], 0)
 
     def test_manual_validation_and_concurrent_update(self):
-        for qtd, val in [(True, 10), (1.5, 10), (-1, 10), (1, -10), (1, 'NaN'),
-                         (1, 'Infinity'), (1, '0.001'), (0, 10), (10, 0)]:
-            with self.subTest(qtd=qtd, val=val), self.assertRaises(HTTPException) as cm:
-                r.salvar_manual(self.db, '2026-09-29', {'quantidade': qtd, 'valor': val, 'revisao': 0})
+        for val in [-10, 'NaN', 'Infinity', '0.001']:
+            with self.subTest(val=val), self.assertRaises(HTTPException) as cm:
+                r.salvar_manual(self.db, '2026-09-29', {'valor': val, 'revisao': 0})
             self.assertEqual(cm.exception.status_code, 400)
         for dia in ['invalid', '2099-01-01', '20260929']:
             with self.assertRaises(HTTPException): r.manual_dia(self.db, dia)
@@ -162,15 +161,15 @@ class ResultadosTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as cm:
             r.salvar_manual(self.db, '2026-09-29', {'quantidade': 2, 'valor': '0.20', 'revisao': 0})
         self.assertEqual(cm.exception.status_code, 409)
-        self.assertEqual(r.manual_dia(self.db, '2026-09-29')['quantidade'], 1)
+        self.assertEqual(r.manual_dia(self.db, '2026-09-29')['valor_centavos'], 10)
 
     def test_manual_total_plus_ai_preserves_missing_value_warning(self):
         self.event('proposal_status_updated', proposal={'proposal_id': 'p', 'proposal_status': r.PAGO})
         r.salvar_manual(self.db, '2026-09-30', {'quantidade': 10, 'valor': '3534', 'revisao': 0})
         d = self.calc()
-        self.assertEqual(d['pagamentos']['total'], {'quantidade': 11, 'valor': 3534.0, 'sem_valor': 1})
+        self.assertEqual(d['pagamentos']['total'], {'valor': 3534.0, 'sem_valor': 1})
         self.assertEqual(d['pagamentos']['ia']['quantidade'], 1)
-        self.assertEqual(d['pagamentos']['manual']['quantidade'], 10)
+        self.assertNotIn('quantidade', d['pagamentos']['manual'])
 
 
 if __name__ == '__main__':
