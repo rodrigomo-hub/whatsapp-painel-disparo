@@ -14,6 +14,7 @@ import transbordo
 import imagens_template
 import templates_lote
 import vendeai_eventos
+import resultados
 import optout
 import conexoes_normais
 import oficiais_vendeai
@@ -1888,6 +1889,27 @@ def configurar_optout(body: dict):
 @app.get('/eventos-vendeai',response_class=HTMLResponse)
 def pagina_eventos_vendeai(request: Request):
     return templates.TemplateResponse(request,'eventos_vendeai.html',{})
+
+
+@app.get('/resultados', response_class=HTMLResponse)
+def pagina_resultados(request: Request):
+    return templates.TemplateResponse(request, 'resultados.html', {})
+
+
+@app.get('/api/resultados')
+def consultar_resultados(inicio: str = '', fim: str = '', busca: str = '', origem: str = '', status: str = '', pagina: int = 1):
+    hoje = datetime.now(TZ).date()
+    try:
+        a = date.fromisoformat(inicio) if inicio else hoje
+        b = date.fromisoformat(fim) if fim else hoje
+    except ValueError:
+        raise HTTPException(400, 'Informe datas válidas.')
+    if b < a or (b-a).days > 365 or pagina < 1 or len(busca) > 150:
+        raise HTTPException(400, 'Informe um período de até 366 dias e filtros válidos.')
+    dados = resultados.calcular(get_db, datetime.combine(a, datetime.min.time(), TZ),
+                                datetime.combine(b + timedelta(days=1), datetime.min.time(), TZ),
+                                busca.strip(), origem, status, pagina)
+    return JSONResponse(dados, headers={'Cache-Control': 'no-store'})
 
 
 @app.get("/webhook")
