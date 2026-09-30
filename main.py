@@ -273,6 +273,8 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN pausado_por_qualidade INTEGER NOT NULL DEFAULT 0")
 
     colunas_disparos = [r["name"] for r in conn.execute("PRAGMA table_info(disparos)").fetchall()]
+    if 'tipo_envio' not in colunas_disparos:
+        conn.execute("ALTER TABLE disparos ADD COLUMN tipo_envio TEXT NOT NULL DEFAULT ''")
     if "wamid" not in colunas_disparos:
         # id da mensagem devolvido pela Meta no envio - usado pra casar
         # com as atualizacoes de status que chegam depois via webhook.
@@ -719,9 +721,11 @@ def sincronizar_idioma_template(numero_id, numero_nome, idioma_atual, idioma_enc
 
 def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro="", wamid="", canal="whatsapp", sms_uid=""):
     conn = get_db()
+    numero=conn.execute('SELECT tipo_envio FROM numeros WHERE id=?',(numero_id,)).fetchone()
+    tipo=numero['tipo_envio'] if numero and canal=='whatsapp' else ''
     cursor = conn.execute(
-        "INSERT INTO disparos (numero_id, cpf, nome_lead, telefone_destino, status, erro, criado_em, wamid, canal, sms_uid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (numero_id, cpf, nome_lead, telefone, status, erro, agora_iso(), wamid or None, canal, sms_uid or None),
+        "INSERT INTO disparos (numero_id, cpf, nome_lead, telefone_destino, status, erro, criado_em, wamid, canal, sms_uid, tipo_envio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (numero_id, cpf, nome_lead, telefone, status, erro, agora_iso(), wamid or None, canal, sms_uid or None,tipo),
     )
     conn.commit()
     disparo_id = cursor.lastrowid
@@ -1978,6 +1982,11 @@ def total_hoje():
         "SELECT COUNT(*) as c FROM disparos WHERE status = 'sucesso' AND criado_em >= ?",
         (inicio_dia,),
     ).fetchone()
+    tipos=conn.execute("""SELECT
+        COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio)='vendeai_normal' THEN 1 ELSE 0 END),0) AS normais,
+        COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio)='meta' THEN 1 ELSE 0 END),0) AS oficiais
+        FROM disparos d LEFT JOIN numeros n ON n.id=d.numero_id
+        WHERE d.status='sucesso' AND d.criado_em>=?""",(inicio_dia,)).fetchone()
     total_erros = conn.execute(
         "SELECT COUNT(*) as c FROM disparos WHERE status = 'erro' AND criado_em >= ?",
         (inicio_dia,),
@@ -1993,6 +2002,9 @@ def total_hoje():
     conn.close()
     return {
         "total_sucesso_hoje": row["c"],
+        "total_normais_hoje": tipos['normais'],
+        "total_oficiais_hoje": tipos['oficiais'],
+        "total_outros_hoje": row['c']-tipos['normais']-tipos['oficiais'],
         "total_erro_hoje": total_erros["c"],
         "total_positivos_hoje": total_positivos["c"],
         "total_negativos_hoje": total_negativos["c"],

@@ -133,6 +133,11 @@
 <div class="cartao" style="text-align:center; padding:24px;">
   <div style="font-size:13px; color:#888; text-transform:uppercase; letter-spacing:0.5px;">Total enviado hoje</div>
   <div id="total-hoje" style="font-size:42px; font-weight:700; color:#25d366; margin-top:6px;">-</div>
+  <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin:12px 0">
+    <div style="background:#eef2ff;color:#4338ca;padding:10px 18px;border-radius:10px"><strong id="enviados-normais-hoje" style="font-size:24px">—</strong><br><small>Por conexões normais</small></div>
+    <div style="background:#eff6ff;color:#1d4ed8;padding:10px 18px;border-radius:10px"><strong id="enviados-oficiais-hoje" style="font-size:24px">—</strong><br><small>Por números oficiais</small></div>
+    <div id="enviados-outros-area" hidden style="background:#f1f5f9;color:#475569;padding:10px 18px;border-radius:10px"><strong id="enviados-outros-hoje" style="font-size:24px">—</strong><br><small>Outros / não identificados</small></div>
+  </div>
   <div id="total-erro-hoje" style="font-size:13px; color:#dc2626; margin-top:4px;"></div>
   <div style="display:flex; justify-content:center; gap:24px; margin-top:16px; padding-top:16px; border-top:1px solid #eee;">
     <div>
@@ -977,6 +982,10 @@ async function carregarTotalHoje() {
   const res = await fetch('/api/total-hoje');
   const dados = await res.json();
   document.getElementById('total-hoje').textContent = dados.total_sucesso_hoje;
+  document.getElementById('enviados-normais-hoje').textContent=dados.total_normais_hoje;
+  document.getElementById('enviados-oficiais-hoje').textContent=dados.total_oficiais_hoje;
+  document.getElementById('enviados-outros-hoje').textContent=dados.total_outros_hoje;
+  document.getElementById('enviados-outros-area').hidden=!dados.total_outros_hoje;
   document.getElementById('total-erro-hoje').textContent =
     dados.total_erro_hoje > 0 ? `${dados.total_erro_hoje} erro(s)` : '';
   document.getElementById('total-positivos-hoje').textContent = dados.total_positivos_hoje;

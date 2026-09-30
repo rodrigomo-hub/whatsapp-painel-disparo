@@ -248,6 +248,26 @@ class ConexoesTests(unittest.TestCase):
         with test_db() as c:c.execute("UPDATE etiquetas_disparo SET etiqueta='disparo_normal'")
         normal.processar_etiqueta(main.get_db,self.cfg,'')
         self.assertEqual(self.labels,['clt','em_atendimento','disparo_normal'])
+
+    def test_today_counts_normal_official_other_and_keeps_send_type(self):
+        ident=self.importar()
+        for number,status,canal in [(ident,'sucesso','whatsapp'),(1,'sucesso','whatsapp'),(1,'sucesso','sms'),(ident,'erro','whatsapp')]:
+            main.registrar_disparo(number,'','Teste','5511987654321',status,canal=canal)
+        old=main.registrar_disparo(ident,'','Teste','5511987654321','sucesso')
+        with test_db() as c:
+            c.execute("UPDATE disparos SET criado_em='2020-01-01T00:00:00-03:00' WHERE id=?",(old,))
+            c.execute("UPDATE numeros SET tipo_envio='meta' WHERE id=?",(ident,))
+        d=self.client.get('/api/total-hoje').json()
+        self.assertEqual(d['total_sucesso_hoje'],3)
+        self.assertEqual(d['total_normais_hoje'],1)
+        self.assertEqual(d['total_oficiais_hoje'],1)
+        self.assertEqual(d['total_outros_hoje'],1)
+        self.assertEqual(d['total_erro_hoje'],1)
+
+    def test_today_legacy_history_uses_existing_number_type(self):
+        ident=self.importar();d=main.registrar_disparo(ident,'','Teste','5511987654321','sucesso')
+        with test_db() as c:c.execute("UPDATE disparos SET tipo_envio='' WHERE id=?",(d,))
+        self.assertEqual(main.total_hoje()['total_normais_hoje'],1)
         self.api.assert_called_once()
         with test_db() as c:self.assertEqual(c.execute('SELECT estado FROM etiquetas_disparo').fetchone()[0],'aplicada')
     def test_tag_never_guesses_conversation(self):
