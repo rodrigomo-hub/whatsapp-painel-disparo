@@ -246,7 +246,7 @@ class Fila:
                 if resultado.get("motivo_codigo") in ("nenhum_numero_disponivel", "fora_do_horario"):
                     self.alterar(row["id"], status="erro", tentar_em=0, resultado=serializar({**resultado, "status": "erro"}))
                 else:
-                    self.alterar(row["id"], status="sucesso" if resultado.get("status") == "sucesso" else "erro", tentar_em=0, resultado=serializar(resultado))
+                    self.alterar(row["id"], status=resultado["status"] if resultado.get("status") in ("sucesso","incerto") else "erro", tentar_em=0, resultado=serializar(resultado))
 
     def cadastrar_rodada(self, cfg, cadastrar):
         agora = time.time()

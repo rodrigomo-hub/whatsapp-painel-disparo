@@ -354,3 +354,15 @@ Apos cadastrar, WABA, template, imagem e limites permanecem para o proximo numer
 Numeros ja cadastrados ficam desabilitados na busca e a API recusa duplicacao.
 Um token preenchido substitui a credencial salva da WABA apos cadastro bem sucedido,
 sem alterar tokens dos numeros existentes. Cada painel mantem suas proprias WABAs.
+
+## Conexões normais da VendeAI
+
+A aba `/conexoes` separa a descoberta de números da autorização para disparar. A descoberta cruza os inboxes do CRM com `accepts_free_text=true` no mailing; não cadastra números no rodízio. Para adicionar, o operador escolhe um modelo ativo e os limites diário e horário. As credenciais vêm da configuração VendeAI existente (override do painel antes do ambiente) e nunca são copiadas para a tabela de números.
+
+Modelos locais aceitam `{primeiro_nome}`. São exclusivos das conexões normais; os templates da Meta continuam independentes. Desativar um modelo retira seus números da elegibilidade. Nome ausente bloqueia modelos que exigem a variável.
+
+Os números importados usam o mesmo rodízio, limites, horários, mailing e lista negra. O status é consultado a cada 15 minutos, ao atualizar manualmente e imediatamente antes do envio. Conexão desconhecida, desconectada, exigindo reautorização ou com consulta mais antiga que 30 minutos não entra na capacidade. Revalidar a conexão não altera a pausa manual. Antes do POST, o sistema relê a pausa, o modelo e a supressão.
+
+Envio: `/api/message-handler/mailing/send/`, com `payload.type=whatsapp_nao_oficial`, mensagem de texto e inbox escolhido. Timeout, resposta ambígua ou falha de servidor são registrados como `incerto`, sem repetir por outro número/SMS. O limite mantém essa tentativa reservada para evitar exceder a capacidade. A fila trata esse estado como terminal; confira o envio na VendeAI antes de qualquer reenvio manual.
+
+Migração aditiva: campos de tipo/inbox/modelo/status em `numeros`, tabelas `conexoes_vendeai` e `modelos_normais`. Números existentes permanecem do tipo `meta`. A atualização do código não importa nem ativa números automaticamente.

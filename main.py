@@ -15,6 +15,7 @@ import imagens_template
 import templates_lote
 import vendeai_eventos
 import optout
+import conexoes_normais
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, quote
@@ -328,6 +329,7 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN limite_meta TEXT NOT NULL DEFAULT ''")
     if 'meta_consultado_em' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN meta_consultado_em TEXT")
+    conexoes_normais.migrar(conn)
     imagens_template.migrar(conn)
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
@@ -345,7 +347,7 @@ def contagem_hoje(numero_id: int) -> int:
     agora = datetime.now(TZ)
     inicio_dia = agora.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     row = conn.execute(
-        "SELECT COUNT(*) as c FROM disparos WHERE numero_id = ? AND status = 'sucesso' AND criado_em >= ?",
+        "SELECT COUNT(*) as c FROM disparos WHERE numero_id = ? AND status IN ('sucesso','incerto') AND criado_em >= ?",
         (numero_id, inicio_dia),
     ).fetchone()
     conn.close()
@@ -356,7 +358,7 @@ def contagem_ultima_hora(numero_id: int) -> int:
     conn = get_db()
     uma_hora_atras = (datetime.now(TZ) - timedelta(hours=1)).isoformat()
     row = conn.execute(
-        "SELECT COUNT(*) as c FROM disparos WHERE numero_id = ? AND status = 'sucesso' AND criado_em >= ?",
+        "SELECT COUNT(*) as c FROM disparos WHERE numero_id = ? AND status IN ('sucesso','incerto') AND criado_em >= ?",
         (numero_id, uma_hora_atras),
     ).fetchone()
     conn.close()
@@ -364,6 +366,8 @@ def contagem_ultima_hora(numero_id: int) -> int:
 
 
 def disponivel_agora(numero: sqlite3.Row) -> bool:
+    if conexoes_normais.normal(numero):
+        return conexoes_normais.elegivel(get_db, numero) and contagem_hoje(numero["id"]) < numero["limite_diario"] and contagem_ultima_hora(numero["id"]) < numero["limite_hora"]
     if dict(numero).get("status_envio_meta") != "AVAILABLE":
         return False
     if dict(numero).get("template_header")=="IMAGE" and not dict(numero).get("template_imagem"):
@@ -560,6 +564,7 @@ def verificar_presenca_meta():
     conn.close()
     grupos = {}
     for n in numeros:
+        if conexoes_normais.normal(n): continue
         grupos.setdefault((n['waba_id'], n['access_token']), []).append(n)
     for (waba, token), grupo in grupos.items():
         ids, cursores = set(), set()
@@ -609,6 +614,9 @@ def bloquear_numeros_waba(waba_id, health):
 
 
 def verificar_qualidade(numero) -> str:
+    if conexoes_normais.normal(numero):
+        conexoes_normais.consultar(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN)
+        return 'UNKNOWN'
     estado, qualidade, limite = 'UNKNOWN', 'UNKNOWN', ''
     headers = {'Authorization': 'Bearer ' + numero['access_token']}
     try:
@@ -640,6 +648,7 @@ def verificar_qualidade(numero) -> str:
 
 
 def verificar_template_info(numero) -> tuple:
+    if conexoes_normais.normal(numero): return 'TEXTO', 'LOCAL', None
     """
     Busca categoria/status/idioma do template usando o waba_id cadastrado.
     Um mesmo nome de template pode ter mais de uma variante de idioma
@@ -747,6 +756,7 @@ def _aplicar_pausa_ou_reativacao_qualidade(numero_id, numero_nome, ativo_atual, 
 
 
 def verificar_qualidade_pos_envio(numero):
+    if conexoes_normais.normal(numero): return 'UNKNOWN'
     """
     Confere a qualidade do numero logo depois de um envio, e pausa na hora
     se caiu pra RED - sem esperar o loop de fundo (que roda a cada
@@ -1018,10 +1028,18 @@ def limpar_historico_antigo():
     registrar_evento(None, "limpeza_automatica", f"Historico com mais de {DIAS_RETER_HISTORICO} dias removido")
 
 
+def descobrir_conexoes_seguro():
+    try:
+        conexoes_normais.descobrir(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)
+    except HTTPException:
+        pass
+
+
 async def loop_verificar_qualidade():
     while True:
         await asyncio.sleep(INTERVALO_CHECAGEM_QUALIDADE)
         try:
+            await asyncio.to_thread(descobrir_conexoes_seguro)
             await asyncio.to_thread(verificar_presenca_meta)
             limpar_historico_antigo()
             conn = get_db()
@@ -1321,6 +1339,7 @@ def capacidade_lote(selecionados=None):
         dia = max(0, n['limite_diario'] - contagem_hoje(n['id']))
         hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
         elegivel = n['status_envio_meta'] == 'AVAILABLE' and bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
+        if conexoes_normais.normal(n): elegivel = conexoes_normais.elegivel(get_db,n)
         detalhes.append({'id': n['id'], 'nome': n['nome'], 'elegivel': elegivel,
                          'restante_dia': dia if elegivel else 0, 'restante_hora': hora if elegivel else 0,
                          'disponivel_agora': min(dia, hora) if elegivel else 0})
@@ -1476,6 +1495,16 @@ def impedimento_fila(origem="individual", numeros=None):
             "motivo": "Sem numero disponivel agora. Entrada encerrada, sem envio posterior automatico."}
 
 
+def enviar_por_numero(numero, telefone, variaveis, nome):
+    if conexoes_normais.normal(numero):
+        return conexoes_normais.enviar(get_db,numero,telefone,nome,carregar_configuracao(),VENDEAI_API_TOKEN,lambda p: optout.bloqueado(get_db,p))
+    return enviar_whatsapp(numero,telefone,variaveis)
+
+
+def status_resultado(sucesso,erro):
+    return 'sucesso' if sucesso else 'incerto' if erro.startswith('ENVIO_INCERTO:') else 'erro'
+
+
 def executar_disparo_preparado(preparado, cadastro, origem="individual", numeros=None):
     if optout.bloqueado(get_db,preparado["mailing"]["phone"]):
         return {"status":"bloqueado","motivo_codigo":"optout","aceito":False}
@@ -1498,12 +1527,14 @@ def executar_disparo_preparado(preparado, cadastro, origem="individual", numeros
             return {**resultado_sms, "vendeai": cadastro}
         return {"status": "erro", "motivo": "Nenhum numero disponivel (todos pausados ou limite atingido)", "motivo_codigo": "nenhum_numero_disponivel", "vendeai": cadastro}
 
-    sucesso, erro, wamid = enviar_whatsapp(numero, telefone, variaveis)
+    sucesso, erro, wamid = enviar_por_numero(numero, telefone, variaveis, nome_lead)
     _ultimo_usado["id"] = numero["id"]
 
-    registrar_disparo(numero["id"], cpf, nome_lead, telefone, "sucesso" if sucesso else "erro", erro, wamid)
+    registrar_disparo(numero["id"], cpf, nome_lead, telefone, status_resultado(sucesso,erro), erro, wamid)
     verificar_qualidade_pos_envio(numero)
 
+    if not sucesso and conexoes_normais.normal(numero):
+        return {"status":status_resultado(sucesso,erro),"numero_usado":numero["nome"],"canal":"whatsapp","erro":erro,"vendeai":cadastro}
     if not sucesso:
         resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis) if origem != "lote" else None
         if resultado_sms is not None:
@@ -1643,9 +1674,9 @@ async def disparo_lote(request: Request):
             candidato = pool[idx_rr % len(pool)]
             idx_rr += 1
             if disponivel_agora(candidato):
-                sucesso, erro, wamid = enviar_whatsapp(candidato, telefone, preparado["variaveis_template"])
-                registrar_disparo(candidato["id"], lead.get("cpf", ""), lead.get("name", "Disparo em lote"), telefone, "sucesso" if sucesso else "erro", erro, wamid)
-                resultados.append({"telefone": telefone, "status": "sucesso" if sucesso else "erro", "numero_usado": candidato["nome"], "vendeai": cadastro, "erro": erro})
+                sucesso, erro, wamid = enviar_por_numero(candidato, telefone, preparado["variaveis_template"], lead.get("name", ""))
+                registrar_disparo(candidato["id"], lead.get("cpf", ""), lead.get("name", "Disparo em lote"), telefone, status_resultado(sucesso,erro), erro, wamid)
+                resultados.append({"telefone": telefone, "status": status_resultado(sucesso,erro), "numero_usado": candidato["nome"], "vendeai": cadastro, "erro": erro})
                 enviado = True
 
                 # atualiza o candidato (que fica em memoria durante todo o lote) com
@@ -1690,6 +1721,7 @@ def atualizar_status_numero(numero_id: int):
 
 @app.post("/api/atualizar-todos")
 def atualizar_todos_status():
+    descobrir_conexoes_seguro()
     conn = get_db()
     # Idem ao loop de 15min: confere todos, a pausa manual fica protegida pela
     # logica de _aplicar_pausa_ou_reativacao_qualidade.
@@ -1712,7 +1744,11 @@ def atualizar_todos_status():
 
         _aplicar_pausa_ou_reativacao_qualidade(n["id"], n["nome"], n["ativo"], n["pausado_por_qualidade"], qualidade)
 
-        resultados.append({"nome": n["nome"], "qualidade": qualidade, "template_categoria": categoria})
+        extra = {}
+        if conexoes_normais.normal(n):
+            with closing(get_db()) as c:
+                extra = {'tipo_envio':'vendeai_normal','conexao_status':c.execute('SELECT conexao_status FROM numeros WHERE id=?',(n['id'],)).fetchone()[0]}
+        resultados.append({"nome": n["nome"], "qualidade": qualidade, "template_categoria": categoria, **extra})
 
     return {"total_atualizado": len(resultados), "resultados": resultados}
 
@@ -2352,7 +2388,7 @@ async def buscar_numeros(request: Request):
 @app.get("/api/numeros")
 def listar_numeros():
     conn = get_db()
-    numeros = conn.execute("SELECT * FROM numeros ORDER BY id").fetchall()
+    numeros = conn.execute("SELECT n.*, COALESCE(m.ativo,0) AS modelo_normal_ativo FROM numeros n LEFT JOIN modelos_normais m ON m.id=n.modelo_normal_id ORDER BY n.id").fetchall()
     conn.close()
     return [
         {
@@ -2440,6 +2476,8 @@ async def atualizar_numero(numero_id: int, request: Request):
     with closing(get_db()) as consulta:
         atual=consulta.execute('SELECT * FROM numeros WHERE id=?',(numero_id,)).fetchone()
     if not atual: raise HTTPException(404,'Número não encontrado')
+    if conexoes_normais.normal(atual):
+        return await asyncio.to_thread(conexoes_normais.editar,get_db,atual,body)
     # Permite pausar mesmo quando a imagem ainda não foi configurada.
     imagem_config=None
     if any(k in body for k in ('template_nome','template_idioma','imagem_base64')):
@@ -2765,3 +2803,47 @@ def visualizar_imagem_template(numero_id: int):
         r=c.execute('SELECT i.dados,i.mime FROM numeros n JOIN imagens_template i ON i.id=n.template_imagem WHERE n.id=?',(numero_id,)).fetchone()
     if not r: raise HTTPException(404,'Imagem não encontrada')
     return Response(content=r['dados'],media_type=r['mime'],headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+
+
+@app.get('/conexoes', response_class=HTMLResponse)
+def pagina_conexoes(request: Request):
+    return templates.TemplateResponse(request,'conexoes.html',{})
+
+
+@app.get('/api/conexoes-normais')
+def listar_conexoes_normais():
+    cfg=carregar_configuracao()
+    with closing(get_db()) as c:
+        return {'conexoes':[dict(r) for r in c.execute('SELECT * FROM conexoes_vendeai WHERE conta=? ORDER BY nome',(str(cfg['vendeai_account_id']),))],
+                'modelos':[dict(r) for r in c.execute('SELECT * FROM modelos_normais ORDER BY nome')],
+                'numeros':[dict(r) for r in c.execute("SELECT id,nome,vendeai_conta,vendeai_inbox_id,modelo_normal_id,limite_diario,limite_hora,ativo,conexao_status,meta_consultado_em FROM numeros WHERE tipo_envio='vendeai_normal'")]}
+
+
+@app.post('/api/conexoes-normais/atualizar')
+def descobrir_conexoes():
+    total=conexoes_normais.descobrir(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)
+    with closing(get_db()) as c:
+        numeros=c.execute("SELECT * FROM numeros WHERE tipo_envio='vendeai_normal'").fetchall()
+    for n in numeros: verificar_qualidade(n)
+    return {'total':total}
+
+
+@app.post('/api/conexoes-normais/importar')
+async def importar_conexao(request: Request):
+    body=await request.json()
+    if not isinstance(body,dict): raise HTTPException(400,'Envie um objeto.')
+    return await asyncio.to_thread(conexoes_normais.importar,get_db,carregar_configuracao(),VENDEAI_API_TOKEN,body)
+
+
+@app.post('/api/modelos-normais')
+async def criar_modelo_normal(request: Request):
+    body=await request.json()
+    if not isinstance(body,dict): raise HTTPException(400,'Envie um objeto.')
+    return conexoes_normais.salvar_modelo(get_db,body)
+
+
+@app.patch('/api/modelos-normais/{modelo_id}')
+async def editar_modelo_normal(modelo_id: int, request: Request):
+    body=await request.json()
+    if not isinstance(body,dict): raise HTTPException(400,'Envie um objeto.')
+    return conexoes_normais.salvar_modelo(get_db,body,modelo_id)

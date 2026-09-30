@@ -116,6 +116,7 @@
   <a href="#painel" id="nav-painel" aria-current="page">Disparos</a>
   <a href="#configuracoes-vendeai" id="nav-configuracoes">Configurações</a>
   <a href="/wabas">WABAs</a>
+  <a href="/conexoes">Conexões VendeAI</a>
   <a href="/eventos-vendeai">Eventos VendeAI</a>
   <a href="/optout">Lista negra</a>
   <a href="/estatisticas">Estatísticas</a>
@@ -146,6 +147,7 @@
 </div>
 
 <div class="cartao">
+  <a href="/conexoes" style="float:right;font-size:13px;color:#16754a;">Importar da VendeAI</a>
   <h2>Números conectados <button class="btn-toggle" onclick="atualizarTodos()" style="font-size:12px;">🔄 Atualizar todos</button></h2>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0;">
     <label for="pesquisa-numero" style="font-size:13px;">Pesquisar número</label>
@@ -678,7 +680,8 @@ async function atualizarTodos() {
 
   let msg = `Atualizados: ${dados.total_atualizado} numero(s)\n\n`;
   dados.resultados.forEach(r => {
-    msg += `${r.nome}: ${r.qualidade} / ${r.template_categoria}\n`;
+    const situacao=r.tipo_envio==='vendeai_normal' ? ({connected:'Conectado',disconnected:'Desconectado',unknown:'Conexão não confirmada'}[r.conexao_status] || 'Conexão não confirmada') : traduzirQualidade(r.qualidade)+' / '+traduzirCategoria(r.template_categoria);
+    msg += `${r.nome}: ${situacao}\n`;
   });
   alert(msg);
 
@@ -1049,7 +1052,7 @@ function ultimaConsultaMeta(valor) {
   if (!valor) return 'Ainda não consultado';
   const data = new Date(valor);
   if (Number.isNaN(data.getTime())) return 'Ainda não consultado';
-  return 'Consulta Meta: ' + data.toLocaleString('pt-BR', {
+  return 'Atualizado: ' + data.toLocaleString('pt-BR', {
     timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit',
     year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
   });
@@ -1062,6 +1065,19 @@ function renderizarNumeros() {
   filtrados.forEach(n => {
     const pct = Math.min(100, (n.enviados_hoje / n.limite_diario) * 100);
     const tr = document.createElement('tr');
+    if(n.tipo_envio === 'vendeai_normal') {
+      const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const estado={connected:'Conectado',disconnected:'Desconectado',unknown:'Conexão não confirmada'}[n.conexao_status] || 'Conexão não confirmada';
+      tr.innerHTML=`<td>${esc(n.nome)}<br><button class="btn-editar" onclick="abrirObservacao(${n.id})">${n.observacao?'Ver observação':'+ Observação'}</button></td>
+        <td>${esc(n.template_nome)}</td><td>Conexão normal<br><small>Mensagem de texto</small></td><td>Não se aplica</td>
+        <td>${n.enviados_hoje} / ${n.limite_diario}</td><td>${n.enviados_hora} / ${n.limite_hora}</td>
+        <td><span class="badge ${n.ativo?'badge-ativo':'badge-pausado'}">${n.ativo?'Ativo':'Pausado'}</span><br><small>${estado}</small>${n.modelo_normal_ativo?'':'<br><small>Modelo desativado ou ausente</small>'}</td>
+        <td><small style="display:block;color:#64748b;font-size:11px;margin-bottom:6px">${ultimaConsultaMeta(n.meta_consultado_em)}</small>
+        <button class="btn-editar" onclick="abrirModal(${n.id})">Editar</button>
+        <button class="btn-toggle" onclick="toggleNumero(${n.id},${n.ativo?0:1})">${n.ativo?'Pausar':'Ativar'}</button>
+        <button class="btn-remover" onclick="removerNumero(${n.id})">Remover</button></td>`;
+      tbody.appendChild(tr);return;
+    }
     tr.innerHTML = `
       <td>${n.nome}<br><button type="button" onclick="abrirObservacao(${n.id})" style="margin-top:5px;background:${n.observacao ? '#eef2ff' : 'transparent'};color:${n.observacao ? '#4338ca' : '#64748b'};border:1px solid ${n.observacao ? '#c7d2fe' : '#e2e8f0'};border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;">${n.observacao ? '📝 Ver observação' : '+ Observação'}</button></td>
       <td>${n.template_nome}${n.template_header === "IMAGE" ? (n.template_imagem ? "<br><small>Imagem configurada</small>" : "<br><strong>Falta anexar imagem</strong>") : ""}</td>
@@ -1102,6 +1118,8 @@ async function carregarHistorico() {
     let statusHtml;
     if (d.status === 'sucesso') {
       statusHtml = '<span class="status-sucesso">✅ Enviado</span>';
+    } else if (d.status === 'incerto') {
+      statusHtml = '<span style="color:#b45309">Envio incerto — conferir na VendeAI</span>';
     } else if (d.erro && d.erro.startsWith('SEM SALDO')) {
       statusHtml = '<span style="color:#d97706;">💰 Sem saldo SMS</span>';
     } else {
@@ -1131,7 +1149,7 @@ function baixarCsv(tipo) {
 }
 
 async function toggleNumero(id, novoStatus) {
-  const r=await fetch(`/api/numeros/${id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ativo: novoStatus})});
+  const r=await fetch(`/api/numeros/${id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ativo: Boolean(novoStatus)})});
   if(!r.ok){const erro=await r.json();alert(erro.detail || 'Não foi possível alterar o número.');}
   carregarNumeros();
 }
@@ -1144,6 +1162,7 @@ async function removerNumero(id) {
 
 function abrirModal(id) {
   const n = numerosCache.find(x => x.id === id);
+  if(n.tipo_envio === 'vendeai_normal'){location.href='/conexoes?numero='+id;return;}
   document.getElementById('editar-id').value = n.id;
   const select = document.getElementById('editar-template');
   const atual = document.createElement('option');
