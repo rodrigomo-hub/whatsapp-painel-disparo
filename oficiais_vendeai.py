@@ -60,14 +60,23 @@ def descobrir(get_db,cfg,token):
     items=listar_remoto(cfg,token)
     account,_=normal.credenciais(cfg,token)
     with closing(get_db()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
         c.execute('DELETE FROM oficiais_vendeai WHERE account_id=?',(account,))
         for i in items:
             c.execute('INSERT INTO oficiais_vendeai VALUES(?,?,?,?,?,?,?,?)',
                 (account,i['inbox_id'],i['phone_id'],i['waba_id'],i['nome'],i['telefone'],json.dumps(i['templates']),time.time()))
+        for i in items:
+            n,erro=correspondencia(c,i)
+            if n and not erro and i['phone_id'].isdigit() and i['waba_id'].isdigit():
+                c.execute('UPDATE numeros SET vendeai_conta=?,vendeai_inbox_id=? WHERE id=?',
+                          (account,i['inbox_id'],n['id']))
     return len(items)
 
 
 def correspondencia(c,i):
+    quantidade=c.execute('SELECT count(*) FROM oficiais_vendeai WHERE account_id=? AND phone_id=? AND waba_id=?',
+                         (i['account_id'],i['phone_id'],i['waba_id'])).fetchone()[0]
+    if quantidade>1:return None,'Mais de uma conexão VendeAI usa este ID Meta. Revise as conexões.'
     vinculo=c.execute("SELECT phone_number_id,waba_id FROM numeros WHERE tipo_envio='meta' AND vendeai_conta=? AND vendeai_inbox_id=?",(i['account_id'],i['inbox_id'])).fetchone()
     if vinculo and (vinculo['phone_number_id']!=i['phone_id'] or vinculo['waba_id']!=i['waba_id']):
         return None,'Esta inbox está vinculada a outro ID Meta. Revise a troca de número.'

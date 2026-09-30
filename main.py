@@ -1039,6 +1039,10 @@ def descobrir_conexoes_seguro():
         conexoes_normais.descobrir(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)
     except HTTPException:
         pass
+    try:
+        oficiais_vendeai.descobrir(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)
+    except HTTPException:
+        pass
 
 
 async def loop_verificar_qualidade():

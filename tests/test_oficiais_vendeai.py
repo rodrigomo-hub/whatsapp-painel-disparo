@@ -34,9 +34,9 @@ class OficiaisTests(unittest.TestCase):
     def enviar(self,vars=None):
         return oficial.enviar(main.get_db,self.numero(),'5511987654321',vars if vars is not None else ['Maria'],self.cfg,'',main.atualizar_status_numero,lambda _:False)
     def sends(self):return [c for c in self.api.call_args_list if c.args[0].endswith('/send/')]
-    def test_discovery_is_read_only_for_numbers_and_redacts_credentials(self):
+    def test_discovery_auto_matches_existing_and_redacts_credentials(self):
         oficial.descobrir(main.get_db,self.cfg,'');d=oficial.listar(main.get_db,self.cfg)
-        self.assertEqual(d[0]['numero']['id'],1);self.assertNotIn('secret',json.dumps(d));self.assertEqual(self.numero()['vendeai_inbox_id'],'')
+        self.assertEqual(d[0]['numero']['id'],1);self.assertNotIn('secret',json.dumps(d));self.assertEqual(self.numero()['vendeai_inbox_id'],'77')
     def test_link_preserves_configuration_and_history(self):
         with test_db() as c:c.execute("UPDATE numeros SET ativo=0,limite_diario=81,limite_hora=9,observacao='anotação'")
         antes=self.numero();self.vincular();depois=self.numero()
@@ -131,3 +131,22 @@ class OficiaisTests(unittest.TestCase):
         self.habilitar()
         r=oficial.enviar(main.get_db,self.numero(),'5511987654321',['Maria'],self.cfg,'',main.atualizar_status_numero,lambda _:True)
         self.assertFalse(r[0]);self.assertFalse(self.sends())
+
+    def test_auto_match_only_changes_identity_link(self):
+        antes=self.numero()
+        oficial.descobrir(main.get_db,self.cfg,'')
+        depois=self.numero()
+        for k in antes:
+            if k not in ('vendeai_conta','vendeai_inbox_id'):self.assertEqual(antes[k],depois[k],k)
+        oficial.descobrir(main.get_db,self.cfg,'')
+        with test_db() as c:self.assertEqual(c.execute('SELECT count(*) FROM numeros').fetchone()[0],1)
+    def test_discovery_does_not_add_new_number(self):
+        self.inbox['provider_config']['phone_number_id']='778'
+        oficial.descobrir(main.get_db,self.cfg,'')
+        self.assertEqual(self.numero()['vendeai_inbox_id'],'')
+        with test_db() as c:self.assertEqual(c.execute('SELECT count(*) FROM numeros').fetchone()[0],1)
+    def test_ambiguous_remote_connections_not_auto_linked(self):
+        original=oficial.listar_remoto(self.cfg,'');outro=copy.deepcopy(original[0]);outro['inbox_id']='78'
+        with patch.object(oficial,'listar_remoto',return_value=original+[outro]):oficial.descobrir(main.get_db,self.cfg,'')
+        self.assertEqual(self.numero()['vendeai_inbox_id'],'')
+        self.assertTrue(all(i['divergencia'] for i in oficial.listar(main.get_db,self.cfg)))

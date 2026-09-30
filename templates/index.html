@@ -1087,7 +1087,7 @@ function renderizarNumeros() {
     }
     tr.innerHTML = `
       <td>${escaparNumero(n.nome)}<br><button type="button" onclick="abrirObservacao(${n.id})" style="margin-top:5px;background:${n.observacao ? '#eef2ff' : 'transparent'};color:${n.observacao ? '#4338ca' : '#64748b'};border:1px solid ${n.observacao ? '#c7d2fe' : '#e2e8f0'};border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;">${n.observacao ? '📝 Ver observação' : '+ Observação'}</button></td>
-      <td>${escaparNumero(n.template_nome)}<br><small>${n.via_envio==='vendeai'?'Envio pela VendeAI':'Envio pela Meta'}${n.vendeai_inbox_id?' · Vinculado':''}</small>${n.template_header === "IMAGE" ? (n.template_imagem ? "<br><small>Imagem configurada</small>" : "<br><strong>Falta anexar imagem</strong>") : ""}</td>
+      <td>${escaparNumero(n.template_nome)}<br><small>${n.via_envio==='vendeai'?'Envio pela VendeAI':'Envio pela Meta'}${n.vendeai_inbox_id?' · Reconhecido na VendeAI':''}</small>${n.template_header === "IMAGE" ? (n.template_imagem ? "<br><small>Imagem configurada</small>" : "<br><strong>Falta anexar imagem</strong>") : ""}</td>
       <td>${traduzirCategoria(n.template_categoria)}<br><small style="color:#888">${n.template_status}</small></td>
       <td><span class="bolinha bolinha-${n.qualidade}"></span>${traduzirQualidade(n.qualidade)}<br><small style="color:#64748b;" title="Limite informado pela Meta para o portfólio empresarial, compartilhado entre seus números. Não é saldo restante nem limite individual.">Limite Meta: ${traduzirLimiteMeta(n.limite_meta)}</small></td>
       <td>${n.enviados_hoje} / ${n.limite_diario}<br><div class="barra"><div class="barra-preenchida" style="width:${pct}%"></div></div></td>
@@ -1173,7 +1173,7 @@ function abrirModal(id) {
   document.getElementById('editar-id').value = n.id;
   const via=document.getElementById('editar-via');via.value=n.via_envio||'meta';
   via.options[1].disabled=!n.vendeai_inbox_id;
-  document.getElementById('editar-vinculo').textContent=n.vendeai_inbox_id ? 'Vinculado à VendeAI. Qualidade e bloqueios conferidos na Meta.' : 'Para enviar pela VendeAI, use “Importar oficiais da VendeAI” e vincule este cadastro.';
+  document.getElementById('editar-vinculo').textContent=n.vendeai_inbox_id ? 'Conexão reconhecida na VendeAI. Qualidade e bloqueios conferidos na Meta.' : 'Use “Importar oficiais da VendeAI” e busque as conexões. O número será reconhecido automaticamente quando os IDs coincidirem.';
   const select = document.getElementById('editar-template');
   const atual = document.createElement('option');
   atual.value = n.template_nome; atual.textContent = n.template_nome;
