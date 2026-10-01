@@ -1049,6 +1049,7 @@ async function carregarNumeros() {
   const oficiais=numerosCache.filter(n=>n.tipo_envio!=='vendeai_normal');const normais=numerosCache.filter(n=>n.tipo_envio==='vendeai_normal');
   const totalQualidadeAlta = oficiais.filter(n => n.qualidade === 'GREEN').length;
   const totalQualidadeBaixa = oficiais.filter(n => n.qualidade === 'RED').length;
+  const totalBanidos = oficiais.filter(n => n.status_envio_meta === 'BANNED').length;
   document.getElementById('resumo-numeros').innerHTML = `
     <div><span style="font-size:22px;font-weight:700;color:#2563eb">${oficiais.length}</span> <span style="font-size:13px;color:#64748b">oficiais</span></div>
     <div><span style="font-size:22px;font-weight:700;color:#7c3aed">${normais.length}</span> <span style="font-size:13px;color:#64748b">conexões normais</span></div>
@@ -1056,6 +1057,7 @@ async function carregarNumeros() {
     <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalPausados}</span> <span style="font-size:13px; color:#888;">pausados</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#16a34a;">${totalQualidadeAlta}</span> <span style="font-size:13px; color:#888;">oficiais com qualidade alta</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalQualidadeBaixa}</span> <span style="font-size:13px; color:#888;">oficiais com qualidade baixa</span></div>
+    <div title="Números oficiais com banimento identificado na Meta, no número ou na WABA."><span id="total-banidos" style="font-size:22px;font-weight:700;color:#b42318;">${totalBanidos}</span> <span style="font-size:13px;color:#888;">banidos pela Meta</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#1a1a2e;">${numerosCache.length}</span> <span style="font-size:13px; color:#888;">total cadastrados</span></div>
   `;
 
