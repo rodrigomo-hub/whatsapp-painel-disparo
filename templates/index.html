@@ -146,6 +146,10 @@
       <a href="/resultados" id="simulacoes-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Clientes com simulação hoje</a>
     </div>
     <div>
+      <div style="font-size:24px;font-weight:700;color:#0e7490;" id="propostas-ia-hoje">—</div>
+      <a href="/resultados" id="propostas-ia-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Valor das propostas da IA hoje</a><small id="propostas-ia-incompleto" style="display:none;font-size:11px;color:#986719;margin-top:4px;"></small>
+    </div>
+    <div>
       <div style="font-size:24px; font-weight:700; color:#16a34a;" id="pago-ia-hoje">—</div>
       <a href="/resultados" id="pago-ia-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Pago pela IA hoje</a><small id="pago-ia-percentual" style="display:block;font-size:11px;color:#64748b;margin-top:4px;">—</small><small id="pago-ia-incompleto" style="display:none;font-size:11px;color:#986719;margin-top:4px;"></small>
     </div>
@@ -1006,6 +1010,10 @@ async function carregarResultadosHoje() {
     if(!res.ok||res.redirected)throw new Error();
     const dados=await res.json();
     total.textContent=Number(dados.atividade.simulacoes).toLocaleString('pt-BR');
+    document.getElementById('propostas-ia-hoje').textContent=Number(dados.atividade.valor_propostas).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+    document.getElementById('propostas-ia-hoje-link').title='Valor líquido das propostas geradas pela IA hoje, incluindo as ainda não pagas. Horário de Brasília.';
+    const faltamPropostas=dados.atividade.propostas_sem_valor,avisoPropostas=document.getElementById('propostas-ia-incompleto');
+    avisoPropostas.textContent=faltamPropostas?'Total parcial: há propostas sem valor informado.':'';avisoPropostas.style.display=faltamPropostas?'block':'none';
     for(const [tipo,id] of [['ia','pago-ia-hoje'],['manual','pago-manual-hoje'],['total','pago-total-hoje']]) {
       document.getElementById(id).textContent=Number(dados.pagamentos[tipo].valor).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
       document.getElementById(id+'-link').title='Valor líquido pago hoje, não comissão. Horário de Brasília.';
@@ -1019,7 +1027,8 @@ async function carregarResultadosHoje() {
   } catch(e) {
     total.textContent='—';
     for(const id of ['pago-ia-percentual','pago-equipe-percentual'])document.getElementById(id).textContent='—';
-    for(const id of ['pago-ia-hoje','pago-manual-hoje','pago-total-hoje']){document.getElementById(id).textContent='—';document.getElementById(id+'-link').title='Não foi possível atualizar. Clique para consultar os resultados.';}
+    for(const id of ['propostas-ia-hoje','pago-ia-hoje','pago-manual-hoje','pago-total-hoje']){document.getElementById(id).textContent='—';document.getElementById(id+'-link').title='Não foi possível atualizar. Clique para consultar os resultados.';}
+    document.getElementById('propostas-ia-incompleto').style.display='none';
     document.getElementById('pago-ia-incompleto').style.display='none';
     link.title='Não foi possível atualizar. Clique para consultar os resultados.';
   }
