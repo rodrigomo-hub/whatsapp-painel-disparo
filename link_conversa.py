@@ -8,7 +8,7 @@ from contextlib import closing
 from fastapi import HTTPException
 
 CONTA='33393'
-TEXTO='Você também pode simular e contratar pelo link:\nhttps://simular.vendeaitecnologia.com.br/s/4mOoz7\n\nSe preferir, continue o atendimento por aqui.'
+TEXTO='*Você também pode consultar sua oferta e seguir a contratação pelo link* 👇\nhttps://simular.vendeaitecnologia.com.br/s/4mOoz7'
 
 
 def migrar(c):
