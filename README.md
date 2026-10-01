@@ -382,3 +382,11 @@ Imagens nesse caminho ficam no banco e são expostas somente por URL com token a
 O envio usa o token CRM e `whatsapp_oficial`, agenda a etiqueta `disparo` e registra o ID retornado pela VendeAI. Falhas incertas mantêm o limite reservado e nunca repetem a mensagem pela Meta ou SMS. Os testes reais de implantação são consultas/leitura: nenhum número é migrado automaticamente e nenhum disparo real é feito sem destino autorizado para o teste.
 
 Na tela de oficiais, números reconhecidos aparecem como “Já está no painel”, com “Editar” opcional. Somente os novos mostram “Adicionar ao painel”. A associação automática roda na busca manual e na rotina de atualização de 15 minutos; conexões duplicadas para a mesma identidade são sinalizadas, sem escolher uma arbitrariamente.
+
+## Textos fixos nas variáveis de templates oficiais
+
+Em **WABAs → Templates → Textos das variáveis**, o operador pode ativar **Usar textos fixos**, preencher cada variável posicional do corpo e conferir a prévia. A configuração é compartilhada pelos números da mesma WABA, nome de template e idioma. Ela não altera o template na Meta e começa desativada para todos os templates.
+
+Quando ativa, a configuração substitui integralmente `variaveis_template` recebidas do n8n/API/planilha no momento do envio, tanto pela Meta quanto pela VendeAI, inclusive para itens da fila. Desativar restaura os valores recebidos e preserva os textos para edição futura. Conexões normais continuam usando seus modelos locais. Todos os campos devem estar preenchidos e a quantidade é validada contra o template na Meta; variáveis nomeadas, cabeçalhos variáveis e botões parametrizados ainda não são suportados nesta configuração.
+
+Persistência: `textos_templates`, chave `(waba_id,nome,idioma)`. Administração por sessão em `PUT /api/wabas-painel/{waba_id}/textos-fixos`, corpo `{nome,idioma,ativo,valores}`; a chave de disparo do n8n não concede acesso a esta configuração. Os dois painéis mantêm textos e ativações independentes.

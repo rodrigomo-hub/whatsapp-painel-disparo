@@ -13,6 +13,7 @@ import planilhas
 import transbordo
 import imagens_template
 import templates_lote
+import textos_templates
 import vendeai_eventos
 import resultados
 import optout
@@ -334,6 +335,7 @@ def init_db():
     vendeai_eventos.migrar(conn)
     resultados.migrar(conn)
     templates_lote.migrar(conn)
+    textos_templates.migrar(conn)
     if 'limite_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN limite_meta TEXT NOT NULL DEFAULT ''")
     if 'meta_consultado_em' not in colunas_existentes:
@@ -1338,7 +1340,8 @@ def variaveis_vazias_impedem(variaveis, numeros=None):
         pool = conn.execute("SELECT * FROM numeros WHERE ativo=1 AND qualidade != 'RED'").fetchall()
     if numeros:
         pool = [n for n in pool if n['id'] in numeros]
-    return not pool or not all(n['template_sem_variaveis'] for n in pool)
+    with closing(get_db()) as conn:
+        return not pool or not all(n['template_sem_variaveis'] or textos_templates.fixos(conn,n) is not None for n in pool)
 
 
 def estado_lote():
@@ -1537,6 +1540,7 @@ def enviar_por_numero(numero, telefone, variaveis, nome):
         return False,'TIPO_FORA_DO_RODIZIO: este tipo de numero nao esta selecionado',''
     if conexoes_normais.normal(numero):
         return conexoes_normais.enviar(get_db,numero,telefone,nome,carregar_configuracao(),VENDEAI_API_TOKEN,lambda p: optout.bloqueado(get_db,p))
+    variaveis=textos_templates.resolver(get_db,numero,variaveis)
     if oficiais_vendeai.via(numero):
         return oficiais_vendeai.enviar(get_db,numero,telefone,variaveis,carregar_configuracao(),VENDEAI_API_TOKEN,atualizar_status_numero,lambda p: optout.bloqueado(get_db,p))
     return enviar_whatsapp(numero,telefone,variaveis)
@@ -2374,7 +2378,13 @@ def detalhes_waba_painel(waba_id: str):
         resultados = list(pool.map(lambda tarefa: consultar_meta_waba(waba_id, row['access_token'], *tarefa), tarefas))
     bloquear_numeros_waba(waba_id, resultados[1].get('dados', {}).get('health_status', {}))
     return JSONResponse({'id': waba_id, 'nome': row['nome'], 'consultado_em': agora_iso(),
+                         'textos_fixos':textos_templates.listar(get_db,waba_id),
                          **dict(zip(['conta', 'saude', 'numeros', 'templates'], resultados))}, headers={'Cache-Control': 'no-store'})
+
+
+@app.put('/api/wabas-painel/{waba_id}/textos-fixos')
+def salvar_textos_template(waba_id: str, body: dict):
+    return textos_templates.salvar(get_db,waba_id,body,consultar_meta_waba,oficiais_vendeai.estrutura)
 
 
 @app.get('/api/wabas-salvas')
