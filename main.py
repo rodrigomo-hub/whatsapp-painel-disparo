@@ -330,6 +330,12 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN presenca_meta TEXT NOT NULL DEFAULT 'nao_verificado'")
     if 'status_envio_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN status_envio_meta TEXT NOT NULL DEFAULT 'UNKNOWN'")
+    if 'banimento_meta_ativo' not in colunas_existentes:
+        conn.execute('ALTER TABLE numeros ADD COLUMN banimento_meta_ativo INTEGER NOT NULL DEFAULT 0')
+        conn.execute("UPDATE numeros SET banimento_meta_ativo=1 WHERE status_envio_meta='BANNED'")
+    conn.execute('''CREATE TABLE IF NOT EXISTS banimentos_meta (
+        phone_number_id TEXT NOT NULL, dia TEXT NOT NULL, detectado_em TEXT NOT NULL,
+        PRIMARY KEY(phone_number_id,dia))''')
     if 'observacao' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN observacao TEXT NOT NULL DEFAULT ''")
     vendeai_eventos.migrar(conn)
@@ -621,6 +627,18 @@ def verificar_presenca_meta():
         conn.close()
 
 
+def registrar_banimento_meta(conn,numero_id,estado):
+    if estado=='AVAILABLE':
+        conn.execute('UPDATE numeros SET banimento_meta_ativo=0 WHERE id=?',(numero_id,))
+    elif estado=='BANNED':
+        mudou=conn.execute("UPDATE numeros SET banimento_meta_ativo=1 WHERE id=? AND banimento_meta_ativo=0 AND tipo_envio!='vendeai_normal'",(numero_id,)).rowcount
+        if mudou:
+            instante=datetime.fromisoformat(agora_iso()).astimezone(TZ)
+            conn.execute('''INSERT OR IGNORE INTO banimentos_meta(phone_number_id,dia,detectado_em)
+                SELECT phone_number_id,?,? FROM numeros WHERE id=?''',
+                (instante.date().isoformat(),instante.isoformat(),numero_id))
+
+
 def bloquear_numeros_waba(waba_id, health):
     if not waba_id or not isinstance(health, dict):
         return
@@ -630,6 +648,9 @@ def bloquear_numeros_waba(waba_id, health):
         item.get('entity_type') == 'WABA' and item.get('can_send_message') == 'BLOCKED' for item in entidades)
     if banida or bloqueada:
         with closing(get_db()) as conn, conn:
+            if banida:
+                for n in conn.execute('SELECT id FROM numeros WHERE waba_id=?',(waba_id,)).fetchall():
+                    registrar_banimento_meta(conn,n['id'],'BANNED')
             conn.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0,status_envio_meta=? WHERE waba_id=?',
                          ('BANNED' if banida else 'BLOCKED', waba_id))
 
@@ -662,6 +683,7 @@ def verificar_qualidade(numero) -> str:
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         pass
     with closing(get_db()) as conn, conn:
+        registrar_banimento_meta(conn,numero['id'],estado)
         conn.execute('UPDATE numeros SET status_envio_meta=?,limite_meta=?,meta_consultado_em=? WHERE id=?', (estado, limite, agora_iso(), numero['id']))
         if estado in ('BANNED', 'BLOCKED', 'DISCONNECTED'):
             conn.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0 WHERE id=?', (numero['id'],))
@@ -2014,6 +2036,7 @@ async def receber_webhook(request: Request):
 def total_hoje():
     conn = get_db()
     agora = datetime.now(TZ)
+    banidos_hoje=conn.execute('SELECT COUNT(*) FROM banimentos_meta WHERE dia=?',(agora.date().isoformat(),)).fetchone()[0]
     inicio_dia = agora.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     row = conn.execute(
         "SELECT COUNT(*) as c FROM disparos WHERE status = 'sucesso' AND criado_em >= ?",
@@ -2039,6 +2062,7 @@ def total_hoje():
     conn.close()
     return {
         "total_sucesso_hoje": row["c"],
+        "total_banidos_hoje": banidos_hoje,
         "total_normais_hoje": tipos['normais'],
         "total_oficiais_hoje": tipos['oficiais'],
         "total_outros_hoje": row['c']-tipos['normais']-tipos['oficiais'],

@@ -991,9 +991,12 @@ async function carregarFila() {
   } catch (erro) { document.getElementById('fila-proxima').textContent = 'Não foi possível atualizar a fila. Tentaremos novamente.'; }
 }
 
+let banidosHojeCache='—';
 async function carregarTotalHoje() {
   const res = await fetch('/api/total-hoje');
   const dados = await res.json();
+  banidosHojeCache=dados.total_banidos_hoje;
+  const banidosHoje=document.getElementById('banidos-hoje');if(banidosHoje)banidosHoje.textContent=banidosHojeCache;
   document.getElementById('total-hoje').textContent = dados.total_sucesso_hoje;
   document.getElementById('enviados-normais-hoje').textContent=dados.total_normais_hoje;
   document.getElementById('enviados-oficiais-hoje').textContent=dados.total_oficiais_hoje;
@@ -1058,6 +1061,7 @@ async function carregarNumeros() {
     <div><span style="font-size:22px; font-weight:700; color:#16a34a;">${totalQualidadeAlta}</span> <span style="font-size:13px; color:#888;">oficiais com qualidade alta</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalQualidadeBaixa}</span> <span style="font-size:13px; color:#888;">oficiais com qualidade baixa</span></div>
     <div title="Números oficiais com banimento identificado na Meta, no número ou na WABA."><span id="total-banidos" style="font-size:22px;font-weight:700;color:#b42318;">${totalBanidos}</span> <span style="font-size:13px;color:#888;">banidos pela Meta</span></div>
+    <div style="background:#fff1f2;border-radius:8px;padding:5px 10px;" title="Números com novo banimento detectado hoje pelo painel, no horário de Brasília. Contagem iniciada com esta atualização."><span id="banidos-hoje" style="font-size:22px;font-weight:700;color:#b42318;">${banidosHojeCache}</span> <span style="font-size:13px;color:#b42318;font-weight:600;">banidos hoje</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#1a1a2e;">${numerosCache.length}</span> <span style="font-size:13px; color:#888;">total cadastrados</span></div>
   `;
 
