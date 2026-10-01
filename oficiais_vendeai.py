@@ -77,6 +77,18 @@ def nomes_waba(get_db,items):
     return items
 
 
+def salvar_waba(c,i):
+    if not i['waba_id'].isdigit() or not i.get('_token'):return
+    nome=i.get('nome','')
+    if nome=='WABA '+i['waba_id']:nome=''
+    c.execute('''INSERT INTO wabas_salvas(waba_id,access_token,nome,nome_consultado_em)
+        VALUES(?,?,?,?) ON CONFLICT(waba_id) DO UPDATE SET
+        access_token=excluded.access_token,
+        nome=CASE WHEN excluded.nome!='' THEN excluded.nome ELSE wabas_salvas.nome END,
+        nome_consultado_em=CASE WHEN excluded.nome!='' THEN excluded.nome_consultado_em ELSE 0 END''',
+        (i['waba_id'],i['_token'],nome,time.time() if nome else 0))
+
+
 def descobrir(get_db,cfg,token):
     items=nomes_waba(get_db,listar_remoto(cfg,token))
     account,_=normal.credenciais(cfg,token)
@@ -89,6 +101,7 @@ def descobrir(get_db,cfg,token):
         for i in items:
             n,erro=correspondencia(c,i)
             if n and not erro and i['phone_id'].isdigit() and i['waba_id'].isdigit():
+                salvar_waba(c,i)
                 c.execute('UPDATE numeros SET vendeai_conta=?,vendeai_inbox_id=? WHERE id=?',
                           (account,i['inbox_id'],n['id']))
                 if n['nome']==i['nome_caixa']:
@@ -197,6 +210,7 @@ def vincular(get_db,cfg,token,body):
         if erro:raise HTTPException(409,erro)
         if n:
             if body.get('numero_id')!=n['id']:raise HTTPException(409,'Já existe um cadastro. Atualize a lista e vincule o número existente.')
+            salvar_waba(c,i)
             c.execute('UPDATE numeros SET vendeai_conta=?,vendeai_inbox_id=? WHERE id=?',(i['account_id'],inbox,n['id']))
             return {'id':n['id'],'novo':False}
         if body.get('numero_id'):raise HTTPException(409,'O cadastro mudou. Atualize a lista.')
@@ -213,7 +227,7 @@ def vincular(get_db,cfg,token,body):
             template_sem_variaveis,template_header,limite_diario,limite_hora,ativo,vendeai_conta,vendeai_inbox_id)
             VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?)''',((i['nome']+' '+i['telefone']).strip(),i['phone_id'],i['_token'],i['waba_id'],nome,idioma,
             int('{{' not in corpo),tipo,body['limite_diario'],body['limite_hora'],i['account_id'],inbox)).lastrowid
-        c.execute('INSERT OR IGNORE INTO wabas_salvas(waba_id,access_token) VALUES(?,?)',(i['waba_id'],i['_token']))
+        salvar_waba(c,i)
         return {'id':ident,'novo':True}
 
 

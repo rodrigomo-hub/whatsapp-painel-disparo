@@ -50,6 +50,24 @@ class OficiaisTests(unittest.TestCase):
         self.inbox['provider_config']['business_account_id']='999'
         with self.assertRaises(main.HTTPException):self.vincular()
         self.assertEqual(self.numero()['vendeai_inbox_id'],'')
+    def test_discovery_repairs_missing_waba_for_existing_number(self):
+        with test_db() as c:c.execute("DELETE FROM wabas_salvas")
+        antes=self.numero()
+        oficial.descobrir(main.get_db,self.cfg,'')
+        with test_db() as c:
+            w=c.execute("SELECT * FROM wabas_salvas WHERE waba_id='888'").fetchone()
+            self.assertEqual(w['access_token'],'secret-from-crm')
+            self.assertEqual(w['nome'],'Empresa WABA')
+        for k in ('ativo','limite_diario','limite_hora','access_token','template_nome'):
+            self.assertEqual(self.numero()[k],antes[k])
+    def test_existing_link_refreshes_waba_without_duplicates(self):
+        with test_db() as c:
+            c.execute("INSERT OR REPLACE INTO wabas_salvas(waba_id,access_token,nome) VALUES('888','old','Empresa WABA')")
+        self.vincular();self.vincular()
+        with test_db() as c:
+            rows=c.execute("SELECT * FROM wabas_salvas WHERE waba_id='888'").fetchall()
+            self.assertEqual(len(rows),1)
+            self.assertEqual(rows[0]['access_token'],'secret-from-crm')
     def test_duplicate_requires_explicit_existing_selection(self):
         with self.assertRaises(main.HTTPException):oficial.vincular(main.get_db,self.cfg,'',{'inbox_id':'77'})
     def test_new_number_imports_paused_with_token_server_side(self):
@@ -59,6 +77,9 @@ class OficiaisTests(unittest.TestCase):
             n=c.execute('SELECT * FROM numeros WHERE id=?',(r['id'],)).fetchone()
             self.assertEqual(n['ativo'],0);self.assertEqual(n['access_token'],'secret-from-crm');self.assertEqual(n['via_envio'],'meta')
             self.assertEqual(n['nome'],'Empresa WABA +5511999999999')
+            w=c.execute("SELECT * FROM wabas_salvas WHERE waba_id='888'").fetchone()
+            self.assertEqual(w['nome'],'Empresa WABA')
+            self.assertEqual(w['access_token'],'secret-from-crm')
     def test_discovery_replaces_inbox_name_but_preserves_custom_name(self):
         with test_db() as c:c.execute("UPDATE numeros SET nome='Oficial'")
         oficial.descobrir(main.get_db,self.cfg,'')
