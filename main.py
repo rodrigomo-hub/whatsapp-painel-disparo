@@ -15,6 +15,7 @@ import imagens_template
 import templates_lote
 import textos_templates
 import link_conversa
+import campanhas_sms
 import vendeai_eventos
 import resultados
 import optout
@@ -342,6 +343,7 @@ def init_db():
     vendeai_eventos.migrar(conn)
     resultados.migrar(conn)
     templates_lote.migrar(conn)
+    campanhas_sms.migrar(conn)
     textos_templates.migrar(conn)
     if 'limite_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN limite_meta TEXT NOT NULL DEFAULT ''")
@@ -924,8 +926,6 @@ def consultar_saldo_sms(forcar=False) -> dict:
         if idade < CACHE_SALDO_TTL_SEGUNDOS:
             return _cache_saldo_sms
 
-    if optout.bloqueado(get_db,telefone_destino):
-        return False,"Bloqueado pela lista negra (opt-out)",""
     if not SMS_GTI_TOKEN:
         _cache_saldo_sms.update({"valor": None, "expira_em": None, "atualizado_em": agora, "erro": "SMS_GTI_TOKEN nao configurado"})
         return _cache_saldo_sms
@@ -940,7 +940,7 @@ def consultar_saldo_sms(forcar=False) -> dict:
         dados = corpo.get("data") or {}
         valor = _parsear_valor_monetario(dados.get("remaining_balance"))
 
-        if valor is None:
+        if resp.status_code!=200 or valor is None:
             _cache_saldo_sms.update({
                 "valor": None, "expira_em": None, "atualizado_em": agora,
                 "erro": f"Resposta inesperada da GTI SMS (HTTP {resp.status_code}): {resp.text[:300]}",
@@ -964,6 +964,7 @@ def enviar_sms(telefone_destino: str, mensagem: str):
     Normaliza a mensagem (remove acento) automaticamente antes de mandar -
     quem chama nao precisa se preocupar com isso.
     """
+    if optout.bloqueado(get_db,telefone_destino):return False,'Bloqueado pela lista negra (opt-out)',''
     if not SMS_GTI_TOKEN:
         return False, "SMS_GTI_TOKEN nao configurado", ""
 
@@ -1133,6 +1134,15 @@ async def loop_optout(prioritario=False):
         await asyncio.sleep(0 if fez else 0.1)
 
 
+async def loop_campanhas_sms():
+    while not app.state.fila_parar:
+        try:
+            await asyncio.to_thread(campanhas_sms.processar_um,get_db,SMS_GTI_TOKEN,dentro_do_horario_permitido,consultar_saldo_sms)
+        except Exception:
+            campanhas_sms.recuperar(get_db)
+        await asyncio.sleep(1)
+
+
 async def loop_link_conversa():
     while True:
         try:
@@ -1173,6 +1183,8 @@ async def startup():
     app.state.etiquetas_task = asyncio.create_task(loop_etiquetas_disparo())
     asyncio.create_task(loop_verificar_qualidade())
     app.state.fila_parar = False
+    campanhas_sms.recuperar(get_db)
+    app.state.sms_task=asyncio.create_task(loop_campanhas_sms())
     app.state.fila_task = asyncio.create_task(loop_fila())
 
 
@@ -2067,7 +2079,8 @@ def total_hoje():
     ).fetchone()
     tipos=conn.execute("""SELECT
         COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio)='vendeai_normal' THEN 1 ELSE 0 END),0) AS normais,
-        COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio)='meta' THEN 1 ELSE 0 END),0) AS oficiais
+        COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio)='meta' THEN 1 ELSE 0 END),0) AS oficiais,
+        COALESCE(SUM(CASE WHEN d.canal='sms' THEN 1 ELSE 0 END),0) AS sms
         FROM disparos d LEFT JOIN numeros n ON n.id=d.numero_id
         WHERE d.status='sucesso' AND d.criado_em>=?""",(inicio_dia,)).fetchone()
     total_erros = conn.execute(
@@ -2088,7 +2101,8 @@ def total_hoje():
         "total_banidos_hoje": banidos_hoje,
         "total_normais_hoje": tipos['normais'],
         "total_oficiais_hoje": tipos['oficiais'],
-        "total_outros_hoje": row['c']-tipos['normais']-tipos['oficiais'],
+        "total_sms_hoje": tipos['sms'],
+        "total_outros_hoje": row['c']-tipos['normais']-tipos['oficiais']-tipos['sms'],
         "total_erro_hoje": total_erros["c"],
         "total_positivos_hoje": total_positivos["c"],
         "total_negativos_hoje": total_negativos["c"],
@@ -2280,6 +2294,44 @@ def saldo_sms():
         "expira_em": info["expira_em"],
         "erro": info["erro"],
     }
+
+
+@app.get('/campanhas-sms',response_class=HTMLResponse)
+def pagina_campanhas_sms(request: Request):
+    return templates.TemplateResponse(request,'campanhas_sms.html',{})
+
+
+@app.get('/api/campanhas-sms')
+def listar_campanhas_sms():
+    permitido,motivo=dentro_do_horario_permitido()
+    return {'campanhas':campanhas_sms.listar(get_db),'mensagem':normalizar_texto_sms(carregar_configuracao()['sms_template']),
+            'configurado':bool(SMS_GTI_TOKEN),'horario_permitido':permitido,'motivo_horario':motivo}
+
+
+@app.post('/api/campanhas-sms')
+async def criar_campanha_sms(request: Request):
+    async with request.form(max_files=1,max_fields=3) as form:
+        nome=form.get('nome','');arquivo=form.get('arquivo');texto=form.get('telefones','')
+        if arquivo and getattr(arquivo,'filename',''):
+            conteudo=await arquivo.read(planilhas.MAX_BYTES+1)
+            linhas,erros=await asyncio.to_thread(planilhas.ler,arquivo.filename,conteudo)
+        else:
+            if not isinstance(texto,str) or len(texto)>1_000_000:raise HTTPException(400,'Lista inválida ou muito grande.')
+            linhas=[{'linha':i,'lead':{'telefone':v}} for i,v in enumerate(re.split(r'[\r\n;,]+',texto),1) if v.strip()];erros=[]
+    return await asyncio.to_thread(campanhas_sms.criar,get_db,nome,normalizar_texto_sms(carregar_configuracao()['sms_template']),linhas,erros)
+
+
+@app.get('/api/campanhas-sms/{ident}')
+def detalhe_campanha_sms(ident: str):return campanhas_sms.detalhe(get_db,ident)
+
+
+@app.post('/api/campanhas-sms/{ident}/iniciar')
+def iniciar_campanha_sms(ident: str):
+    return campanhas_sms.iniciar(get_db,ident,SMS_GTI_TOKEN,dentro_do_horario_permitido,consultar_saldo_sms)
+
+
+@app.post('/api/campanhas-sms/{ident}/cancelar')
+def cancelar_campanha_sms(ident: str):return campanhas_sms.cancelar(get_db,ident)
 
 
 def template_estatico(template):
@@ -2688,7 +2740,7 @@ def remover_numero(numero_id: int):
 
 
 @app.get("/api/historico")
-def historico(limit: int = 100, resposta: str = "todos"):
+def historico(limit: int = 100, resposta: str = "todos", canal: str = 'todos'):
     """
     resposta filtra por classificacao: 'todos' (padrao), 'positivo',
     'negativo', ou 'sem_resposta' (disparos que ainda nao tem
@@ -2697,16 +2749,15 @@ def historico(limit: int = 100, resposta: str = "todos"):
     if resposta not in ("todos", "positivo", "negativo", "sem_resposta"):
         raise HTTPException(400, "resposta deve ser 'todos', 'positivo', 'negativo' ou 'sem_resposta'")
 
+    if canal not in ('todos','sms','whatsapp'):raise HTTPException(400,'Canal inválido.')
     conn = get_db()
-    base_query = """SELECT d.*, COALESCE(n.nome, 'SMS (sem numero WhatsApp)') as numero_nome FROM disparos d
-           LEFT JOIN numeros n ON n.id = d.numero_id"""
-
-    if resposta == "todos":
-        rows = conn.execute(f"{base_query} ORDER BY d.id DESC LIMIT ?", (limit,)).fetchall()
-    elif resposta == "sem_resposta":
-        rows = conn.execute(f"{base_query} WHERE d.resposta_lead IS NULL ORDER BY d.id DESC LIMIT ?", (limit,)).fetchall()
-    else:
-        rows = conn.execute(f"{base_query} WHERE d.resposta_lead = ? ORDER BY d.id DESC LIMIT ?", (resposta, limit)).fetchall()
+    base_query = """SELECT d.*, COALESCE(n.nome, 'SMS') as numero_nome,c.nome as campanha_sms_nome FROM disparos d
+           LEFT JOIN numeros n ON n.id = d.numero_id LEFT JOIN campanhas_sms c ON c.id=d.campanha_sms_id"""
+    filtros=[];params=[]
+    if canal!='todos':filtros.append('d.canal=?');params.append(canal)
+    if resposta=='sem_resposta':filtros.append('d.resposta_lead IS NULL')
+    elif resposta!='todos':filtros.append('d.resposta_lead=?');params.append(resposta)
+    rows=conn.execute(base_query+(' WHERE '+' AND '.join(filtros) if filtros else '')+' ORDER BY d.id DESC LIMIT ?',(*params,max(1,min(limit,1000)))).fetchall()
 
     conn.close()
     return [dict(r) for r in rows]
@@ -2790,6 +2841,7 @@ async def loop_fila():
 @app.on_event("shutdown")
 async def parar_fila():
     app.state.fila_parar = True
+    if getattr(app.state,'sms_task',None):await app.state.sms_task
     if getattr(app.state,"etiquetas_task",None): app.state.etiquetas_task.cancel()
     for task in getattr(app.state,"optout_tasks",[]): task.cancel()
     task = getattr(app.state, "fila_task", None)

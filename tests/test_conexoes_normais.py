@@ -263,7 +263,8 @@ class ConexoesTests(unittest.TestCase):
         self.assertEqual(d['total_sucesso_hoje'],3)
         self.assertEqual(d['total_normais_hoje'],1)
         self.assertEqual(d['total_oficiais_hoje'],1)
-        self.assertEqual(d['total_outros_hoje'],1)
+        self.assertEqual(d['total_outros_hoje'],0)
+        self.assertEqual(d['total_sms_hoje'],1)
         self.assertEqual(d['total_erro_hoje'],1)
 
     def test_today_legacy_history_uses_existing_number_type(self):

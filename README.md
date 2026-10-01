@@ -383,6 +383,14 @@ O envio usa o token CRM e `whatsapp_oficial`, agenda a etiqueta `disparo` e regi
 
 Na tela de oficiais, números reconhecidos aparecem como “Já está no painel”, com “Editar” opcional. Somente os novos mostram “Adicionar ao painel”. A associação automática roda na busca manual e na rotina de atualização de 15 minutos; conexões duplicadas para a mesma identidade são sinalizadas, sem escolher uma arbitrariamente.
 
+## Campanhas por SMS
+
+`/campanhas-sms` permite importar CSV/XLSX com coluna `telefone` ou colar números. Cria primeiro um rascunho, deduplica os celulares normalizados e exclui a lista negra. A mensagem fixa é copiada da configuração SMS para a campanha (máximo 160 caracteres, sem variáveis); alterações posteriores no padrão não mudam campanhas já preparadas.
+
+O botão de iniciar autoriza o envio pela GTI SMS independentemente do fallback. Exige token, saldo confirmado e horário permitido. Há uma campanha ativa por vez e intervalo mínimo de um segundo entre tentativas. Opt-out é revalidado antes do POST. Erro/incerteza, saldo indisponível, fim do horário, cancelamento ou reinício encerram os pendentes; não há retomada nem retry automático. Um POST em andamento pode concluir após cancelar. Sucesso significa aceite do provedor, não entrega.
+
+Tabelas `campanhas_sms`/`campanhas_sms_itens`, histórico em `disparos` com `canal=sms` e `campanha_sms_id`; resumo separa SMS de oficiais/normais. Rotas administrativas `/api/campanhas-sms` e `/{id}/iniciar|cancelar` exigem sessão, não a chave do n8n. Nenhuma campanha deve ser iniciada como teste de implantação; em deploys futuros, aguarde campanhas e envios em andamento antes de reiniciar o serviço.
+
 ## Textos fixos nas variáveis de templates oficiais
 
 Em **WABAs → Templates → Textos das variáveis**, o operador pode ativar **Usar textos fixos**, preencher cada variável posicional do corpo e conferir a prévia. A configuração é compartilhada pelos números da mesma WABA, nome de template e idioma. Ela não altera o template na Meta e começa desativada para todos os templates.
