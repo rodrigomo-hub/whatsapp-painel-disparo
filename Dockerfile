@@ -13,6 +13,7 @@ COPY transbordo.py .
 COPY imagens_template.py .
 COPY templates_lote.py .
 COPY textos_templates.py .
+COPY link_conversa.py .
 COPY vendeai_eventos.py .
 COPY resultados.py .
 COPY optout.py .

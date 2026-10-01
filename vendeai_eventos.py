@@ -7,6 +7,7 @@ import math
 import requests
 import logging
 import optout
+import link_conversa
 from contextlib import closing
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -15,6 +16,7 @@ from fastapi import HTTPException
 
 def migrar(c):
     optout.migrar(c)
+    link_conversa.migrar(c)
     c.execute('''CREATE TABLE IF NOT EXISTS vendeai_webhook_config (
         id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL,
         new_habilitado INTEGER NOT NULL DEFAULT 0)''')
@@ -72,6 +74,7 @@ def receber(get_db,token,raw,conta):
                          (agora,evento,account,str(chat.get('chat_id') or ''),produto,banco,proposta,raw,fingerprint,anterior['id'] if anterior else None,int(conta_confirmada)))
         if conta_confirmada:
             optout.receber(c,d,cursor.lastrowid)
+            link_conversa.agendar(c,d,cursor.lastrowid)
         if conta_confirmada and evento=='proposal_created' and produto=='clt' and banco=='facta' and proposta:
             c.execute("INSERT INTO vendeai_new_outbox(evento_id,account_id,proposta_id,criado_em,estado) VALUES(?,?,?,?,'PENDENTE') ON CONFLICT(account_id,proposta_id) DO UPDATE SET evento_id=excluded.evento_id,estado='PENDENTE' WHERE vendeai_new_outbox.estado='DADOS_INCOMPLETOS'",(cursor.lastrowid,account,proposta,agora))
     return {'ok':True}

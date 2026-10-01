@@ -14,6 +14,7 @@ import transbordo
 import imagens_template
 import templates_lote
 import textos_templates
+import link_conversa
 import vendeai_eventos
 import resultados
 import optout
@@ -1132,6 +1133,16 @@ async def loop_optout(prioritario=False):
         await asyncio.sleep(0 if fez else 0.1)
 
 
+async def loop_link_conversa():
+    while True:
+        try:
+            cfg=carregar_configuracao()
+            fez=await asyncio.to_thread(link_conversa.processar_um,get_db,cfg['vendeai_account_id'],cfg.get('vendeai_mailing_token') or VENDEAI_API_TOKEN)
+        except Exception:
+            fez=False
+        await asyncio.sleep(0 if fez else 0.1)
+
+
 async def loop_eventos_new():
     while True:
         try:
@@ -1153,6 +1164,8 @@ async def loop_etiquetas_disparo():
 @app.on_event("startup")
 async def startup():
     init_db()
+    link_conversa.recuperar(get_db)
+    app.state.link_tasks=[asyncio.create_task(loop_link_conversa()) for _ in range(2)]
     optout.recuperar(get_db)
     app.state.optout_tasks = [asyncio.create_task(loop_optout(i==0)) for i in range(4)]
     vendeai_eventos.recuperar_interrompidos(get_db)
@@ -1834,6 +1847,16 @@ async def receber_eventos_vendeai(request: Request):
 @app.get('/api/vendeai-eventos')
 def listar_eventos_vendeai():
     return vendeai_eventos.listar(get_db)
+
+
+@app.get('/api/link-conversa')
+def resumo_link_conversa():
+    return link_conversa.resumo(get_db,carregar_configuracao()['vendeai_account_id'])
+
+
+@app.patch('/api/link-conversa')
+def configurar_link_conversa(body: dict):
+    return link_conversa.configurar(get_db,carregar_configuracao()['vendeai_account_id'],body.get('ativo'))
 
 
 @app.get('/api/vendeai-eventos/config')
