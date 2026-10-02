@@ -338,7 +338,10 @@
   </form>
 </section>
 <section class="cartao config-conteudo" id="config-sms" hidden>
-  <h2>📱 SMS de fallback (GTI SMS)</h2>
+  <h2>📱 SMS — campanhas e fallback</h2>
+  <label for="sms-token">Token da API de SMS</label>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin:8px 0;"><input type="password" id="sms-token" autocomplete="new-password" placeholder="Cole o token desta conta" style="flex:1;min-width:220px;"><button type="button" onclick="salvarTokenSms(this)">Salvar token</button></div>
+  <small id="sms-token-status" role="status"></small>
   <p style="color:#888; font-size:13px;">
     Usado quando não há número de WhatsApp disponível, ou o envio falha.
     Saldo atual: <strong id="sms-saldo">carregando...</strong>
@@ -360,6 +363,7 @@
       <label style="font-size:13px; display:block; margin-bottom:4px;">
         Mensagem do SMS — use <code>{1}</code> <code>{2}</code> <code>{3}</code> para as variáveis (mesma ordem do WhatsApp) e <code>{link}</code> para o link curto.
         Sem acentos (removidos automaticamente). Máx. 160 caracteres.
+        Para campanhas, escreva o texto completo com o link da sua empresa, sem variáveis.
       </label>
       <textarea id="sms-template" rows="3" style="width:100%; font-family:inherit;" oninput="atualizarPreviewSms()"></textarea>
       <div style="font-size:12px; color:#888; margin-top:4px;">
@@ -829,6 +833,7 @@ async function carregarSms() {
   const cfg = await res.json();
 
   document.getElementById('sms-habilitado').checked = cfg.sms_habilitado;
+  document.getElementById('sms-token-status').textContent=cfg.sms_token_configurado?'Token configurado. Preencha apenas para trocar.':'Token ainda não configurado.';
   document.getElementById('sms-modo').value = cfg.sms_modo;
   document.getElementById('sms-template').value = cfg.sms_template;
   document.getElementById('sms-link-base').value = cfg.link_base_url;
@@ -836,6 +841,11 @@ async function carregarSms() {
   document.getElementById('sms-whatsapp-mensagem').value = cfg.whatsapp_mensagem_template;
   atualizarPreviewSms();
   carregarSaldoSms();
+}
+
+async function salvarTokenSms(botao){
+  botao.disabled=true;
+  try{const r=await fetch('/api/sms/credencial',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:document.getElementById('sms-token').value})});if(r.redirected)throw Error('Entre novamente no painel.');const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível salvar.');document.getElementById('sms-token').value='';document.getElementById('sms-token-status').textContent='Token salvo para esta conta.';carregarSaldoSms();}catch(e){document.getElementById('sms-token-status').textContent=e.message;}finally{botao.disabled=false;}
 }
 
 async function salvarSms(ev) {

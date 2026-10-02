@@ -70,3 +70,14 @@ class CampanhasSmsTests(unittest.TestCase):
     def test_long_or_dynamic_message_rejected_not_truncated(self):
         for mensagem in ('x'*161,'Oi {1}',''):
             with self.assertRaises(main.HTTPException):sms.criar(main.get_db,'Teste',mensagem,[{'linha':1,'lead':{'telefone':'11999991234'}}],[])
+
+    def test_local_token_overrides_environment_without_exposure(self):
+        with patch.object(main,'SMS_GTI_TOKEN','environment-token'):
+            self.assertEqual(main.token_sms(),'environment-token')
+            r=self.client.put('/api/sms/credencial',json={'token':'local-secret'})
+            self.assertEqual(r.status_code,200);self.assertNotIn('local-secret',r.text)
+            self.assertEqual(main.token_sms(),'local-secret')
+            config=self.client.get('/api/configuracao')
+            self.assertTrue(config.json()['sms_token_configurado']);self.assertNotIn('local-secret',config.text)
+            self.assertEqual(self.client.put('/api/sms/credencial',json={'token':''}).status_code,400)
+            self.assertEqual(main.token_sms(),'local-secret')

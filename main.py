@@ -344,6 +344,7 @@ def init_db():
     resultados.migrar(conn)
     templates_lote.migrar(conn)
     campanhas_sms.migrar(conn)
+    conn.execute('CREATE TABLE IF NOT EXISTS sms_credencial(id INTEGER PRIMARY KEY CHECK(id=1),token TEXT NOT NULL)')
     textos_templates.migrar(conn)
     if 'limite_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN limite_meta TEXT NOT NULL DEFAULT ''")
@@ -912,6 +913,12 @@ def _parsear_valor_monetario(bruto):
         return None
 
 
+def token_sms():
+    with closing(get_db()) as c:
+        r=c.execute('SELECT token FROM sms_credencial WHERE id=1').fetchone()
+    return r['token'] if r else SMS_GTI_TOKEN
+
+
 def consultar_saldo_sms(forcar=False) -> dict:
     """
     Consulta o saldo de creditos da GTI SMS, com cache de alguns minutos
@@ -926,14 +933,14 @@ def consultar_saldo_sms(forcar=False) -> dict:
         if idade < CACHE_SALDO_TTL_SEGUNDOS:
             return _cache_saldo_sms
 
-    if not SMS_GTI_TOKEN:
+    if not token_sms():
         _cache_saldo_sms.update({"valor": None, "expira_em": None, "atualizado_em": agora, "erro": "SMS_GTI_TOKEN nao configurado"})
         return _cache_saldo_sms
 
     try:
         resp = requests.get(
             "https://sms.gtisms.com/api/v3/balance",
-            headers={"Authorization": f"Bearer {SMS_GTI_TOKEN}", "Accept": "application/json"},
+            headers={"Authorization": f"Bearer {token_sms()}", "Accept": "application/json"},
             timeout=10,
         )
         corpo = resp.json()
@@ -965,7 +972,7 @@ def enviar_sms(telefone_destino: str, mensagem: str):
     quem chama nao precisa se preocupar com isso.
     """
     if optout.bloqueado(get_db,telefone_destino):return False,'Bloqueado pela lista negra (opt-out)',''
-    if not SMS_GTI_TOKEN:
+    if not token_sms():
         return False, "SMS_GTI_TOKEN nao configurado", ""
 
     mensagem_limpa = normalizar_texto_sms(mensagem)[:160]
@@ -974,7 +981,7 @@ def enviar_sms(telefone_destino: str, mensagem: str):
         resp = requests.post(
             "https://sms.gtisms.com/api/v3/sms/send",
             headers={
-                "Authorization": f"Bearer {SMS_GTI_TOKEN}",
+                "Authorization": f"Bearer {token_sms()}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
             },
@@ -1008,7 +1015,7 @@ def tentar_fallback_sms(cpf, nome_lead, telefone, variaveis):
         return {"status":"bloqueado","motivo_codigo":"optout","aceito":False}
     """
     Tenta o fallback de SMS. So dispara de fato se sms_habilitado estiver
-    ligado na configuracao E SMS_GTI_TOKEN estiver setado no ambiente.
+    ligado na configuracao E token_sms() estiver setado no ambiente.
     Gera um link curto (se link_base_url estiver configurada) apontando
     pro WhatsApp de destino, monta a mensagem a partir do template salvo,
     envia, e registra no historico com canal='sms'.
@@ -1017,7 +1024,7 @@ def tentar_fallback_sms(cpf, nome_lead, telefone, variaveis):
     o que responder).
     """
     cfg = carregar_configuracao()
-    if not cfg["sms_habilitado"] or not SMS_GTI_TOKEN:
+    if not cfg["sms_habilitado"] or not token_sms():
         return None
 
     saldo = consultar_saldo_sms()
@@ -1137,7 +1144,7 @@ async def loop_optout(prioritario=False):
 async def loop_campanhas_sms():
     while not app.state.fila_parar:
         try:
-            await asyncio.to_thread(campanhas_sms.processar_um,get_db,SMS_GTI_TOKEN,dentro_do_horario_permitido,consultar_saldo_sms)
+            await asyncio.to_thread(campanhas_sms.processar_um,get_db,token_sms(),dentro_do_horario_permitido,consultar_saldo_sms)
         except Exception:
             campanhas_sms.recuperar(get_db)
         await asyncio.sleep(1)
@@ -1257,7 +1264,7 @@ def pode_disparar():
 
     disponiveis = [n for n in numeros if disponivel_agora(n)]
     cfg = carregar_configuracao()
-    sms_disponivel = cfg["sms_habilitado"] and bool(SMS_GTI_TOKEN)
+    sms_disponivel = cfg["sms_habilitado"] and bool(token_sms())
 
     if not disponiveis and not sms_disponivel and cfg['transbordo_habilitado']:
         destino = testar_destino_transbordo(cfg)
@@ -1576,7 +1583,7 @@ def impedimento_fila(origem="individual", numeros=None):
     if any(disponivel_agora(n) for n in pool):
         return None
     cfg = carregar_configuracao()
-    if origem != "lote" and cfg["sms_habilitado"] and SMS_GTI_TOKEN:
+    if origem != "lote" and cfg["sms_habilitado"] and token_sms():
         return None
     return {"status": "erro", "motivo_codigo": "nenhum_numero_disponivel",
             "motivo": "Sem numero disponivel agora. Entrada encerrada, sem envio posterior automatico."}
@@ -2163,6 +2170,7 @@ def obter_configuracao():
     token_painel = cfg.pop("vendeai_mailing_token", "")
     cfg["vendeai_token_configurado"] = bool(token_painel or VENDEAI_API_TOKEN)
     cfg["vendeai_token_origem"] = "painel" if token_painel else ("ambiente" if VENDEAI_API_TOKEN else "ausente")
+    cfg['sms_token_configurado']=bool(token_sms())
     return cfg
 
 
@@ -2282,10 +2290,21 @@ async def atualizar_configuracao(request: Request):
     return obter_configuracao()
 
 
+@app.put('/api/sms/credencial')
+def salvar_credencial_sms(body: dict):
+    token=body.get('token')
+    if not isinstance(token,str) or not 1<=len(token.strip())<=4096 or any(c.isspace() for c in token.strip()):
+        raise HTTPException(400,'Informe um token SMS válido, sem espaços.')
+    with closing(get_db()) as c,c:
+        c.execute('INSERT INTO sms_credencial(id,token) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET token=excluded.token',(token.strip(),))
+    _cache_saldo_sms.update(valor=None,expira_em=None,atualizado_em=None,erro=None)
+    return {'configurado':True}
+
+
 @app.get("/api/sms/saldo")
 def saldo_sms():
     """Consulta o saldo de creditos disponivel na GTI SMS (com cache de alguns minutos)."""
-    if not SMS_GTI_TOKEN:
+    if not token_sms():
         return {"configurado": False, "saldo": None, "expira_em": None, "erro": None}
     info = consultar_saldo_sms()
     return {
@@ -2305,7 +2324,7 @@ def pagina_campanhas_sms(request: Request):
 def listar_campanhas_sms():
     permitido,motivo=dentro_do_horario_permitido()
     return {'campanhas':campanhas_sms.listar(get_db),'mensagem':normalizar_texto_sms(carregar_configuracao()['sms_template']),
-            'configurado':bool(SMS_GTI_TOKEN),'horario_permitido':permitido,'motivo_horario':motivo}
+            'configurado':bool(token_sms()),'horario_permitido':permitido,'motivo_horario':motivo}
 
 
 @app.post('/api/campanhas-sms')
@@ -2327,7 +2346,7 @@ def detalhe_campanha_sms(ident: str):return campanhas_sms.detalhe(get_db,ident)
 
 @app.post('/api/campanhas-sms/{ident}/iniciar')
 def iniciar_campanha_sms(ident: str):
-    return campanhas_sms.iniciar(get_db,ident,SMS_GTI_TOKEN,dentro_do_horario_permitido,consultar_saldo_sms)
+    return campanhas_sms.iniciar(get_db,ident,token_sms(),dentro_do_horario_permitido,consultar_saldo_sms)
 
 
 @app.post('/api/campanhas-sms/{ident}/cancelar')
