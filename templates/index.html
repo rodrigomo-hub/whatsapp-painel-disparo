@@ -1141,12 +1141,27 @@ function ultimaConsultaMeta(valor) {
   });
 }
 function escaparNumero(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function grupoVisualNumero(n) {
+  if(n.tipo_envio==='vendeai_normal')return 4;
+  if(n.status_envio_meta==='BANNED')return 5;
+  return ({GREEN:0,YELLOW:1,RED:2})[n.qualidade] ?? 3;
+}
 function renderizarNumeros() {
   const filtrados = filtrarNumeros(numerosCache, document.getElementById('pesquisa-numero').value, document.getElementById('filtro-waba').value);
+  filtrados.sort((a,b)=>grupoVisualNumero(a)-grupoVisualNumero(b)||a.id-b.id);
   document.getElementById('pesquisa-numero-total').textContent = `${filtrados.length} de ${numerosCache.length} números`;
   const tbody = document.getElementById('tabela-numeros');
   tbody.innerHTML = '';
+  let grupoAnterior=null;
   filtrados.forEach(n => {
+    const grupo=grupoVisualNumero(n);
+    if(grupo!==grupoAnterior){
+      const nomes=['Qualidade alta','Qualidade média','Qualidade baixa','Qualidade desconhecida','Conexões normais','Banidos pela Meta'];
+      const cores=['#15803d','#a16207','#b42318','#64748b','#7c3aed','#b42318'];
+      const linha=document.createElement('tr'),celula=document.createElement('td');
+      celula.colSpan=8;celula.textContent=nomes[grupo];celula.style.cssText='background:#f8fafc;font-weight:700;padding:12px;color:'+cores[grupo];
+      linha.appendChild(celula);tbody.appendChild(linha);grupoAnterior=grupo;
+    }
     const pct = Math.min(100, (n.enviados_hoje / n.limite_diario) * 100);
     const tr = document.createElement('tr');
     if(n.tipo_envio === 'vendeai_normal') {
