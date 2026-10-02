@@ -171,7 +171,7 @@
   <h2>Números conectados <button class="btn-toggle" onclick="atualizarTodos()" style="font-size:12px;">🔄 Atualizar todos</button></h2>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0;">
     <label for="pesquisa-numero" style="font-size:13px;">Pesquisar número</label>
-    <input id="pesquisa-numero" type="search" placeholder="Nome ou telefone, mesmo sem pontuação" oninput="renderizarNumeros()" style="flex:1;min-width:220px;max-width:440px;margin:0;">
+    <input id="pesquisa-numero" type="search" placeholder="Nome, telefone ou anotação" oninput="renderizarNumeros()" style="flex:1;min-width:220px;max-width:440px;margin:0;">
     <label for="filtro-waba">WABA</label>
     <select id="filtro-waba" onchange="renderizarNumeros()" style="max-width:380px;"><option value="">Todas as WABAs</option></select>
     <button type="button" class="btn-editar" onclick="document.getElementById('pesquisa-numero').value='';document.getElementById('filtro-waba').value='';renderizarNumeros();">Limpar</button>
@@ -1113,7 +1113,7 @@ function filtrarNumeros(numeros, pesquisa, waba='') {
     if(!termo)return true;
     const texto=normalizar(n.nome);
     const numero=normalizar(n.display_phone_number || n.telefone || n.nome).replace(/\D/g,'');
-    return texto.includes(termo) || (telefone && numero.includes(digitos));
+    return texto.includes(termo) || normalizar(n.observacao).includes(termo) || (telefone && numero.includes(digitos));
   });
 }
 let observacaoNumeroId=null;
@@ -1151,6 +1151,11 @@ function ultimaConsultaMeta(valor) {
   });
 }
 function escaparNumero(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function observacaoVisivel(n){
+  const texto=String(n.observacao||'');
+  const botao=`<button type="button" onclick="abrirObservacao(${n.id})" style="margin-top:6px;background:transparent;color:#4338ca;border:1px solid #c7d2fe;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;">${texto.trim()?'Editar anotação':'+ Anotação'}</button>`;
+  return texto.trim()?`<div style="margin-top:10px;padding:10px 12px;background:#eef2ff;border-left:3px solid #818cf8;border-radius:6px;min-width:180px;max-width:360px;text-align:left;"><small style="display:block;color:#6366a0;margin-bottom:4px;">Anotação</small><div style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.5;color:#303b63;">${escaparNumero(texto)}</div>${botao}</div>`:`<div>${botao}</div>`;
+}
 function grupoVisualNumero(n) {
   if(n.tipo_envio==='vendeai_normal')return 4;
   if(n.status_envio_meta==='BANNED')return 5;
@@ -1177,7 +1182,7 @@ function renderizarNumeros() {
     if(n.tipo_envio === 'vendeai_normal') {
       const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       const estado={connected:'Conectado',disconnected:'Desconectado',unknown:'Conexão não confirmada'}[n.conexao_status] || 'Conexão não confirmada';
-      tr.innerHTML=`<td>${esc(n.nome)}<br><button class="btn-editar" onclick="abrirObservacao(${n.id})">${n.observacao?'Ver observação':'+ Observação'}</button></td>
+      tr.innerHTML=`<td>${esc(n.nome)}${observacaoVisivel(n)}</td>
         <td>${esc(n.template_nome)}</td><td>Conexão normal<br><small>Mensagem de texto</small></td><td>Não se aplica</td>
         <td>${n.enviados_hoje} / ${n.limite_diario}</td><td>${n.enviados_hora} / ${n.limite_hora}</td>
         <td><span class="badge ${n.conexao_elegivel?'badge-ativo':'badge-pausado'}">${!n.ativo?'Pausado':n.limite_diario===0||n.limite_hora===0?'Sem capacidade':n.conexao_elegivel?'Ativo':'Fora do rodízio'}</span><br><small>${estado}</small>${n.ativo&&!n.conexao_elegivel?'<br><small>'+(n.limite_diario===0||n.limite_hora===0?'Configure os limites para liberar envios':'Envio bloqueado até confirmar conexão e modelo')+'</small>':''}${n.modelo_normal_ativo?'':'<br><small>Modelo desativado ou ausente</small>'}</td>
@@ -1188,7 +1193,7 @@ function renderizarNumeros() {
       tbody.appendChild(tr);return;
     }
     tr.innerHTML = `
-      <td>${escaparNumero(n.nome)}<br><button type="button" onclick="abrirObservacao(${n.id})" style="margin-top:5px;background:${n.observacao ? '#eef2ff' : 'transparent'};color:${n.observacao ? '#4338ca' : '#64748b'};border:1px solid ${n.observacao ? '#c7d2fe' : '#e2e8f0'};border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;">${n.observacao ? '📝 Ver observação' : '+ Observação'}</button></td>
+      <td>${escaparNumero(n.nome)}${observacaoVisivel(n)}</td>
       <td>${escaparNumero(n.template_nome)}<br><small>${n.via_envio==='vendeai'?'Envio pela VendeAI':'Envio pela Meta'}${n.vendeai_inbox_id?' · Reconhecido na VendeAI':''}</small>${n.template_header === "IMAGE" ? (n.template_imagem ? "<br><small>Imagem configurada</small>" : "<br><strong>Falta anexar imagem</strong>") : ""}</td>
       <td>${traduzirCategoria(n.template_categoria)}<br><small style="color:#888">${n.template_status}</small></td>
       <td><span class="bolinha bolinha-${n.qualidade}"></span>${traduzirQualidade(n.qualidade)}<br><small style="color:#64748b;" title="Limite informado pela Meta para o portfólio empresarial, compartilhado entre seus números. Não é saldo restante nem limite individual.">Limite Meta: ${traduzirLimiteMeta(n.limite_meta)}</small></td>
