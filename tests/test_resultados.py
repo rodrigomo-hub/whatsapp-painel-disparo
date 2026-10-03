@@ -52,6 +52,15 @@ class ResultadosTests(unittest.TestCase):
         return r.calcular(self.db, r.momento('2026-09-30T00:00:00-03:00'),
                           r.momento('2026-10-01T00:00:00-03:00'), **kwargs)
 
+    def test_valor_equipe_formato_brasileiro(self):
+        for valor in ['7.049,38', '7049,38', '7049.38', 'R$ 7.049,38']:
+            with self.subTest(valor=valor):
+                salvo = r.salvar_manual(self.db, '2026-09-30', {'valor': valor, 'revisao': 0})
+                self.assertEqual(salvo['valor_centavos'], 704938)
+        for valor in ['7.04,38', '7,049.38', '7.049', '7,049', '-1', 'NaN', '1e3']:
+            with self.subTest(valor=valor), self.assertRaises(HTTPException):
+                r.salvar_manual(self.db, '2026-09-30', {'valor': valor, 'revisao': 1})
+
     def test_adicionar_equipe_soma_e_impede_repeticao(self):
         dia = '2026-09-30'
         r.salvar_manual(self.db, dia, {'valor': '5000', 'revisao': 0})

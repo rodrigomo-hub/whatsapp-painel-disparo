@@ -131,7 +131,16 @@ def salvar_manual(get_db, dia, body):
     if type(rev) is not int or rev < 0:
         raise HTTPException(400, 'Informe uma revisão válida.')
     try:
-        v = Decimal(str(body.get('valor')))
+        texto = str(body.get('valor')).strip()
+        if texto.startswith('R$'):
+            texto = texto[2:].strip()
+        if ',' in texto:
+            if not re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:\.[0-9]{3})+),[0-9]{1,2}', texto):
+                raise ValueError()
+            texto = texto.replace('.', '').replace(',', '.')
+        elif not re.fullmatch(r'[0-9]+(?:\.[0-9]{1,2})?', texto):
+            raise ValueError()
+        v = Decimal(texto)
         if not v.is_finite() or not 0 <= v <= Decimal('999999999.99') or v * 100 != (v * 100).to_integral_value():
             raise ValueError()
         centavos = int(v * 100)
