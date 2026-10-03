@@ -52,6 +52,24 @@ class ResultadosTests(unittest.TestCase):
         return r.calcular(self.db, r.momento('2026-09-30T00:00:00-03:00'),
                           r.momento('2026-10-01T00:00:00-03:00'), **kwargs)
 
+    def test_adicionar_equipe_soma_e_impede_repeticao(self):
+        dia = '2026-09-30'
+        r.salvar_manual(self.db, dia, {'valor': '5000', 'revisao': 0})
+        body = {'valor': '800.25', 'revisao': 1, 'modo': 'adicionar'}
+        self.assertEqual(r.salvar_manual(self.db, dia, body)['valor_centavos'], 580025)
+        with self.assertRaises(HTTPException) as err:
+            r.salvar_manual(self.db, dia, body)
+        self.assertEqual(err.exception.status_code, 409)
+        self.assertEqual(r.manual_dia(self.db, dia)['valor_centavos'], 580025)
+        self.assertEqual(r.salvar_manual(self.db, dia, {'valor': '0', 'revisao': 2})['valor_centavos'], 0)
+
+    def test_adicionar_equipe_primeiro_valor_e_validacao(self):
+        dia = '2026-09-30'
+        for valor in ['0', '-1', '1.001']:
+            with self.assertRaises(HTTPException):
+                r.salvar_manual(self.db, dia, {'valor': valor, 'revisao': 0, 'modo': 'adicionar'})
+        self.assertEqual(r.salvar_manual(self.db, dia, {'valor': '100', 'revisao': 0, 'modo': 'adicionar'})['valor_centavos'], 10000)
+
     def test_funnel_unique_simulations_payment_values_and_link(self):
         self.send()
         self.event('conversation_created')

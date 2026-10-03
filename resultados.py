@@ -124,6 +124,9 @@ def manual_dia(get_db, dia):
 
 def salvar_manual(get_db, dia, body):
     validar_dia(dia)
+    modo = body.get('modo', 'substituir')
+    if modo not in ('adicionar', 'substituir'):
+        raise HTTPException(400, 'Operação inválida.')
     rev = body.get('revisao')
     if type(rev) is not int or rev < 0:
         raise HTTPException(400, 'Informe uma revisão válida.')
@@ -137,10 +140,16 @@ def salvar_manual(get_db, dia, body):
     with closing(get_db()) as c, c:
         c.execute('BEGIN IMMEDIATE')
         row = c.execute('SELECT * FROM pagamentos_manuais WHERE dia=?', (dia,)).fetchone()
-        if row and row['valor_centavos'] == centavos:
+        if modo == 'adicionar' and centavos <= 0:
+            raise HTTPException(400, 'Informe um valor maior que zero para adicionar.')
+        if modo == 'substituir' and row and row['valor_centavos'] == centavos:
             return dict(row)
         if rev != (row['revisao'] if row else 0):
             raise HTTPException(409, 'Este dia foi alterado em outra tela. Reabra o lançamento antes de salvar.')
+        if modo == 'adicionar':
+            centavos += row['valor_centavos'] if row else 0
+            if centavos > 99999999999:
+                raise HTTPException(400, 'O total do dia ultrapassa o valor permitido.')
         c.execute('''INSERT INTO pagamentos_manuais(dia,quantidade,valor_centavos,revisao,atualizado_em)
                      VALUES(?,?,?,?,?) ON CONFLICT(dia) DO UPDATE SET valor_centavos=excluded.valor_centavos,revisao=excluded.revisao,atualizado_em=excluded.atualizado_em''',
                   (dia, 0, centavos, rev+1, datetime.now(TZ).isoformat()))
