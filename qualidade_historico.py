@@ -1,8 +1,13 @@
-"""Histórico de mudanças observadas, sem presumir datas anteriores à coleta."""
+"""HistÃ³rico de mudanÃ§as observadas, sem presumir datas anteriores Ã  coleta."""
 def migrar(c):
     c.execute("""CREATE TABLE IF NOT EXISTS qualidade_historico (
         id INTEGER PRIMARY KEY, numero_id INTEGER NOT NULL,
         anterior TEXT, atual TEXT, detectado_em TEXT NOT NULL)""")
+    cols = {r[1] for r in c.execute('PRAGMA table_info(qualidade_historico)')}
+    if 'fonte' not in cols:
+        c.execute("ALTER TABLE qualidade_historico ADD COLUMN fonte TEXT NOT NULL DEFAULT 'consulta'")
+    if 'intervalo_inicio' not in cols:
+        c.execute('ALTER TABLE qualidade_historico ADD COLUMN intervalo_inicio TEXT')
     c.execute('CREATE INDEX IF NOT EXISTS idx_qualidade_numero ON qualidade_historico(numero_id,id DESC)')
     c.execute("""CREATE TRIGGER IF NOT EXISTS registrar_mudanca_qualidade
         AFTER UPDATE OF qualidade ON numeros
@@ -15,5 +20,5 @@ def migrar(c):
 
 def recentes(c, numero_id):
     return [dict(r) for r in c.execute(
-        'SELECT anterior,atual,detectado_em FROM qualidade_historico WHERE numero_id=? ORDER BY id DESC LIMIT 5',
+        'SELECT anterior,atual,detectado_em,fonte,intervalo_inicio FROM qualidade_historico WHERE numero_id=? ORDER BY julianday(detectado_em) DESC,id DESC LIMIT 5',
         (numero_id,))]

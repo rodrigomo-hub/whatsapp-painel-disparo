@@ -27,3 +27,10 @@ class HistoricoTests(unittest.TestCase):
             self.c.execute('UPDATE numeros SET qualidade=? WHERE id=1',(v,))
         self.assertEqual(len(h.recentes(self.c,1)),5)
         self.assertEqual(self.c.execute('SELECT count(*) FROM qualidade_historico').fetchone()[0],6)
+
+    def test_historico_antigo_nao_substitui_mais_recente(self):
+        self.c.execute("UPDATE numeros SET qualidade='RED' WHERE id=1")
+        self.c.execute("INSERT INTO qualidade_historico(numero_id,anterior,atual,detectado_em,fonte,intervalo_inicio) VALUES(1,'RED','GREEN','2020-01-01T12:00:00-03:00','backup','2020-01-01T10:00:00-03:00')")
+        rows=h.recentes(self.c,1)
+        self.assertEqual(rows[0]['atual'],'RED')
+        self.assertEqual(rows[1]['fonte'],'backup')
