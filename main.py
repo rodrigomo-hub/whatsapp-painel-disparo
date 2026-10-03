@@ -18,6 +18,8 @@ import link_conversa
 import campanhas_sms
 import vendeai_eventos
 import resultados
+import comissoes
+import custos_meta
 import qualidade_historico
 import optout
 import conexoes_normais
@@ -343,6 +345,7 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN observacao TEXT NOT NULL DEFAULT ''")
     vendeai_eventos.migrar(conn)
     resultados.migrar(conn)
+    custos_meta.migrar(conn)
     templates_lote.migrar(conn)
     campanhas_sms.migrar(conn)
     conn.execute('CREATE TABLE IF NOT EXISTS sms_credencial(id INTEGER PRIMARY KEY CHECK(id=1),token TEXT NOT NULL)')
@@ -1981,6 +1984,23 @@ def consultar_resultados(inicio: str = '', fim: str = '', busca: str = '', orige
                                 datetime.combine(b + timedelta(days=1), datetime.min.time(), TZ),
                                 busca.strip(), origem, status, pagina)
     return JSONResponse(dados, headers={'Cache-Control': 'no-store'})
+
+
+@app.get('/api/comissoes/regras')
+def regras_comissao():
+    with closing(get_db()) as c:
+        return comissoes.carregar_regras(c)
+
+
+@app.post('/api/resultados/equipe')
+def proposta_equipe(body: dict):
+    return comissoes.operar(get_db, body)
+
+
+@app.put('/api/resultados/custos-meta')
+def configurar_custo_meta(body: dict):
+    with closing(get_db()) as c:
+        return custos_meta.salvar(c, body, agora_iso())
 
 
 @app.get('/api/resultados/manuais/{dia}')

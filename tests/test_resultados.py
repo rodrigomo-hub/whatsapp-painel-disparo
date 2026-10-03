@@ -79,6 +79,17 @@ class ResultadosTests(unittest.TestCase):
                 r.salvar_manual(self.db, dia, {'valor': valor, 'revisao': 0, 'modo': 'adicionar'})
         self.assertEqual(r.salvar_manual(self.db, dia, {'valor': '100', 'revisao': 0, 'modo': 'adicionar'})['valor_centavos'], 10000)
 
+    def test_comissao_ia_por_tabela_prazo(self):
+        import comissoes
+        with self.db() as c:comissoes.semear(c)
+        proposal={'proposal_id':'c1','bank':'facta','product':'clt','table_code':'69639','number_of_payments':48,'liquid_value':5067.26}
+        self.event('proposal_created',proposal=proposal)
+        self.event('proposal_status_updated',time='2026-09-30T07:00:00-03:00',proposal={'proposal_id':'c1','proposal_status':'LIQUIDATED_TO_CUSTOMER'})
+        d=self.calc()
+        self.assertEqual(d['comissoes']['prevista_ia'],263.5)
+        self.assertEqual(d['comissoes']['pagos_ia'],263.5)
+        self.assertEqual(d['propostas'][0]['comissao']['percentual'],5.2)
+
     def test_funnel_unique_simulations_payment_values_and_link(self):
         self.send()
         self.event('conversation_created')

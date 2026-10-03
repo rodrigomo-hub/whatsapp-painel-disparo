@@ -17,6 +17,8 @@ COPY link_conversa.py .
 COPY campanhas_sms.py .
 COPY vendeai_eventos.py .
 COPY resultados.py .
+COPY comissoes.py .
+COPY custos_meta.py .
 COPY qualidade_historico.py .
 COPY optout.py .
 COPY conexoes_normais.py .

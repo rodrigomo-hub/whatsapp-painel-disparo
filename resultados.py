@@ -1,4 +1,6 @@
 """Leitura dos eventos preservados. Nenhuma chamada externa ou alteração de dados."""
+import comissoes
+import custos_meta
 import bisect
 import json
 import math
@@ -19,6 +21,7 @@ STATUS = {'FORMALIZATION_REQUESTED': 'Aguardando formalização',
 
 
 def migrar(c):
+    comissoes.migrar(c)
     c.execute('''CREATE TABLE IF NOT EXISTS propostas_ia_importadas (
         account_id TEXT NOT NULL, codigo TEXT NOT NULL, cliente TEXT NOT NULL,
         produto TEXT NOT NULL, banco TEXT NOT NULL, valor_centavos INTEGER NOT NULL,
@@ -207,6 +210,9 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
                            "WHERE d.status='sucesso'").fetchall()
         manuais = [dict(r) for r in c.execute('SELECT * FROM pagamentos_manuais WHERE dia>=? AND dia<? ORDER BY dia DESC',
                                              (inicio.date().isoformat(), fim.date().isoformat()))]
+        regras = comissoes.carregar_regras(c)
+        equipe = [dict(r) for r in c.execute('SELECT * FROM propostas_equipe WHERE excluido=0 AND dia>=? AND dia<? ORDER BY dia DESC,atualizado_em DESC',(inicio.date().isoformat(),fim.date().isoformat()))]
+        custo = custos_meta.resumo(c,inicio,fim) if c.execute("SELECT 1 FROM sqlite_master WHERE name='custos_meta'").fetchone() else None
         historicos = [dict(r) for r in c.execute('SELECT * FROM pagamentos_ia_historicos')]
         importadas = [dict(r) for r in c.execute('SELECT * FROM propostas_ia_importadas')]
         ajustes_mensais = []
@@ -326,10 +332,26 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
             for m in [coorte, janela(chat['envio'])]:
                 m['conversas'].add(key)
                 if chat['simulacoes']: m['simulacoes'].add(cliente(key))
+    comissao = {'prevista_ia':0, 'pagos_ia':0, 'pagos_equipe':sum(e['comissao_centavos'] or 0 for e in equipe)/100,
+                'propostas_ia_sem_regra':0,'pagos_ia_sem_regra':0,
+                'equipe_sem_regra':sum(m['valor_centavos'] for m in manuais)/100+sum(m['valor_centavos'] for m in ajustes_mensais if m['incluido'])/100}
     lista = []
     for key, p in propostas.items():
         chat = chats.get(p['chat'], {'contato': {}, 'origem': 'nao_identificada', 'envio': None, 'campanha': ''})
         v = valor(p['dados'].get('liquid_value'))
+        ref = (p['criado'] or p['atualizado']).date().isoformat()
+        est = comissoes.estimar(regras,p['dados'],ref,int(Decimal(str(v))*100) if v is not None else None)
+        if dentro(p['criado']) and p['status'] != 'CANCELED':
+            comissao['prevista_ia'] += est['valor'] or 0
+            comissao['propostas_ia_sem_regra'] += est['valor'] is None
+        pago_ref = p['pago']; pago_valor = v
+        hs = [h for h in historicos if h['account_id']==key[0] and h['codigo'] in (p['id'],str(p['dados'].get('proposal_number') or ''))]
+        if hs:
+            pago_ref = momento(hs[0]['dia']+'T12:00:00-03:00');pago_valor=hs[0]['valor_centavos']/100
+        if dentro(pago_ref):
+            est_pago = comissoes.estimar(regras,p['dados'],ref,int(Decimal(str(pago_valor))*100) if pago_valor is not None else None)
+            comissao['pagos_ia'] += est_pago['valor'] or 0
+            comissao['pagos_ia_sem_regra'] += est_pago['valor'] is None
         targets = grupo(chat)
         for m in targets:
             if dentro(p['criado']):
@@ -357,6 +379,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
                 'banco': dados.get('bank', ''), 'produto': dados.get('product', ''),
                 'link': dados.get('formalization_link', ''), 'origem': chat['origem'],
                 'numero': chat['envio']['nome'] if chat['envio'] else '', 'campanha': chat['campanha']}
+        item['comissao'] = est
         if origem and item['origem'] != origem: continue
         if status and item['status'] != status: continue
         if busca and busca.casefold() not in ' '.join(str(item[k] or '') for k in ['nome', 'telefone', 'id']).casefold(): continue
@@ -368,13 +391,14 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
     lista.sort(key=lambda p: p['atualizado_em'], reverse=True)
     total = len(lista); pagina = min(pagina, max(1, (total+49)//50))
     ajuste_mensal = sum(m['valor_centavos'] for m in ajustes_mensais if m['incluido'])
-    manual_valor = (sum(m['valor_centavos'] for m in manuais) + ajuste_mensal) / 100
+    manual_valor = (sum(m['valor_centavos'] for m in manuais) + sum(e['valor_centavos'] for e in equipe) + ajuste_mensal) / 100
     ia = conciliar_historico(propostas, historicos, inicio, fim, atividade)
     pagamentos = {'ia': ia,
                   'manual': {'valor': manual_valor},
                   'total': {'valor': round(ia['valor']+manual_valor, 2),
                             'sem_valor': ia['sem_valor']}}
     return {'atualizado_em': agora.isoformat(), 'primeiro_evento': primeiro_evento.isoformat() if primeiro_evento else None,
+            'comissoes': {**comissao, 'total_pagos':round(comissao['pagos_ia']+comissao['pagos_equipe'],2)}, 'equipe':equipe, 'custo_meta':custo,
             'pagamentos': pagamentos, 'manuais': manuais, 'ajustes_mensais': ajustes_mensais,
             'atividade': fechar(atividade), 'coorte': fechar(coorte),
             'origens': {k: fechar(v) for k, v in grupos.items()},

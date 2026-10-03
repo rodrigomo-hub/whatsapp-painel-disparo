@@ -398,3 +398,14 @@ Em **WABAs → Templates → Textos das variáveis**, o operador pode ativar **U
 Quando ativa, a configuração substitui integralmente `variaveis_template` recebidas do n8n/API/planilha no momento do envio, tanto pela Meta quanto pela VendeAI, inclusive para itens da fila. Desativar restaura os valores recebidos e preserva os textos para edição futura. Conexões normais continuam usando seus modelos locais. Todos os campos devem estar preenchidos e a quantidade é validada contra o template na Meta; variáveis nomeadas, cabeçalhos variáveis e botões parametrizados ainda não são suportados nesta configuração.
 
 Persistência: `textos_templates`, chave `(waba_id,nome,idioma)`. Administração por sessão em `PUT /api/wabas-painel/{waba_id}/textos-fixos`, corpo `{nome,idioma,ativo,valores}`; a chave de disparo do n8n não concede acesso a esta configuração. Os dois painéis mantêm textos e ativações independentes.
+
+
+### Comissões e propostas individuais da equipe
+
+A página Resultados permite cadastrar, editar e excluir propostas pagas pela equipe. Cada registro contém identificação, data, tabela Facta CLT, prazo, valor líquido e comissão estimada. As regras ficam em `comissoes_regras`, com vigência; não são copiadas automaticamente entre painéis. As 17 regras fornecidas pelo operador podem ser carregadas explicitamente com `comissoes.semear(conn)`.
+
+`POST /api/resultados/equipe` exige sessão administrativa, revisão e `operacao_id` UUID. Repetir a mesma operação não duplica registros. `acao=converter` transforma um total antigo de `pagamentos_manuais` em propostas, atomicamente, somente quando a soma coincide com o valor original. Revisões impedem sobrescrever uma alteração concorrente. Exclusão é lógica. Ajustes mensais antigos permanecem separados.
+
+A comissão da IA usa banco, produto, código da tabela (ou prefixo do nome), número de parcelas e valor líquido dos webhooks, com a criação como referência de vigência. Propostas canceladas ficam fora da estimativa de propostas. Valores sem dados/regra aplicável são sinalizados e não estimados. Lançamentos da equipe usam a data informada no formulário. Comissão não significa pagamento de comissão confirmado.
+
+O custo Meta é uma referência independente, por disparo oficial aceito a destinatário brasileiro; não é descontado das comissões. As tarifas em `custos_meta` são configuráveis na página e têm moeda explícita, sem conversão automática. Novos envios preservam a categoria no histórico; para antigos, a categoria atual do número é uma aproximação sinalizada. SMS, conexões normais e destinatários sem tarifa suportada não são incluídos no valor. Não replica a fatura nem considera gratuidades, entrega, impostos, tarifas de parceiros ou descontos por volume.
