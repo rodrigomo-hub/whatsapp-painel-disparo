@@ -18,6 +18,7 @@ import link_conversa
 import campanhas_sms
 import vendeai_eventos
 import resultados
+import qualidade_historico
 import optout
 import conexoes_normais
 import oficiais_vendeai
@@ -356,6 +357,7 @@ def init_db():
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
     transbordo.migrar(conn)
+    qualidade_historico.migrar(conn)
     conn.commit()
     conn.close()
 
@@ -2599,10 +2601,12 @@ async def buscar_numeros(request: Request):
 def listar_numeros():
     conn = get_db()
     numeros = conn.execute("SELECT n.*, COALESCE(m.ativo,0) AS modelo_normal_ativo FROM numeros n LEFT JOIN modelos_normais m ON m.id=n.modelo_normal_id ORDER BY n.id").fetchall()
+    historicos = {n["id"]: qualidade_historico.recentes(conn, n["id"]) for n in numeros}
     conn.close()
     return [
         {
             **dict(n),
+            "historico_qualidade": historicos[n["id"]],
             "access_token": n["access_token"][:10] + "..." if n["access_token"] else "",
             "enviados_hoje": contagem_hoje(n["id"]),
             "enviados_hora": contagem_ultima_hora(n["id"]),

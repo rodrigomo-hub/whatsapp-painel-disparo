@@ -1156,6 +1156,17 @@ function observacaoVisivel(n){
   const botao=`<button type="button" onclick="abrirObservacao(${n.id})" style="margin-top:6px;background:transparent;color:#4338ca;border:1px solid #c7d2fe;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;">${texto.trim()?'Editar anotação':'+ Anotação'}</button>`;
   return texto.trim()?`<div style="margin-top:10px;padding:10px 12px;background:#eef2ff;border-left:3px solid #818cf8;border-radius:6px;min-width:180px;max-width:360px;text-align:left;"><small style="display:block;color:#6366a0;margin-bottom:4px;">Anotação</small><div style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.5;color:#303b63;">${escaparNumero(texto)}</div>${botao}</div>`:`<div>${botao}</div>`;
 }
+function historicoQualidade(n){
+  const eventos=n.historico_qualidade||[];
+  if(!eventos.length)return '<small style="display:block;color:#94a3b8;margin-top:5px">Sem mudança registrada ainda</small>';
+  const nomes={GREEN:'Alta',YELLOW:'Média',RED:'Baixa',UNKNOWN:'Desconhecida'};
+  const rotulo=v=>nomes[v]||'Desconhecida';
+  const instante=v=>new Date(v).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+  const e=eventos[0],hoje=new Date(e.detectado_em).toLocaleDateString('sv-SE',{timeZone:'America/Sao_Paulo'})===new Date().toLocaleDateString('sv-SE',{timeZone:'America/Sao_Paulo'});
+  const recuperou=(e.anterior==='RED'&&['YELLOW','GREEN'].includes(e.atual))||(e.anterior==='YELLOW'&&e.atual==='GREEN');
+  const cor=recuperou?'#15803d':e.atual==='RED'?'#b91c1c':'#64748b';
+  return `<div style="margin-top:7px;max-width:250px;font-size:12px;line-height:1.5;color:${cor}" title="Horário de Brasília em que o painel detectou a mudança; a Meta não informa o instante exato."><strong>${recuperou?'Melhorou para '+rotulo(e.atual).toLowerCase():'Mudou para '+rotulo(e.atual).toLowerCase()}${hoje?' hoje':''}</strong><br>Detectado em ${escaparNumero(instante(e.detectado_em))}</div><details style="margin-top:5px;font-size:11px;color:#64748b"><summary style="cursor:pointer">Últimas mudanças</summary>${eventos.map(x=>`<div style="padding:4px 0">${rotulo(x.anterior)} → ${rotulo(x.atual)}<br>${escaparNumero(instante(x.detectado_em))}</div>`).join('')}</details>`;
+}
 function grupoVisualNumero(n) {
   if(n.tipo_envio==='vendeai_normal')return 4;
   if(n.status_envio_meta==='BANNED')return 5;
@@ -1196,7 +1207,7 @@ function renderizarNumeros() {
       <td>${escaparNumero(n.nome)}${observacaoVisivel(n)}</td>
       <td>${escaparNumero(n.template_nome)}<br><small>${n.via_envio==='vendeai'?'Envio pela VendeAI':'Envio pela Meta'}${n.vendeai_inbox_id?' · Reconhecido na VendeAI':''}</small>${n.template_header === "IMAGE" ? (n.template_imagem ? "<br><small>Imagem configurada</small>" : "<br><strong>Falta anexar imagem</strong>") : ""}</td>
       <td>${traduzirCategoria(n.template_categoria)}<br><small style="color:#888">${n.template_status}</small></td>
-      <td><span class="bolinha bolinha-${n.qualidade}"></span>${traduzirQualidade(n.qualidade)}<br><small style="color:#64748b;" title="Limite informado pela Meta para o portfólio empresarial, compartilhado entre seus números. Não é saldo restante nem limite individual.">Limite Meta: ${traduzirLimiteMeta(n.limite_meta)}</small></td>
+      <td><span class="bolinha bolinha-${n.qualidade}"></span>${traduzirQualidade(n.qualidade)}${historicoQualidade(n)}<br><small style="color:#64748b;" title="Limite informado pela Meta para o portfólio empresarial, compartilhado entre seus números. Não é saldo restante nem limite individual.">Limite Meta: ${traduzirLimiteMeta(n.limite_meta)}</small></td>
       <td>${n.enviados_hoje} / ${n.limite_diario}<br><div class="barra"><div class="barra-preenchida" style="width:${pct}%"></div></div></td>
       <td>${n.enviados_hora} / ${n.limite_hora}</td>
       <td><span class="badge ${n.ativo ? 'badge-ativo' : 'badge-pausado'}">${n.ativo ? 'Ativo' : 'Pausado'}</span>${!['GREEN','YELLOW','RED'].includes(n.qualidade) ? '<br><small>Envio bloqueado: qualidade desconhecida</small>' : ''}${n.status_envio_meta !== 'AVAILABLE' ? '<br><small style="color:#b42318">'+({BANNED:'Banido pela Meta',BLOCKED:'Envio bloqueado pela Meta',DISCONNECTED:'Número não conectado na Meta',UNKNOWN:'Status de envio não confirmado'}[n.status_envio_meta] || 'Status de envio não confirmado')+'</small>' : ''}${n.pausado_por_template ? '<br><small>Template pausado pela Meta</small>' : ''}${n.presenca_meta === 'ausente' ? '<br><small style="color:#b42318">Não listado na WABA da Meta</small>' : n.presenca_meta === 'indisponivel' ? '<br><small>Consulta à Meta indisponível</small>' : ''}</td>
