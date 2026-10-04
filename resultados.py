@@ -341,13 +341,13 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
         v = valor(p['dados'].get('liquid_value'))
         ref = (p['criado'] or p['atualizado']).date().isoformat()
         est = comissoes.estimar(regras,p['dados'],ref,int(Decimal(str(v))*100) if v is not None else None)
-        if dentro(p['criado']) and p['status'] != 'CANCELED':
-            comissao['prevista_ia'] += est['valor'] or 0
-            comissao['propostas_ia_sem_regra'] += est['valor'] is None
         pago_ref = p['pago']; pago_valor = v
         hs = [h for h in historicos if h['account_id']==key[0] and h['codigo'] in (p['id'],str(p['dados'].get('proposal_number') or ''))]
         if hs:
             pago_ref = momento(hs[0]['dia']+'T12:00:00-03:00');pago_valor=hs[0]['valor_centavos']/100
+        if dentro(p['criado']) and pago_ref is None and p['status'] not in ('CANCELED', PAGO):
+            comissao['prevista_ia'] += est['valor'] or 0
+            comissao['propostas_ia_sem_regra'] += est['valor'] is None
         if dentro(pago_ref):
             est_pago = comissoes.estimar(regras,p['dados'],ref,int(Decimal(str(pago_valor))*100) if pago_valor is not None else None)
             comissao['pagos_ia'] += est_pago['valor'] or 0

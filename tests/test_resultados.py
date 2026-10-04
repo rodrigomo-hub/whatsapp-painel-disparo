@@ -86,9 +86,20 @@ class ResultadosTests(unittest.TestCase):
         self.event('proposal_created',proposal=proposal)
         self.event('proposal_status_updated',time='2026-09-30T07:00:00-03:00',proposal={'proposal_id':'c1','proposal_status':'LIQUIDATED_TO_CUSTOMER'})
         d=self.calc()
-        self.assertEqual(d['comissoes']['prevista_ia'],263.5)
+        self.assertEqual(d['comissoes']['prevista_ia'],0)
         self.assertEqual(d['comissoes']['pagos_ia'],263.5)
         self.assertEqual(d['propostas'][0]['comissao']['percentual'],5.2)
+
+    def test_comissao_prevista_apenas_em_andamento(self):
+        import comissoes
+        with self.db() as c:comissoes.semear(c)
+        for pid,estado in [('aberta','FORMALIZATION_REQUESTED'),('cancelada','CANCELED'),('paga',r.PAGO)]:
+            self.event('proposal_created',proposal={'proposal_id':pid,'bank':'facta','product':'clt','table_code':'69639','number_of_payments':48,'liquid_value':1000,'proposal_status':estado})
+        d=self.calc()
+        self.assertEqual(d['comissoes']['prevista_ia'],52)
+        self.assertEqual(d['comissoes']['pagos_ia'],52)
+        self.event('proposal_status_updated',time='2026-10-01T07:00:00-03:00',proposal={'proposal_id':'aberta','proposal_status':r.PAGO})
+        self.assertEqual(self.calc()['comissoes']['prevista_ia'],0)
 
     def test_funnel_unique_simulations_payment_values_and_link(self):
         self.send()
