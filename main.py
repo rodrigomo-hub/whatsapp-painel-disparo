@@ -20,6 +20,7 @@ import vendeai_eventos
 import resultados
 import comissoes
 import custos_meta
+import gupshup
 import qualidade_historico
 import optout
 import conexoes_normais
@@ -360,6 +361,7 @@ def init_db():
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
     transbordo.migrar(conn)
+    gupshup.migrar(conn)
     qualidade_historico.migrar(conn)
     conn.commit()
     conn.close()
@@ -400,6 +402,8 @@ def permitido_no_rodizio(numero, cfg=None):
 
 def disponivel_agora(numero: sqlite3.Row) -> bool:
     if not permitido_no_rodizio(numero):return False
+    if gupshup.via(numero):
+        return gupshup.elegivel(get_db,numero) and contagem_hoje(numero["id"]) < numero["limite_diario"] and contagem_ultima_hora(numero["id"]) < numero["limite_hora"]
     if conexoes_normais.normal(numero):
         return conexoes_normais.elegivel(get_db, numero) and contagem_hoje(numero["id"]) < numero["limite_diario"] and contagem_ultima_hora(numero["id"]) < numero["limite_hora"]
     if oficiais_vendeai.via(numero) and not oficiais_vendeai.elegivel(get_db,numero):
@@ -600,7 +604,7 @@ def verificar_presenca_meta():
     conn.close()
     grupos = {}
     for n in numeros:
-        if conexoes_normais.normal(n): continue
+        if conexoes_normais.normal(n) or gupshup.via(n): continue
         grupos.setdefault((n['waba_id'], n['access_token']), []).append(n)
     for (waba, token), grupo in grupos.items():
         ids, cursores = set(), set()
@@ -665,6 +669,7 @@ def bloquear_numeros_waba(waba_id, health):
 
 
 def verificar_qualidade(numero) -> str:
+    if gupshup.via(numero): return "UNKNOWN"
     if conexoes_normais.normal(numero):
         conexoes_normais.consultar(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN)
         return 'UNKNOWN'
@@ -700,6 +705,15 @@ def verificar_qualidade(numero) -> str:
 
 
 def verificar_template_info(numero) -> tuple:
+    if gupshup.via(numero):
+        with closing(get_db()) as c:
+            a=c.execute('SELECT app_id FROM gup_apps WHERE numero_id=?',(numero['id'],)).fetchone()
+        if not a:return 'UNKNOWN','UNKNOWN',None
+        try:gupshup.atualizar(get_db,a['app_id'])
+        except HTTPException:return 'UNKNOWN','UNKNOWN',None
+        with closing(get_db()) as c:
+            n=c.execute('SELECT * FROM numeros WHERE id=?',(numero['id'],)).fetchone()
+        return n['template_categoria'],n['template_status'],n['template_idioma']
     if conexoes_normais.normal(numero): return 'TEXTO', 'LOCAL', None
     """
     Busca categoria/status/idioma do template usando o waba_id cadastrado.
@@ -810,7 +824,7 @@ def _aplicar_pausa_ou_reativacao_qualidade(numero_id, numero_nome, ativo_atual, 
 
 
 def verificar_qualidade_pos_envio(numero):
-    if conexoes_normais.normal(numero): return 'UNKNOWN'
+    if conexoes_normais.normal(numero) or gupshup.via(numero): return 'UNKNOWN'
     """
     Confere a qualidade do numero logo depois de um envio, e pausa na hora
     se caiu pra RED - sem esperar o loop de fundo (que roda a cada
@@ -1436,6 +1450,7 @@ def capacidade_lote(selecionados=None):
         dia = max(0, n['limite_diario'] - contagem_hoje(n['id']))
         hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
         elegivel = n['status_envio_meta'] == 'AVAILABLE' and bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
+        if gupshup.via(n): elegivel = gupshup.elegivel(get_db,n)
         if conexoes_normais.normal(n): elegivel = conexoes_normais.elegivel(get_db,n)
         elif oficiais_vendeai.via(n): elegivel = elegivel and oficiais_vendeai.elegivel(get_db,n)
         elegivel = elegivel and permitido_no_rodizio(n)
@@ -1600,6 +1615,8 @@ def enviar_por_numero(numero, telefone, variaveis, nome):
     if conexoes_normais.normal(numero):
         return conexoes_normais.enviar(get_db,numero,telefone,nome,carregar_configuracao(),VENDEAI_API_TOKEN,lambda p: optout.bloqueado(get_db,p))
     variaveis=textos_templates.resolver(get_db,numero,variaveis)
+    if gupshup.via(numero):
+        return gupshup.enviar(get_db,numero,telefone,variaveis,lambda p: optout.bloqueado(get_db,p))
     if oficiais_vendeai.via(numero):
         return oficiais_vendeai.enviar(get_db,numero,telefone,variaveis,carregar_configuracao(),VENDEAI_API_TOKEN,atualizar_status_numero,lambda p: optout.bloqueado(get_db,p))
     return enviar_whatsapp(numero,telefone,variaveis)
@@ -1637,7 +1654,7 @@ def executar_disparo_preparado(preparado, cadastro, origem="individual", numeros
     registrar_disparo(numero["id"], cpf, nome_lead, telefone, status_resultado(sucesso,erro), erro, wamid)
     verificar_qualidade_pos_envio(numero)
 
-    if not sucesso and (conexoes_normais.normal(numero) or oficiais_vendeai.via(numero)):
+    if not sucesso and (conexoes_normais.normal(numero) or oficiais_vendeai.via(numero) or gupshup.via(numero)):
         return {"status":status_resultado(sucesso,erro),"numero_usado":numero["nome"],"canal":"whatsapp","erro":erro,"vendeai":cadastro}
     if not sucesso:
         resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis) if origem != "lote" else None
@@ -2108,7 +2125,7 @@ def total_hoje():
     ).fetchone()
     tipos=conn.execute("""SELECT
         COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio)='vendeai_normal' THEN 1 ELSE 0 END),0) AS normais,
-        COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio)='meta' THEN 1 ELSE 0 END),0) AS oficiais,
+        COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio) IN ('meta','gupshup') THEN 1 ELSE 0 END),0) AS oficiais,
         COALESCE(SUM(CASE WHEN d.canal='sms' THEN 1 ELSE 0 END),0) AS sms
         FROM disparos d LEFT JOIN numeros n ON n.id=d.numero_id
         WHERE d.status='sucesso' AND d.criado_em>=?""",(inicio_dia,)).fetchone()
@@ -2711,6 +2728,14 @@ async def atualizar_numero(numero_id: int, request: Request):
     with closing(get_db()) as consulta:
         atual=consulta.execute('SELECT * FROM numeros WHERE id=?',(numero_id,)).fetchone()
     if not atual: raise HTTPException(404,'Número não encontrado')
+    if gupshup.via(atual):
+        if set(body) != {'ativo'} or type(body['ativo']) is not bool:
+            raise HTTPException(400,'Edite esta conexão na aba Gupshup.')
+        if body['ativo'] and not gupshup.elegivel(get_db,{**dict(atual),'ativo':1}):
+            raise HTTPException(400,'Atualize o template e confira a conexão na aba Gupshup.')
+        with closing(get_db()) as c,c:
+            c.execute('UPDATE numeros SET ativo=? WHERE id=?',(int(body['ativo']),numero_id))
+        return {'status':'ok'}
     if conexoes_normais.normal(atual):
         return await asyncio.to_thread(conexoes_normais.editar,get_db,atual,body)
     # Permite pausar mesmo quando a imagem ainda não foi configurada.
@@ -3139,3 +3164,40 @@ async def vincular_oficial_vendeai(request: Request):
 def midia_publica_vendeai(token: str):
     row=oficiais_vendeai.midia(get_db,token)
     return Response(content=row['dados'],media_type=row['mime'],headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+
+
+@app.get('/gupshup', response_class=HTMLResponse)
+def pagina_gupshup(request: Request):
+    return templates.TemplateResponse(request,'gupshup.html',{})
+
+@app.get('/api/gupshup')
+def listar_gupshup():
+    return gupshup.listar(get_db)
+
+@app.post('/api/gupshup')
+def salvar_gupshup(body: dict):
+    return gupshup.salvar(get_db,body)
+
+@app.post('/api/gupshup/{app_id}/atualizar')
+def atualizar_gupshup(app_id: str):
+    return gupshup.atualizar(get_db,app_id)
+
+@app.put('/api/gupshup/{app_id}')
+def configurar_gupshup(app_id: str,body: dict):
+    return gupshup.configurar(get_db,app_id,body)
+
+
+@app.get('/api/gupshup/{app_id}/webhook')
+def webhook_gupshup_config(app_id: str):
+    with closing(get_db()) as c:
+        a=c.execute('SELECT webhook_token FROM gup_apps WHERE app_id=?',(app_id,)).fetchone()
+    if not a:raise HTTPException(404,'Aplicativo não encontrado.')
+    return JSONResponse({'path':'/webhook/gupshup/'+app_id+'?chave='+a['webhook_token']},headers={'Cache-Control':'no-store'})
+
+@app.post('/webhook/gupshup/{app_id}')
+async def webhook_gupshup(app_id: str,request: Request):
+    raw=bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw)>1000000:raise HTTPException(413,'Evento acima de 1 MB.')
+    return await asyncio.to_thread(gupshup.receber,get_db,app_id,request.query_params.get('chave',''),bytes(raw))

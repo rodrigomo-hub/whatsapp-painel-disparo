@@ -1,0 +1,38 @@
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gupshup · Conexões</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6fa;color:#202637;font:14px system-ui}main{max-width:1100px;margin:auto;padding:24px}nav{display:flex;gap:22px;margin-bottom:24px}a{color:#166534}h1{margin-bottom:6px}h2{font-size:18px}.muted{color:#64748b;line-height:1.6}.card{background:white;border:1px solid #e4e7ee;border-radius:12px;padding:22px;margin:18px 0}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}label{display:block;font-weight:600}input,select,button{font:inherit;padding:10px;border:1px solid #cbd5e1;border-radius:7px}input,select{width:100%;margin:6px 0 16px}button{cursor:pointer;background:white}button:disabled{opacity:.5;cursor:wait}.primary{background:#166534;color:white;border:0}.notice{padding:14px;border-radius:8px;background:#fff7df;color:#795710;line-height:1.6}.badge{display:inline-block;padding:5px 9px;background:#eef2ff;color:#4338ca;border-radius:6px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f8fafc;padding:16px;font:14px system-ui;line-height:1.6}.error{color:#b42318}.actions{display:flex;gap:12px;flex-wrap:wrap}.check{width:auto;margin:0 8px 18px 0}details summary{cursor:pointer}#aviso{min-height:20px} @media(max-width:650px){.grid{grid-template-columns:1fr}main{padding:16px}nav{flex-wrap:wrap}}
+</style></head><body><main><nav><a href="/">Disparos</a><a href="/wabas">WABAs</a><a href="/gupshup" aria-current="page">Gupshup</a></nav>
+<h1>Conexões Gupshup</h1><p class="muted">Cadastre o aplicativo, escolha o template e configure os limites do rodízio.</p>
+<p class="notice">Confira a qualidade do número e do template no painel da Gupshup. Qualidade desconhecida não impede o envio nestas conexões. O template precisa estar aprovado.</p>
+<section class="card"><details id="cadastro"><summary><strong>Adicionar aplicativo / atualizar token</strong></summary><form id="form"><div class="grid"><label>App ID<input id="app" required placeholder="ID do aplicativo"></label><label>Token API<input id="token" type="password" autocomplete="new-password" placeholder="Deixe vazio para manter o token salvo"></label></div><button class="primary">Consultar e salvar</button></form></details></section>
+<p id="aviso" role="status"></p><div id="lista"></div></main>
+<script>
+const $=id=>document.getElementById(id),rotulos={APPROVED:'Aprovado',PENDING:'Em análise',PAUSED:'Pausado',DISABLED:'Desativado',REJECTED:'Rejeitado',DELETED:'Excluído',UNKNOWN:'Desconhecida',GREEN:'Alta',YELLOW:'Média',RED:'Baixa',UTILITY:'Utilidade',MARKETING:'Marketing',AUTHENTICATION:'Autenticação'};
+const traduz=v=>rotulos[v]||v||'Não informado';
+function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
+async function api(path,method='GET',body){const r=await fetch(path,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});if(r.redirected)throw Error('Entre novamente no painel.');const d=await r.json();if(!r.ok)throw Error(d.detail||d.erro||'Não foi possível concluir.');return d;}
+async function acao(button,fn){button.disabled=true;$('aviso').textContent='Aguarde…';try{await fn();$('aviso').textContent='Salvo.';await carregar();}catch(e){$('aviso').textContent=e.message;}finally{button.disabled=false;}}
+function campo(form,label,value,type='text'){const l=el('label',label),i=el('input');i.type=type;i.setAttribute('aria-label',label);i.value=value??'';if(type==='number'){i.min=0;i.max=1000000;i.step=1;}l.append(i);form.append(l);return i;}
+async function carregar(){const apps=await api('/api/gupshup');$('lista').replaceChildren();if(!apps.length){$('lista').textContent='Nenhum aplicativo cadastrado.';$('cadastro').open=true;}
+for(const a of apps){const card=el('section',undefined,'card');card.append(el('h2',a.nome||'Aplicativo Gupshup'),el('p',a.app_id,'muted'));
+card.append(el('span',a.bloqueado?'Bloqueado por evento da Gupshup':a.ativo?'Habilitado no rodízio':'Fora do rodízio','badge'));
+card.append(el('p',a.consultado?'Templates consultados em '+new Date(a.consultado*1000).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})+' · Brasília':'Ainda não consultado','muted'));
+if(a.erro)card.append(el('p',a.erro,'error'));
+const form=el('form'),grid=el('div',undefined,'grid');form.append(grid);
+const nome=campo(grid,'Nome exato do aplicativo',a.nome),telefone=campo(grid,'WhatsApp remetente (55 + DDD + número)',a.telefone);nome.required=true;telefone.required=true;
+const label=el('label','Template'),select=el('select');select.setAttribute('aria-label','Template');label.append(select);grid.append(label);
+select.add(new Option('Selecione um template',''));let ts=JSON.parse(a.templates);
+for(const t of ts){const o=new Option(t.elementName+' · '+traduz(t.status)+' · '+t.languageCode,t.id);o.disabled=t.templateType!=='TEXT';select.add(o);if(t.elementName===a.template_nome&&t.languageCode===a.template_idioma)select.value=t.id;}
+select.required=true;const dia=campo(grid,'Limite diário',a.limite_diario??0,'number'),hora=campo(grid,'Limite por hora',a.limite_hora??0,'number');
+const preview=el('pre');form.append(preview);select.onchange=()=>{const t=ts.find(t=>t.id===select.value);preview.textContent=t?traduz(t.category)+' · Qualidade do template: '+traduz(t.quality)+'\n\n'+(t.data||''):'';};select.onchange();
+if(!ts.length)form.append(el('p','Nenhum template encontrado. Crie na Gupshup e atualize aqui.','muted'));
+form.append(el('p','Disponível nesta primeira versão: templates de texto. As variáveis seguem o envio por API ou planilha. Limites zero mantêm o número sem capacidade.','muted'));
+const l=el('label',''),ativo=el('input');ativo.type='checkbox';ativo.className='check';ativo.checked=!!a.ativo;l.append(ativo,document.createTextNode('Habilitar no rodízio'));form.append(l);
+const actions=el('div',undefined,'actions'),save=el('button','Salvar configuração','primary'),refresh=el('button','Atualizar templates'),web=el('button','Configurar webhook');refresh.type=web.type='button';actions.append(save,refresh,web);form.append(actions);
+form.onsubmit=e=>{e.preventDefault();acao(save,()=>api('/api/gupshup/'+a.app_id,'PUT',{nome:nome.value,telefone:telefone.value,template_id:select.value,limite_diario:Number(dia.value),limite_hora:Number(hora.value),ativo:ativo.checked}));};
+refresh.onclick=()=>acao(refresh,()=>api('/api/gupshup/'+a.app_id+'/atualizar','POST',{}));
+web.onclick=async()=>{try{const d=await api('/api/gupshup/'+a.app_id+'/webhook');const box=el('div');box.append(el('p','Na Gupshup, habilite os eventos de sistema (conta e templates) para esta URL. Preserve os retornos usados por outras integrações.','muted'));const input=el('input');input.readOnly=true;input.value=location.origin+d.path;box.append(input);web.replaceWith(box);}catch(e){$('aviso').textContent=e.message;}};
+card.append(form);$('lista').append(card);}}
+$('form').onsubmit=e=>{e.preventDefault();acao(e.submitter,async()=>{await api('/api/gupshup','POST',{app_id:$('app').value,token:$('token').value});$('token').value='';});};
+carregar().catch(e=>$('aviso').textContent=e.message);
+</script></body></html>

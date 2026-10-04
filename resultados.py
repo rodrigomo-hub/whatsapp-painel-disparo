@@ -228,7 +228,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
             continue
         r['t'] = t
         r['tipo'] = ('normais' if r['tipo_envio'] == 'vendeai_normal' else
-                     'oficiais' if r['tipo_envio'] == 'meta' else 'outros') if r['canal'] == 'whatsapp' else 'outros'
+                     'oficiais' if r['tipo_envio'] in ('meta','gupshup') else 'outros') if r['canal'] == 'whatsapp' else 'outros'
         sends[r['id']] = r
         fone = telefone(r['telefone_destino'])
         if fone:
