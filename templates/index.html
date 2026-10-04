@@ -1043,7 +1043,7 @@ async function carregarResultadosHoje() {
     if(!res.ok||res.redirected)throw new Error();
     const dados=await res.json();
     document.getElementById('comissao-prevista-hoje').textContent=dados.comissoes?.total_pagos==null?'—':Number(dados.comissoes.total_pagos).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-    document.getElementById('comissao-prevista-aviso').textContent=(dados.comissoes?.pagos_ia_sem_regra||dados.comissoes?.equipe_sem_regra)?'Parcial: há pagamentos sem dados para estimar a comissão.':'';
+    document.getElementById('comissao-prevista-aviso').textContent=(dados.comissoes?.pagos_ia_sem_regra||dados.comissoes?.pagos_portal_sem_regra||dados.comissoes?.equipe_sem_regra)?'Parcial: há pagamentos sem dados para estimar a comissão.':'';
     total.textContent=Number(dados.atividade.simulacoes).toLocaleString('pt-BR');
     document.getElementById('propostas-ia-hoje').textContent=Number(dados.atividade.valor_propostas).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
     document.getElementById('propostas-ia-hoje-link').title='Valor líquido das propostas geradas pela IA hoje, incluindo as ainda não pagas. Horário de Brasília.';

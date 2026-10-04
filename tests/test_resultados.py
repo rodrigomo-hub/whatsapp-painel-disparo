@@ -101,6 +101,31 @@ class ResultadosTests(unittest.TestCase):
         self.event('proposal_status_updated',time='2026-10-01T07:00:00-03:00',proposal={'proposal_id':'aberta','proposal_status':r.PAGO})
         self.assertEqual(self.calc()['comissoes']['prevista_ia'],0)
 
+    def test_portal_equipe_reclassifica_pago_sem_duplicar(self):
+        import comissoes
+        with self.db() as c:comissoes.semear(c)
+        proposal={'proposal_id':'portal1','bank':'facta','product':'clt','table_code':'69639','number_of_payments':24,'liquid_value':7456.6,'proposal_status':'FORMALIZATION_REQUESTED'}
+        self.event('proposal_created',proposal=proposal)
+        with self.db() as c:
+            row=c.execute('SELECT id,payload_raw FROM vendeai_eventos ORDER BY id DESC LIMIT 1').fetchone()
+            body=json.loads(row['payload_raw']);body['origin']='portal'
+            c.execute('UPDATE vendeai_eventos SET payload_raw=? WHERE id=?',(json.dumps(body),row['id']))
+        # Origem pode vir só na criação; o pagamento não precisa repeti-la.
+        self.event('proposal_status_updated',time='2026-09-30T07:00:00-03:00',proposal={'proposal_id':'portal1','proposal_status':r.PAGO})
+        self.event('proposal_status_updated',time='2026-09-30T08:00:00-03:00',proposal={'proposal_id':'portal1','proposal_status':r.PAGO})
+        self.event('proposal_created',proposal={'proposal_id':'ia1','bank':'facta','product':'clt','table_code':'69639','number_of_payments':48,'liquid_value':1000,'proposal_status':r.PAGO})
+        d=self.calc()
+        self.assertEqual(d['pagamentos']['ia']['valor'],1000)
+        self.assertEqual(d['pagamentos']['manual']['valor'],7456.6)
+        self.assertEqual(d['pagamentos']['total']['valor'],8456.6)
+        self.assertEqual(d['comissoes']['pagos_equipe'],335.55)
+        self.assertEqual(d['comissoes']['pagos_ia'],52)
+        self.assertEqual(d['atividade']['propostas'],1)
+        self.assertEqual(d['atividade']['pagos'],1)
+        self.assertEqual(len(d['equipe_portal']),1)
+        self.assertEqual(d['total_propostas'],1)
+        self.assertEqual(d['pagamentos']['manual']['portal_quantidade'],1)
+
     def test_funnel_unique_simulations_payment_values_and_link(self):
         self.send()
         self.event('conversation_created')
@@ -190,7 +215,7 @@ class ResultadosTests(unittest.TestCase):
         self.assertEqual(r.salvar_manual(self.db, '2026-09-29', body)['revisao'], 1)
         r.salvar_manual(self.db, '2026-09-29', dict(body, quantidade=11, valor='4000.10', revisao=1))
         d = r.calcular(self.db, r.momento('2026-09-29'), r.momento('2026-10-01'))
-        self.assertEqual(d['pagamentos']['manual'], {'valor': 4000.10})
+        self.assertEqual(d['pagamentos']['manual']['valor'], 4000.10)
         self.assertNotIn('quantidade', d['pagamentos']['total'])
         self.assertEqual(d['atividade']['pagos'], 0)
         self.assertEqual(d['coorte']['pagos'], 0)

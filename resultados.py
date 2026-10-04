@@ -266,6 +266,8 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
             continue
         prop = propostas.setdefault((key[0], pid), {'id': pid, 'chat': key, 'criado': None,
                                                    'pago': None, 'atualizado': t, 'dados': {}, 'status': ''})
+        if str(d.get('origin') or '').strip().lower() == 'portal':
+            prop['equipe_portal'] = True
         prop['dados'].update({k: v for k, v in p.items() if v not in (None, '')})
         estado = str(p.get('proposal_status') or p.get('status') or '')
         if estado and t >= prop['atualizado']:
@@ -276,6 +278,12 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
         if estado == PAGO:
             prop['pago'] = min(prop['pago'] or t, t)
     integrar_propostas_importadas(propostas, importadas)
+    propostas_portal = {k:p for k,p in propostas.items() if p.get('equipe_portal')}
+    propostas = {k:p for k,p in propostas.items() if not p.get('equipe_portal')}
+    aliases_portal = {(k[0], str(codigo)) for k,p in propostas_portal.items()
+                      for codigo in (p['id'],p['dados'].get('proposal_number')) if codigo}
+    historicos_portal = [h for h in historicos if (h['account_id'],h['codigo']) in aliases_portal or (h['account_id'],h['proposta_id']) in aliases_portal]
+    historicos = [h for h in historicos if h not in historicos_portal]
     # Atribuição conservadora: conversa criada + último envio ao telefone até 7 dias antes.
     # Evidência de anúncio prevalece; campanha isolada não comprova tráfego pago.
     for chat in chats.values():
@@ -335,6 +343,31 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
     comissao = {'prevista_ia':0, 'pagos_ia':0, 'pagos_equipe':sum(e['comissao_centavos'] or 0 for e in equipe)/100,
                 'propostas_ia_sem_regra':0,'pagos_ia_sem_regra':0,
                 'equipe_sem_regra':sum(m['valor_centavos'] for m in manuais)/100+sum(m['valor_centavos'] for m in ajustes_mensais if m['incluido'])/100}
+    equipe_portal = []
+    portal_valor = 0
+    portal_pagos = 0
+    portal_sem_valor = 0
+    portal_sem_comissao = 0
+    for key,p in propostas_portal.items():
+        dados=p['dados'];v=valor(dados.get('liquid_value'));pago_ref=p['pago']
+        hs=[h for h in historicos_portal if h['account_id']==key[0] and (h['codigo'] in (p['id'],str(dados.get('proposal_number') or '')) or h['proposta_id']==p['id'])]
+        if hs:
+            pago_ref=momento(hs[0]['dia']+'T12:00:00-03:00');v=hs[0]['valor_centavos']/100
+        ref=(p['criado'] or p['atualizado']).date().isoformat()
+        est=comissoes.estimar(regras,dados,ref,int(Decimal(str(v))*100) if v is not None else None)
+        if dentro(pago_ref):
+            portal_valor += v or 0;portal_pagos += 1;portal_sem_valor += v is None
+            comissao['pagos_equipe'] += est['valor'] or 0
+            portal_sem_comissao += est['valor'] is None
+        if any(dentro(t) for t in (p['criado'],pago_ref,p['atualizado'])):
+            ct=chats.get(p['chat'],{}).get('contato',{})
+            equipe_portal.append({'id':p['id'],'nome':ct.get('name') or p.get('nome_importado',''),
+                'criado_em':p['criado'].isoformat() if p['criado'] else None,
+                'pago_em':pago_ref.isoformat() if pago_ref else None,'atualizado_em':p['atualizado'].isoformat(),
+                'status':p['status'],'status_nome':STATUS.get(p['status'],p['status'] or 'Não informado'),
+                'valor':v,'prazo':dados.get('number_of_payments'),'comissao':est,'origem':'portal'})
+    equipe_portal.sort(key=lambda p:p['atualizado_em'],reverse=True)
+    comissao['pagos_portal_sem_regra']=portal_sem_comissao
     lista = []
     for key, p in propostas.items():
         chat = chats.get(p['chat'], {'contato': {}, 'origem': 'nao_identificada', 'envio': None, 'campanha': ''})
@@ -392,13 +425,14 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
     total = len(lista); pagina = min(pagina, max(1, (total+49)//50))
     ajuste_mensal = sum(m['valor_centavos'] for m in ajustes_mensais if m['incluido'])
     manual_valor = (sum(m['valor_centavos'] for m in manuais) + sum(e['valor_centavos'] for e in equipe) + ajuste_mensal) / 100
+    manual_valor += portal_valor
     ia = conciliar_historico(propostas, historicos, inicio, fim, atividade)
     pagamentos = {'ia': ia,
-                  'manual': {'valor': manual_valor},
+                  'manual': {'valor': round(manual_valor,2), 'portal_valor':round(portal_valor,2),'portal_quantidade':portal_pagos,'sem_valor':portal_sem_valor},
                   'total': {'valor': round(ia['valor']+manual_valor, 2),
-                            'sem_valor': ia['sem_valor']}}
+                            'sem_valor': ia['sem_valor']+portal_sem_valor}}
     return {'atualizado_em': agora.isoformat(), 'primeiro_evento': primeiro_evento.isoformat() if primeiro_evento else None,
-            'comissoes': {**comissao, 'total_pagos':round(comissao['pagos_ia']+comissao['pagos_equipe'],2)}, 'equipe':equipe, 'custo_meta':custo,
+            'comissoes': {**comissao, 'total_pagos':round(comissao['pagos_ia']+comissao['pagos_equipe'],2)}, 'equipe':equipe, 'equipe_portal':equipe_portal, 'custo_meta':custo,
             'pagamentos': pagamentos, 'manuais': manuais, 'ajustes_mensais': ajustes_mensais,
             'atividade': fechar(atividade), 'coorte': fechar(coorte),
             'origens': {k: fechar(v) for k, v in grupos.items()},
