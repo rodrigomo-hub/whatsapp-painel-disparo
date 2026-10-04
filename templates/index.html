@@ -140,8 +140,14 @@
     <div style="background:#eff6ff;color:#1d4ed8;padding:10px 18px;border-radius:10px"><strong id="enviados-oficiais-hoje" style="font-size:24px">—</strong><br><small>Por números oficiais</small></div>
     <div id="enviados-outros-area" hidden style="background:#f1f5f9;color:#475569;padding:10px 18px;border-radius:10px"><strong id="enviados-outros-hoje" style="font-size:24px">—</strong><br><small>Outros / não identificados</small></div>
   </div>
+  <label style="display:inline-flex;align-items:center;gap:7px;font-size:12px;color:#64748b;margin-top:8px;cursor:pointer;"><input type="checkbox" id="mostrar-comissao-resumo" aria-controls="comissao-prevista-resumo"> Mostrar comissão prevista no resumo</label>
   <div id="total-erro-hoje" style="font-size:13px; color:#dc2626; margin-top:4px;"></div>
   <div style="display:flex; justify-content:center; gap:24px; flex-wrap:wrap; margin-top:16px; padding-top:16px; border-top:1px solid #eee;">
+    <div id="comissao-prevista-resumo" hidden style="background:#f3f0ff;padding:10px 16px;border-radius:10px;" title="Estimativa das propostas da IA criadas hoje que seguem em andamento. Exclui pagas e canceladas. Horário de Brasília.">
+      <div id="comissao-prevista-hoje" style="font-size:24px;font-weight:700;color:#7c3aed;">—</div>
+      <a href="/resultados" style="font-size:12px;color:#64748b;text-decoration:none;">Comissão prevista · IA em andamento hoje</a>
+      <small id="comissao-prevista-aviso" style="display:block;font-size:11px;color:#986719;margin-top:4px;"></small>
+    </div>
     <div title="Clientes distintos com simulação ofertada hoje, de todas as origens. Horário de Brasília.">
       <div style="font-size:24px;font-weight:700;color:#7c3aed;" id="simulacoes-hoje">—</div>
       <a href="/resultados" id="simulacoes-hoje-link" style="font-size:12px;color:#888;text-decoration:none;">Clientes com simulação hoje</a>
@@ -1022,12 +1028,22 @@ async function carregarTotalHoje() {
     dados.total_erro_hoje > 0 ? `${dados.total_erro_hoje} erro(s)` : '';
 }
 
+function configurarComissaoResumo(){
+  const opcao=document.getElementById('mostrar-comissao-resumo'),area=document.getElementById('comissao-prevista-resumo');
+  try{opcao.checked=localStorage.getItem('mostrar-comissao-prevista-resumo')==='1';}catch{opcao.checked=false;}
+  area.hidden=!opcao.checked;
+  opcao.onchange=()=>{area.hidden=!opcao.checked;try{localStorage.setItem('mostrar-comissao-prevista-resumo',opcao.checked?'1':'0');}catch{}};
+}
+configurarComissaoResumo();
+
 async function carregarResultadosHoje() {
   const total=document.getElementById('simulacoes-hoje'),link=document.getElementById('simulacoes-hoje-link');
   try {
     const res=await fetch('/api/resultados');
     if(!res.ok||res.redirected)throw new Error();
     const dados=await res.json();
+    document.getElementById('comissao-prevista-hoje').textContent=dados.comissoes?.prevista_ia==null?'—':Number(dados.comissoes.prevista_ia).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+    document.getElementById('comissao-prevista-aviso').textContent=dados.comissoes?.propostas_ia_sem_regra?'Parcial: '+dados.comissoes.propostas_ia_sem_regra+' proposta(s) sem estimativa.':'';
     total.textContent=Number(dados.atividade.simulacoes).toLocaleString('pt-BR');
     document.getElementById('propostas-ia-hoje').textContent=Number(dados.atividade.valor_propostas).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
     document.getElementById('propostas-ia-hoje-link').title='Valor líquido das propostas geradas pela IA hoje, incluindo as ainda não pagas. Horário de Brasília.';
@@ -1044,6 +1060,8 @@ async function carregarResultadosHoje() {
     aviso.textContent=faltam?faltam+' contrato(s) sem valor informado':'';aviso.style.display=faltam?'block':'none';
     link.title='Ver resultados completos. Atualizado às '+new Date(dados.atualizado_em).toLocaleTimeString('pt-BR',{timeZone:'America/Sao_Paulo'})+' (Brasília).';
   } catch(e) {
+    document.getElementById('comissao-prevista-hoje').textContent='—';
+    document.getElementById('comissao-prevista-aviso').textContent='Não foi possível atualizar.';
     total.textContent='—';
     for(const id of ['pago-ia-percentual','pago-equipe-percentual'])document.getElementById(id).textContent='—';
     for(const id of ['propostas-ia-hoje','pago-ia-hoje','pago-manual-hoje','pago-total-hoje']){document.getElementById(id).textContent='—';document.getElementById(id+'-link').title='Não foi possível atualizar. Clique para consultar os resultados.';}
