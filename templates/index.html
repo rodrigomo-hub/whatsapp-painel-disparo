@@ -42,7 +42,7 @@
   .checkboxes-numeros { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 15px; }
   .checkboxes-numeros label { font-size: 13px; display: flex; align-items: center; gap: 4px; }
   .modal-fundo { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); align-items: center; justify-content: center; z-index: 100; }
-  .modal-caixa { background: white; padding: 25px; border-radius: 10px; width: 400px; }
+  .modal-caixa { background: white; padding: 25px; border-radius: 10px; width: min(540px,94vw); max-height:90vh; overflow-y:auto; }
   .modal-caixa h3 { margin-top: 0; }
   .modal-caixa form { flex-direction: column; align-items: stretch; }
   .modal-caixa input { margin-right: 0; margin-bottom: 10px; }
@@ -485,9 +485,17 @@
       <small id="editar-vinculo" style="display:block;margin-bottom:12px;"></small>
       <label>Template</label>
       <button type="button" class="btn-editar" onclick="buscarTemplatesEditar()" style="margin-bottom:8px;">🔍 Buscar templates</button>
-      <select id="editar-template" onchange="mostrarPreview('editar-template', 'preview-editar')">
+      <select id="editar-template" onchange="mostrarPreview('editar-template', 'preview-editar'); renderFixosNumero()">
         <option value="">Selecione um template...</option>
       </select>
+      <section id="editar-fixos" style="padding:14px;background:#f0f7f3;border:1px solid #d6e9dc;border-radius:9px;margin:0 0 14px;">
+        <strong>Textos das variáveis</strong>
+        <p id="editar-fixos-status" role="status" style="font-size:12px;color:#64748b;">Carregando…</p>
+        <label id="editar-fixos-opcao" style="font-size:13px;"><input type="checkbox" id="editar-fixos-ativo"> Usar textos fixos nas variáveis</label>
+        <small style="display:block;margin:8px 0;">Vale para todos os números deste template e idioma na mesma WABA. Substitui os valores recebidos pela API/n8n ou planilha.</small>
+        <div id="editar-fixos-campos"></div>
+        <pre id="editar-fixos-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;font:13px system-ui;margin-bottom:0;"></pre>
+      </section>
     <label style="font-size:13px;"><input type="checkbox" id="editar-sem-variaveis"> Texto do template sem variáveis (ignorar parâmetros recebidos)</label>
       <div id="editar-imagem-box" style="display:none;width:100%;padding:10px;background:#f8fafc;border-radius:8px;">
       <label style="display:block;">Imagem do template (obrigatória)</label>
@@ -684,14 +692,63 @@ function buscarTemplatesNovo() {
   popularSelectTemplates('novo-template', token, waba);
 }
 
-function buscarTemplatesEditar() {
-  const id = document.getElementById('editar-id').value;
-  const n = numerosCache.find(x => x.id === parseInt(id));
-  if (!n) return;
-  // usa o access_token completo do numero (nao o truncado do cache)
-  fetch(`/api/numero-token/${id}`).then(r => r.json()).then(dados => {
-    popularSelectTemplates('editar-template', dados.access_token, n.waba_id);
-  });
+function buscarTemplatesEditar() { return carregarFixosNumero(); }
+
+let fixosNumero=null,fixosNumeroSeq=0;
+async function carregarFixosNumero(){
+  const id=Number(document.getElementById('editar-id').value),n=numerosCache.find(n=>n.id===id),seq=++fixosNumeroSeq;
+  document.getElementById('editar-fixos-status').textContent='Carregando templates e textos salvos…';
+  if(!n?.waba_id){document.getElementById('editar-fixos-status').textContent='Cadastre a WABA deste número para configurar os textos fixos.';return;}
+  try{
+    const r=await fetch('/api/wabas-painel/'+encodeURIComponent(n.waba_id)+'/textos-fixos');
+    const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível carregar os templates.');
+    if(seq!==fixosNumeroSeq||Number(document.getElementById('editar-id').value)!==id)return;
+    const select=document.getElementById('editar-template'),nome=select.value,idioma=select.selectedOptions[0]?.dataset.idioma||'pt_BR';
+    fixosNumero={waba:n.waba_id,templates:d.templates,salvos:d.textos_fixos,rascunhos:{}};
+    select.replaceChildren();let encontrado=false;
+    for(const t of d.templates){
+      const corpo=(t.components||[]).find(c=>c.type==='BODY')?.text||'',opt=new Option(t.name+' · '+t.language+' · '+({APPROVED:'Aprovado',PENDING:'Em análise',PAUSED:'Pausado',REJECTED:'Rejeitado',DISABLED:'Desativado'}[t.status]||t.status),t.name);
+      opt.dataset.idioma=t.language;opt.dataset.semVariaveis=String(!/\{\{/.test(corpo));opt.dataset.header=(t.components||[]).find(c=>c.type==='HEADER')?.format||'';
+      templatesEncontrados[t.name]=corpo;select.append(opt);
+      if(t.name===nome&&t.language===idioma){opt.selected=true;encontrado=true;}
+    }
+    if(!encontrado){const o=new Option(nome+' · '+idioma+' (não encontrado)',nome);o.dataset.idioma=idioma;select.prepend(o);o.selected=true;}
+    mostrarPreview('editar-template','preview-editar');renderFixosNumero();
+  }catch(e){if(seq===fixosNumeroSeq)document.getElementById('editar-fixos-status').textContent=e.message;}
+}
+function renderFixosNumero(){
+  const campos=document.getElementById('editar-fixos-campos'),toggle=document.getElementById('editar-fixos-ativo'),status=document.getElementById('editar-fixos-status');
+  campos.replaceChildren();document.getElementById('editar-fixos-preview').textContent='';toggle.disabled=true;toggle.checked=false;
+  if(!fixosNumero)return;
+  const opt=document.getElementById('editar-template').selectedOptions[0],t=fixosNumero.templates.find(t=>t.name===opt?.value&&t.language===opt?.dataset.idioma);
+  if(!t){status.textContent='Template não encontrado nesta WABA. Clique em Buscar templates para tentar novamente.';return;}
+  const corpo=(t.components||[]).find(c=>c.type==='BODY')?.text||'',ids=[...new Set([...corpo.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map(m=>m[1]))].sort((a,b)=>Number(a)-Number(b));
+  const key=JSON.stringify([t.name,t.language]),salvo=fixosNumero.salvos.find(f=>f.nome===t.name&&f.idioma===t.language);
+  const draft=fixosNumero.rascunhos[key]??={nome:t.name,idioma:t.language,ativo:!!salvo?.ativo,valores:salvo?.valores||[],alterado:false};
+  const suportado=ids.length&&ids.every((v,i)=>v===String(i+1));
+  status.textContent=!ids.length?'Este template não tem variáveis.':!suportado?'Este formato de variável ainda não é suportado.':'Preencha os textos que serão usados nos envios.';
+  toggle.checked=draft.ativo;toggle.disabled=!suportado&&!draft.ativo;
+  const inputs=[];
+  for(const [i,id] of ids.entries()){
+    const label=document.createElement('label'),input=document.createElement('textarea');label.textContent='Variável {{'+id+'}}';label.htmlFor='editar-fixo-'+i;
+    input.id=label.htmlFor;input.rows=2;input.maxLength=1024;input.value=draft.valores[i]||'';input.style.cssText='display:block;width:100%;box-sizing:border-box;padding:10px;border:1px solid #cad8ce;border-radius:6px;margin:6px 0 10px;font:inherit;resize:vertical';
+    inputs.push(input);campos.append(label,input);
+  }
+  function atualizar(alterado){
+    draft.ativo=toggle.checked;draft.valores=inputs.map(i=>i.value);if(alterado)draft.alterado=true;
+    for(const input of inputs){input.disabled=!draft.ativo;input.required=draft.ativo;}
+    document.getElementById('editar-fixos-preview').textContent=draft.ativo?corpo.replace(/\{\{\s*(\d+)\s*\}\}/g,(m,n)=>draft.valores[Number(n)-1]||m):'';
+    if(draft.ativo)document.getElementById('editar-sem-variaveis').checked=false;
+  }
+  toggle.onchange=()=>atualizar(true);inputs.forEach(i=>i.oninput=()=>atualizar(true));atualizar(false);
+}
+async function salvarFixosNumero(){
+  if(!fixosNumero)return;
+  const opt=document.getElementById('editar-template').selectedOptions[0],d=fixosNumero.rascunhos[JSON.stringify([opt?.value,opt?.dataset.idioma])];
+  if(!d?.alterado)return;
+  const r=await fetch('/api/wabas-painel/'+encodeURIComponent(fixosNumero.waba)+'/textos-fixos',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
+  if(!r.ok){const e=await r.json();throw Error('O número foi salvo, mas os textos fixos não: '+(e.detail||'tente novamente.'));}
+  d.alterado=false;
 }
 
 function traduzirCategoria(c) {
@@ -1319,6 +1376,8 @@ async function removerNumero(id) {
 function abrirModal(id) {
   const n = numerosCache.find(x => x.id === id);
   if(n.tipo_envio === 'vendeai_normal'){location.href='/conexoes?numero='+id;return;}
+  fixosNumero=null;fixosNumeroSeq++;renderFixosNumero();
+  document.getElementById('preview-editar').style.display='none';
   document.getElementById('editar-id').value = n.id;
   const via=document.getElementById('editar-via');via.value=n.via_envio||'meta';
   via.options[1].disabled=!n.vendeai_inbox_id;
@@ -1335,9 +1394,11 @@ function abrirModal(id) {
   document.getElementById('editar-limite').value = n.limite_diario;
   document.getElementById('editar-limite-hora').value = n.limite_hora;
   document.getElementById('modal-editar').style.display = 'flex';
+  carregarFixosNumero();
 }
 
 function fecharModal() {
+  fixosNumeroSeq++;
   document.getElementById('modal-editar').style.display = 'none';
 }
 
@@ -1361,6 +1422,7 @@ document.getElementById('form-editar').addEventListener('submit', async (e) => {
     })
   });
   if(!resposta.ok){const erro=await resposta.json();throw new Error(erro.detail || 'Não foi possível salvar.');}
+  await salvarFixosNumero();
   fecharModal();
   carregarNumeros();
   } catch(erro){alert(erro.message);} finally{botao.disabled=false;}

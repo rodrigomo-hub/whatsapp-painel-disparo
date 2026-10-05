@@ -2544,6 +2544,16 @@ def salvar_textos_template(waba_id: str, body: dict):
     return textos_templates.salvar(get_db,waba_id,body,consultar_meta_waba,oficiais_vendeai.estrutura)
 
 
+@app.get('/api/wabas-painel/{waba_id}/textos-fixos')
+def consultar_textos_template(waba_id: str):
+    with closing(get_db()) as c:
+        w=c.execute('SELECT access_token FROM wabas_salvas WHERE waba_id=?',(waba_id,)).fetchone()
+    if not w:raise HTTPException(404,'WABA não cadastrada.')
+    resposta=consultar_meta_waba(waba_id,w['access_token'],'/message_templates','id,name,language,status,category,components,parameter_format')
+    if resposta.get('erro'):raise HTTPException(502,'Não foi possível carregar os templates. Tente buscar novamente.')
+    return JSONResponse({'templates':resposta.get('dados',[]),'textos_fixos':textos_templates.listar(get_db,waba_id)},headers={'Cache-Control':'no-store'})
+
+
 @app.get('/api/wabas-salvas')
 def wabas_salvas():
     with closing(get_db()) as c:

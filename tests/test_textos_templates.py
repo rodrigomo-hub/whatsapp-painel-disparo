@@ -33,6 +33,18 @@ class TextosFixosTests(unittest.TestCase):
             main.enviar_por_numero(self.numero(),'5511987654321',recebidos,'Maria')
             self.assertEqual(self.whatsapp.call_args.args[2],['Texto fixo','Outra frase'])
 
+    def test_editor_loads_templates_and_saved_values_without_token(self):
+        self.preparar();self.salvar()
+        with patch.object(main,'consultar_meta_waba',return_value={'dados':[self.template]}) as consulta:
+            r=self.client.get('/api/wabas-painel/888/textos-fixos')
+        self.assertEqual(r.status_code,200)
+        self.assertEqual(r.json()['templates'][0]['name'],'oferta')
+        self.assertEqual(r.json()['textos_fixos'][0]['valores'],['Texto fixo','Outra frase'])
+        self.assertNotIn('access_token',r.text)
+        self.assertEqual(consulta.call_count,1)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get('/api/wabas-painel/888/textos-fixos').status_code,401)
+
     def test_vendeai_official_receives_fixed_values(self):
         self.preparar();self.salvar()
         n={**self.numero(),'via_envio':'vendeai'}
