@@ -1,4 +1,5 @@
 """Leitura dos eventos preservados. Nenhuma chamada externa ou alteração de dados."""
+import atribuicao_equipe
 import ranking_wabas
 import comissoes
 import custos_meta
@@ -207,7 +208,8 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
         nomes_wabas = {r['waba_id']:r['nome'] for r in c.execute('SELECT waba_id,nome FROM wabas_salvas')} if c.execute("SELECT 1 FROM sqlite_master WHERE name='wabas_salvas'").fetchone() else {}
         eventos = c.execute('SELECT id,recebido_em,payload_raw FROM vendeai_eventos '
                             'WHERE conta_confirmada=1 AND repetido_de IS NULL ORDER BY id').fetchall()
-        envios = c.execute("SELECT d.id,d.numero_id,d.telefone_destino,d.criado_em,d.canal,"
+        cpf_envio='d.cpf' if 'cpf' in {r[1] for r in c.execute('PRAGMA table_info(disparos)')} else "''"
+        envios = c.execute("SELECT "+cpf_envio+" AS cpf,d.id,d.numero_id,d.telefone_destino,d.criado_em,d.canal,"
                            "COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio,'') tipo_envio,"
                            "n.nome FROM disparos d LEFT JOIN numeros n ON n.id=d.numero_id "
                            "WHERE d.status='sucesso'").fetchall()
@@ -347,6 +349,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
                 'propostas_ia_sem_regra':0,'pagos_ia_sem_regra':0,
                 'equipe_sem_regra':sum(m['valor_centavos'] for m in manuais)/100+sum(m['valor_centavos'] for m in ajustes_mensais if m['incluido'])/100}
     equipe_portal = []
+    equipe_ranking = list(equipe)
     portal_valor = 0
     portal_pagos = 0
     portal_sem_valor = 0
@@ -358,7 +361,13 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
             pago_ref=momento(hs[0]['dia']+'T12:00:00-03:00');v=hs[0]['valor_centavos']/100
         ref=(p['criado'] or p['atualizado']).date().isoformat()
         est=comissoes.estimar(regras,dados,ref,int(Decimal(str(v))*100) if v is not None else None)
+        ct=chats.get(p['chat'],{}).get('contato',{})
+        envio_portal=atribuicao_equipe.encontrar([dict(e) for e in envios if e['canal']=='whatsapp'],ct.get('cpf'),ct.get('phone'),p['criado'])
+        remetente_portal=remetentes.get(envio_portal['numero_id'],{}) if envio_portal else {}
+        waba_portal=remetente_portal.get('waba_id','') if remetente_portal.get('tipo_envio')!='vendeai_normal' else ''
+        if chats.get(p['chat'],{}).get('anuncio'):waba_portal=''
         if dentro(pago_ref):
+            equipe_ranking.append({'waba_id':waba_portal,'numero_origem_id':envio_portal['numero_id'] if envio_portal else None,'valor_centavos':int(Decimal(str(v or 0))*100)})
             portal_valor += v or 0;portal_pagos += 1;portal_sem_valor += v is None
             comissao['pagos_equipe'] += est['valor'] or 0
             portal_sem_comissao += est['valor'] is None
@@ -368,7 +377,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
                 'criado_em':p['criado'].isoformat() if p['criado'] else None,
                 'pago_em':pago_ref.isoformat() if pago_ref else None,'atualizado_em':p['atualizado'].isoformat(),
                 'status':p['status'],'status_nome':STATUS.get(p['status'],p['status'] or 'Não informado'),
-                'valor':v,'prazo':dados.get('number_of_payments'),'comissao':est,'origem':'portal'})
+                'valor':v,'prazo':dados.get('number_of_payments'),'comissao':est,'origem':'portal','waba_id':waba_portal,'waba_nome':nomes_wabas.get(waba_portal,'')})
     equipe_portal.sort(key=lambda p:p['atualizado_em'],reverse=True)
     comissao['pagos_portal_sem_regra']=portal_sem_comissao
     lista = []
@@ -438,7 +447,8 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
             'comissoes': {**comissao, 'total_pagos':round(comissao['pagos_ia']+comissao['pagos_equipe'],2)}, 'equipe':equipe, 'equipe_portal':equipe_portal, 'custo_meta':custo,
             'pagamentos': pagamentos, 'manuais': manuais, 'ajustes_mensais': ajustes_mensais,
             'atividade': fechar(atividade), 'coorte': fechar(coorte),
-            'wabas': ranking_wabas.calcular(numeros.values(),remetentes,nomes_wabas),
+            'wabas_opcoes': [{'id':w,'nome':nome or w} for w,nome in nomes_wabas.items()],
+            'wabas': ranking_wabas.calcular(numeros.values(),remetentes,nomes_wabas,equipe_ranking),
             'origens': {k: fechar(v) for k, v in grupos.items()},
             'numeros': [fechar(v) for v in numeros.values()],
             'janelas': [fechar(v) for k, v in sorted(janelas.items())],

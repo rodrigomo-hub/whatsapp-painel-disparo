@@ -1,4 +1,5 @@
 """Estimativas de comissão e lançamentos individuais da equipe."""
+import atribuicao_equipe
 import json,re,uuid
 from decimal import Decimal,InvalidOperation,ROUND_HALF_UP
 from datetime import datetime,date
@@ -11,6 +12,9 @@ REGRAS={'69639':{24:450,36:520,48:520},'69620':{24:270,36:520,48:520},'69612':{2
 def migrar(c):
  c.execute('''CREATE TABLE IF NOT EXISTS comissoes_regras(banco TEXT NOT NULL,produto TEXT NOT NULL,tabela TEXT NOT NULL,prazo INTEGER NOT NULL,inicio TEXT NOT NULL,percentual_bp INTEGER NOT NULL,PRIMARY KEY(banco,produto,tabela,prazo,inicio))''')
  c.execute('''CREATE TABLE IF NOT EXISTS propostas_equipe(id TEXT PRIMARY KEY,dia TEXT NOT NULL,identificacao TEXT NOT NULL,tabela TEXT NOT NULL,prazo INTEGER NOT NULL,valor_centavos INTEGER NOT NULL,percentual_bp INTEGER,comissao_centavos INTEGER,revisao INTEGER NOT NULL,excluido INTEGER NOT NULL DEFAULT 0,atualizado_em TEXT NOT NULL)''')
+ cols={r[1] for r in c.execute('PRAGMA table_info(propostas_equipe)')}
+ for nome,tipo in [('cpf',"TEXT NOT NULL DEFAULT ''"),('telefone',"TEXT NOT NULL DEFAULT ''"),('waba_manual',"TEXT NOT NULL DEFAULT ''"),('proposta_em',"TEXT NOT NULL DEFAULT ''"),('waba_id',"TEXT NOT NULL DEFAULT ''"),('numero_origem_id','INTEGER'),('disparo_origem_id','INTEGER'),('atribuicao_fonte',"TEXT NOT NULL DEFAULT 'nao_identificada'")]:
+  if nome not in cols:c.execute(f'ALTER TABLE propostas_equipe ADD COLUMN {nome} {tipo}')
  c.execute('CREATE INDEX IF NOT EXISTS idx_equipe_dia ON propostas_equipe(dia,excluido)')
  c.execute('CREATE TABLE IF NOT EXISTS equipe_operacoes(id TEXT PRIMARY KEY,corpo TEXT NOT NULL,resposta TEXT NOT NULL)')
 
@@ -77,9 +81,10 @@ def operar(get_db,body):
    if any(not isinstance(i,dict) for i in items):raise HTTPException(400,'Proposta inválida.')
    regras=carregar_regras(c);vals=[validar_item(dict(i,dia=dia),regras) for i in items]
    if sum(v[4] for v in vals)!=old['valor_centavos']:raise HTTPException(400,'A soma das propostas deve ser igual ao total antigo. Nada foi alterado.')
-   for v in vals:
+   for item,v in zip(items,vals):
     ident=str(uuid.uuid4());ids.append(ident)
     c.execute('INSERT INTO propostas_equipe(id,dia,identificacao,tabela,prazo,valor_centavos,percentual_bp,comissao_centavos,revisao,atualizado_em) VALUES(?,?,?,?,?,?,?,?,1,?)',(ident,*v,now))
+    atribuicao_equipe.salvar(c,ident,dict(item,dia=dia))
    c.execute('UPDATE pagamentos_manuais SET valor_centavos=0,revisao=revisao+1,atualizado_em=? WHERE dia=?',(now,dia))
   elif acao in ('salvar','excluir'):
    ident=str(body.get('id') or uuid.uuid4());old=c.execute('SELECT * FROM propostas_equipe WHERE id=?',(ident,)).fetchone()
@@ -90,6 +95,7 @@ def operar(get_db,body):
    else:
     v=validar_item(body,carregar_regras(c))
     c.execute('''INSERT INTO propostas_equipe(id,dia,identificacao,tabela,prazo,valor_centavos,percentual_bp,comissao_centavos,revisao,atualizado_em) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET dia=excluded.dia,identificacao=excluded.identificacao,tabela=excluded.tabela,prazo=excluded.prazo,valor_centavos=excluded.valor_centavos,percentual_bp=excluded.percentual_bp,comissao_centavos=excluded.comissao_centavos,revisao=excluded.revisao,atualizado_em=excluded.atualizado_em''',(ident,*v,body['revisao']+1,now))
+    atribuicao_equipe.salvar(c,ident,body,old)
    ids=[ident]
   else:raise HTTPException(400,'Operação inválida.')
   result={'ok':True,'ids':ids}
