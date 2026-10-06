@@ -1,4 +1,5 @@
 """Leitura dos eventos preservados. Nenhuma chamada externa ou alteração de dados."""
+import ranking_wabas
 import comissoes
 import custos_meta
 import bisect
@@ -202,6 +203,8 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
     agora = agora or datetime.now(TZ)
     with closing(get_db()) as c:
         c.execute('BEGIN')
+        remetentes = {r['numero_id']:dict(r) for r in c.execute('SELECT * FROM remetentes_historicos')} if c.execute("SELECT 1 FROM sqlite_master WHERE name='remetentes_historicos'").fetchone() else {}
+        nomes_wabas = {r['waba_id']:r['nome'] for r in c.execute('SELECT waba_id,nome FROM wabas_salvas')} if c.execute("SELECT 1 FROM sqlite_master WHERE name='wabas_salvas'").fetchone() else {}
         eventos = c.execute('SELECT id,recebido_em,payload_raw FROM vendeai_eventos '
                             'WHERE conta_confirmada=1 AND repetido_de IS NULL ORDER BY id').fetchall()
         envios = c.execute("SELECT d.id,d.numero_id,d.telefone_destino,d.criado_em,d.canal,"
@@ -435,6 +438,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
             'comissoes': {**comissao, 'total_pagos':round(comissao['pagos_ia']+comissao['pagos_equipe'],2)}, 'equipe':equipe, 'equipe_portal':equipe_portal, 'custo_meta':custo,
             'pagamentos': pagamentos, 'manuais': manuais, 'ajustes_mensais': ajustes_mensais,
             'atividade': fechar(atividade), 'coorte': fechar(coorte),
+            'wabas': ranking_wabas.calcular(numeros.values(),remetentes,nomes_wabas),
             'origens': {k: fechar(v) for k, v in grupos.items()},
             'numeros': [fechar(v) for v in numeros.values()],
             'janelas': [fechar(v) for k, v in sorted(janelas.items())],

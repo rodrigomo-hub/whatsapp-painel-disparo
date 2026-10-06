@@ -20,6 +20,7 @@ import vendeai_eventos
 import resultados
 import comissoes
 import custos_meta
+import ranking_wabas
 import gupshup
 import qualidade_historico
 import optout
@@ -361,6 +362,7 @@ def init_db():
     vendeai_mailing.migrar(conn)
     fila_disparos.migrar(conn)
     transbordo.migrar(conn)
+    ranking_wabas.migrar(conn)
     gupshup.migrar(conn)
     qualidade_historico.migrar(conn)
     conn.commit()

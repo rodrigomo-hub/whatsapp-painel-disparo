@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 COPY gupshup.py .
+COPY ranking_wabas.py .
 COPY vendeai_mailing.py .
 COPY fila_disparos.py .
 COPY planilhas.py .
