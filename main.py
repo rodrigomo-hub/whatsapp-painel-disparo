@@ -16,6 +16,7 @@ import templates_lote
 import textos_templates
 import link_conversa
 import campanhas_sms
+import lembretes_sms
 import vendeai_eventos
 import resultados
 import comissoes
@@ -350,6 +351,7 @@ def init_db():
     custos_meta.migrar(conn)
     templates_lote.migrar(conn)
     campanhas_sms.migrar(conn)
+    lembretes_sms.migrar(conn)
     conn.execute('CREATE TABLE IF NOT EXISTS sms_credencial(id INTEGER PRIMARY KEY CHECK(id=1),token TEXT NOT NULL)')
     textos_templates.migrar(conn)
     if 'limite_meta' not in colunas_existentes:
@@ -1171,6 +1173,15 @@ async def loop_campanhas_sms():
         await asyncio.sleep(1)
 
 
+async def loop_lembretes_sms():
+    while not app.state.fila_parar:
+        try:
+            await asyncio.to_thread(lembretes_sms.processar_um,get_db,carregar_configuracao()['vendeai_account_id'],token_sms(),dentro_do_horario_permitido,consultar_saldo_sms)
+        except Exception as erro:
+            registrar_evento(None,'lembrete_sms_erro',type(erro).__name__)
+        await asyncio.sleep(5)
+
+
 async def loop_link_conversa():
     while True:
         try:
@@ -1213,6 +1224,8 @@ async def startup():
     app.state.fila_parar = False
     campanhas_sms.recuperar(get_db)
     app.state.sms_task=asyncio.create_task(loop_campanhas_sms())
+    lembretes_sms.recuperar(get_db)
+    app.state.lembretes_sms_task=asyncio.create_task(loop_lembretes_sms())
     app.state.fila_task = asyncio.create_task(loop_fila())
 
 
@@ -2384,6 +2397,29 @@ def pagina_campanhas_sms(request: Request):
     return templates.TemplateResponse(request,'campanhas_sms.html',{})
 
 
+@app.get('/lembretes-sms',response_class=HTMLResponse)
+def pagina_lembretes_sms(request: Request):
+    return templates.TemplateResponse(request,'lembretes_sms.html',{})
+
+
+@app.get('/api/lembretes-sms')
+def listar_lembretes_sms(inicio: str='',fim: str=''):
+    try:
+        a=datetime.strptime(inicio,'%Y-%m-%d').replace(tzinfo=TZ) if inicio else datetime.now(TZ).replace(hour=0,minute=0,second=0,microsecond=0)
+        b=(datetime.strptime(fim,'%Y-%m-%d').replace(tzinfo=TZ) if fim else a)+timedelta(days=1)
+        if b<=a:raise ValueError()
+    except ValueError:raise HTTPException(400,'Período inválido.')
+    d=lembretes_sms.relatorio(get_db,carregar_configuracao()['vendeai_account_id'],a,b)
+    d['sms_configurado']=bool(token_sms())
+    return d
+
+
+@app.put('/api/lembretes-sms')
+def salvar_lembretes_sms(body: dict):
+    if body.get('habilitado') and not token_sms():raise HTTPException(400,'Configure o token de SMS primeiro.')
+    return lembretes_sms.salvar(get_db,body)
+
+
 @app.get('/api/campanhas-sms')
 def listar_campanhas_sms():
     permitido,motivo=dentro_do_horario_permitido()
@@ -2945,6 +2981,7 @@ async def loop_fila():
 async def parar_fila():
     app.state.fila_parar = True
     if getattr(app.state,'sms_task',None):await app.state.sms_task
+    if getattr(app.state,'lembretes_sms_task',None):await app.state.lembretes_sms_task
     if getattr(app.state,"etiquetas_task",None): app.state.etiquetas_task.cancel()
     for task in getattr(app.state,"optout_tasks",[]): task.cancel()
     task = getattr(app.state, "fila_task", None)
