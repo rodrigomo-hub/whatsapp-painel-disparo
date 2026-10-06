@@ -1284,6 +1284,8 @@ def pode_disparar():
     conn.close()
 
     disponiveis = [n for n in numeros if disponivel_agora(n)]
+    if estado_lote()['pendentes'] and capacidade_lote()['capacidade_agora'] <= 0:
+        disponiveis = []
     cfg = carregar_configuracao()
     sms_disponivel = cfg["sms_habilitado"] and bool(token_sms())
 
@@ -1438,7 +1440,7 @@ def entrada_exclusiva(func):
     return protegida
 
 
-def capacidade_lote(selecionados=None):
+def capacidade_lote(selecionados=None, descontar_fila=True):
     if selecionados is None:
         selecionados = []
     if not isinstance(selecionados, list) or not all(type(n) is int for n in selecionados):
@@ -1461,9 +1463,12 @@ def capacidade_lote(selecionados=None):
                          'disponivel_agora': min(dia, hora) if elegivel else 0})
     permitido, motivo = dentro_do_horario_permitido()
     estado = estado_lote()
+    bruta = sum(n['disponivel_agora'] for n in detalhes) if permitido else 0
+    reservados = estado['pendentes'] if descontar_fila else 0
     return {'numeros': detalhes, 'restante_dia': sum(n['restante_dia'] for n in detalhes),
             'restante_hora': sum(n['restante_hora'] for n in detalhes),
-            'capacidade_agora': sum(n['disponivel_agora'] for n in detalhes) if permitido else 0,
+            'capacidade_agora': max(0, bruta - reservados), 'capacidade_bruta': bruta,
+            'reservados_fila': reservados,
             'horario_permitido': permitido, 'motivo_horario': motivo, 'fila_ocupada': bool(estado['pendentes']),
             'lote_em_andamento': bool(estado['lote'])}
 
@@ -1557,7 +1562,7 @@ async def disparar(request: Request):
     existente = obter_fila().existente(preparado,body,cfg,chave)
     if existente:
         return JSONResponse(existente,status_code=202 if existente['status']=='enfileirado' else 200)
-    impedimento = impedimento_fila()
+    impedimento = impedimento_entrada()
     if cfg['transbordo_habilitado'] and impedimento and impedimento['motivo_codigo'] in ('nenhum_numero_disponivel','fora_do_horario'):
         if request.headers.get('X-Transbordo-Hop') or body.get('_transbordo'):
             return {**impedimento,'aceito':False,'motivo_codigo':'transbordo_sem_reencaminhamento'}
@@ -1575,7 +1580,7 @@ async def disparar(request: Request):
         }
 
     if cfg["vendeai_habilitado"] and cfg["fila_habilitada"]:
-        impedimento = impedimento_fila()
+        impedimento = impedimento_entrada()
         if impedimento:
             return {**impedimento, "aceito": False}
         chave = request.headers.get("Idempotency-Key") or body.get("idempotency_key")
@@ -1592,6 +1597,24 @@ async def disparar(request: Request):
                 "motivo": "Disparo nao realizado: cadastro na VendeAI nao confirmado", "vendeai": cadastro}
 
     return executar_disparo_preparado(preparado, cadastro)
+
+
+def capacidade_admissao(origem, numeros, cfg):
+    # SMS tem seu proprio fallback; nao recebe o limite de WhatsApp.
+    if origem != 'lote' and cfg['sms_habilitado'] and token_sms():
+        return None
+    return capacidade_lote(numeros, descontar_fila=False)['capacidade_agora']
+
+
+def impedimento_entrada(origem="individual", numeros=None):
+    motivo = impedimento_fila(origem, numeros)
+    if motivo:
+        return motivo
+    vagas = capacidade_admissao(origem, numeros, carregar_configuracao())
+    if vagas is not None and estado_lote()['pendentes'] >= vagas:
+        return {'status': 'erro', 'motivo_codigo': 'nenhum_numero_disponivel',
+                'motivo': 'Capacidade atual ja reservada pelos leads na fila. Nada foi enfileirado.'}
+    return None
 
 
 def impedimento_fila(origem="individual", numeros=None):
@@ -2904,7 +2927,7 @@ def painel(request: Request):
 
 
 def obter_fila():
-    return fila_disparos.Fila(get_db, DB_FILE)
+    return fila_disparos.Fila(get_db, DB_FILE, capacidade_admissao)
 
 
 async def loop_fila():
@@ -2958,7 +2981,7 @@ def disponibilidade_transbordo():
         return {'disponivel':False,'motivo_codigo':'destino_nao_configurado'}
     if estado_lote()['lote']:
         return {'disponivel':False,'motivo_codigo':'lote_em_andamento'}
-    impedimento=impedimento_fila()
+    impedimento=impedimento_entrada()
     return {'disponivel':not bool(impedimento),'motivo_codigo':impedimento['motivo_codigo'] if impedimento else None}
 
 

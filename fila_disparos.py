@@ -85,9 +85,10 @@ def trava_worker(db_path):
 
 
 class Fila:
-    def __init__(self, get_db, db_path):
+    def __init__(self, get_db, db_path, capacidade=None):
         self.get_db = get_db
         self.db_path = db_path
+        self.capacidade = capacidade
 
     @staticmethod
     def publico(row, controle=None):
@@ -132,6 +133,8 @@ class Fila:
         saida = []
         with closing(self.get_db()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
+            pendentes = conn.execute("SELECT COUNT(*) FROM fila_disparos WHERE status IN ('aguardando_cadastro','cadastrando','pronto','enviando')").fetchone()[0]
+            capacidades = {}
             for preparado, original, origem, numeros, chave_explicita in itens:
                 if conn.execute('SELECT 1 FROM optout WHERE telefone=?',(optout.telefone(preparado['mailing']['phone']),)).fetchone():
                     raise HTTPException(409,'optout: telefone na lista negra')
@@ -151,12 +154,22 @@ class Fila:
                     raise HTTPException(409, "idempotency_key ja usada com dados diferentes")
                 repetido = row is not None
                 if not row:
+                    # Conta as reservas dentro da mesma transacao da admissao.
+                    # Inclui os inserts deste lote; retries nao reservam novamente.
+                    if self.capacidade:
+                        pool = (origem, tuple(sorted(numeros)))
+                        if pool not in capacidades:
+                            capacidades[pool] = self.capacidade(origem, numeros, cfg)
+                        vagas = capacidades[pool]
+                        if vagas is not None and pendentes >= vagas:
+                            raise HTTPException(409, 'capacidade_insuficiente: capacidade atual ja reservada pelos leads na fila')
                     identificador = uuid.uuid4().hex
                     conn.execute(
                         "INSERT INTO fila_disparos(id,chave,fingerprint,destino,payload,origem,numeros,status,criado_em,atualizado_em) VALUES(?,?,?,?,?,?,?,'aguardando_cadastro',?,?)",
                         (identificador, chave, fingerprint, destino(cfg), serializar(preparado), origem, serializar(numeros), agora, agora),
                     )
                     row = conn.execute("SELECT * FROM fila_disparos WHERE id=?", (identificador,)).fetchone()
+                    pendentes += 1
                 saida.append((dict(row), repetido))
             controle = conn.execute("SELECT * FROM fila_controle WHERE id=1").fetchone()
             if not controle["proxima_rodada"]:

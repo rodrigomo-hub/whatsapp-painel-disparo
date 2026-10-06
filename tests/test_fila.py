@@ -33,6 +33,42 @@ class FilaTests(unittest.TestCase):
     def entrada(self, **campos):
         return self.client.post("/disparar", json={**self.lead, **campos})
 
+    def test_reserva_capacidade_e_recusa_excedente_sem_consumir_cadastro(self):
+        with test_db() as c:
+            c.execute('UPDATE numeros SET limite_hora=2')
+        primeiro = self.entrada()
+        self.assertEqual(primeiro.status_code, 202)
+        self.assertEqual(self.entrada().json()['fila_id'], primeiro.json()['fila_id'])
+        self.assertEqual(self.entrada(telefone='11987654322').status_code, 202)
+        recusado = self.entrada(telefone='11987654323').json()
+        self.assertFalse(recusado['aceito'])
+        self.assertEqual(main.capacidade_lote()['capacidade_agora'], 0)
+        self.assertFalse(main.pode_disparar()['pode_disparar'])
+        self.assertFalse(main.disponibilidade_transbordo()['disponivel'])
+        self.assertEqual(main.estado_lote()['pendentes'], 2)
+        self.api.assert_not_called()
+        # A reserva nao impede o worker de enviar os dois ja aceitos.
+        self.avancar(300)
+        self.api.return_value = self.resposta(2)
+        self.rodada()
+        self.assertEqual(self.whatsapp.call_count, 2)
+
+    def test_lote_excedente_reverte_inserts_e_cancelamento_libera_reserva(self):
+        with test_db() as c:
+            c.execute('UPDATE numeros SET limite_hora=1')
+        cfg = main.carregar_configuracao()
+        import vendeai_mailing
+        itens = [(vendeai_mailing.preparar_lead({**self.lead, 'telefone':p}, cfg),
+                  self.lead, 'individual', [], None) for p in ['11987654321','11987654322']]
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException):
+            self.fila.enfileirar(itens, cfg)
+        self.assertEqual(main.estado_lote()['pendentes'], 0)
+        ident = self.entrada().json()['fila_id']
+        self.fila.cancelar(ident)
+        self.assertEqual(main.capacidade_lote()['capacidade_agora'], 1)
+        self.assertEqual(self.entrada(telefone='11987654322').status_code, 202)
+
     def test_acumula_cinco_minutos_uma_chamada_libera_envios(self):
         ids = []
         for i in range(3):
