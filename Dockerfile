@@ -18,6 +18,7 @@ COPY templates_lote.py .
 COPY textos_templates.py .
 COPY link_conversa.py .
 COPY campanhas_sms.py .
+COPY lembretes_sms.py .
 COPY vendeai_eventos.py .
 COPY resultados.py .
 COPY comissoes.py .
