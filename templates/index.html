@@ -1588,16 +1588,19 @@ async function dispararLote() {
 }
 
 carregarWabasSalvas();
-carregarTotalHoje();
-carregarNumeros();
-carregarHistorico();
 carregarHorario();
 carregarSms();
 carregarVendeai();
 carregarTransbordo();
-carregarTransbordosRecebidos();
-carregarFila();
-setInterval(() => { carregarTotalHoje(); carregarNumeros(); carregarHistorico(); carregarSaldoSms(); carregarFila(); carregarTransbordosRecebidos(); }, 10000);
+let atualizandoPainel=false;
+async function atualizarPainel(){
+  if(document.hidden||atualizandoPainel)return;
+  atualizandoPainel=true;
+  try{await Promise.allSettled([carregarTotalHoje(),carregarNumeros(),carregarHistorico(),carregarSaldoSms(),carregarFila(),carregarTransbordosRecebidos()]);}
+  finally{atualizandoPainel=false;}
+}
+atualizarPainel();
+setInterval(atualizarPainel,10000);
 </script>
 
 </body>

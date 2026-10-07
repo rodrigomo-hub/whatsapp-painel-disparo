@@ -321,6 +321,8 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN template_idioma TEXT NOT NULL DEFAULT 'pt_BR'")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_wamid ON disparos(wamid)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_numero_status_data ON disparos(numero_id,status,criado_em)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_disparos_data ON disparos(criado_em)")
     if "template_sem_variaveis" not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN template_sem_variaveis INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE TABLE IF NOT EXISTS wabas_salvas (waba_id TEXT PRIMARY KEY, access_token TEXT NOT NULL)")
@@ -2719,14 +2721,22 @@ def listar_numeros():
     conn = get_db()
     numeros = conn.execute("SELECT n.*, COALESCE(m.ativo,0) AS modelo_normal_ativo FROM numeros n LEFT JOIN modelos_normais m ON m.id=n.modelo_normal_id ORDER BY n.id").fetchall()
     historicos = {n["id"]: qualidade_historico.recentes(conn, n["id"]) for n in numeros}
+    agora = datetime.now(TZ)
+    dia = agora.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    hora = (agora-timedelta(hours=1)).isoformat()
+    contagens = {r['numero_id']:dict(r) for r in conn.execute('''SELECT numero_id,
+        SUM(CASE WHEN criado_em>=? THEN 1 ELSE 0 END) dia,
+        SUM(CASE WHEN criado_em>=? THEN 1 ELSE 0 END) hora
+        FROM disparos WHERE status IN ('sucesso','incerto') AND criado_em>=? GROUP BY numero_id''',
+        (dia,hora,min(dia,hora)))}
     conn.close()
     return [
         {
             **dict(n),
             "historico_qualidade": historicos[n["id"]],
             "access_token": n["access_token"][:10] + "..." if n["access_token"] else "",
-            "enviados_hoje": contagem_hoje(n["id"]),
-            "enviados_hora": contagem_ultima_hora(n["id"]),
+            "enviados_hoje": contagens.get(n['id'], {}).get('dia',0),
+            "enviados_hora": contagens.get(n['id'], {}).get('hora',0),
             "conexao_elegivel": conexoes_normais.elegivel(get_db,n) if conexoes_normais.normal(n) else None,
         }
         for n in numeros
