@@ -52,6 +52,18 @@ class ResultadosTests(unittest.TestCase):
         return r.calcular(self.db, r.momento('2026-09-30T00:00:00-03:00'),
                           r.momento('2026-10-01T00:00:00-03:00'), **kwargs)
 
+    def test_resumo_preserva_valores_sem_buscar_historico_disparos(self):
+        self.send()
+        self.event('conversation_created')
+        self.event('simulation_offered')
+        self.event('proposal_created',proposal={'proposal_id':'123','liquid_value':1500,'proposal_status':'FORMALIZATION_REQUESTED'})
+        self.event('proposal_status_updated',proposal={'proposal_id':'123','proposal_status':'LIQUIDATED_TO_CUSTOMER'})
+        r.salvar_manual(self.db,'2026-09-30',{'valor':'2000','revisao':0})
+        completo=self.calc();resumo=self.calc(somente_resumo=True)
+        for k in ('comissoes','pagamentos'):self.assertEqual(completo[k],resumo[k])
+        for k in ('simulacoes','valor_propostas','propostas_sem_valor'):
+            self.assertEqual(completo['atividade'][k],resumo['atividade'][k])
+
     def test_valor_equipe_formato_brasileiro(self):
         for valor in ['7.049,38', '7049,38', '7049.38', 'R$ 7.049,38']:
             with self.subTest(valor=valor):

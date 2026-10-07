@@ -1095,10 +1095,13 @@ function configurarComissaoResumo(){
 }
 configurarComissaoResumo();
 
+let carregandoResultadosHoje=false;
 async function carregarResultadosHoje() {
+  if(carregandoResultadosHoje)return;
+  carregandoResultadosHoje=true;
   const total=document.getElementById('simulacoes-hoje'),link=document.getElementById('simulacoes-hoje-link');
   try {
-    const res=await fetch('/api/resultados');
+    const res=await fetch('/api/resultados/resumo');
     if(!res.ok||res.redirected)throw new Error();
     const dados=await res.json();
     document.getElementById('comissao-prevista-hoje').textContent=dados.comissoes?.total_pagos==null?'—':Number(dados.comissoes.total_pagos).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
@@ -1127,7 +1130,7 @@ async function carregarResultadosHoje() {
     document.getElementById('propostas-ia-incompleto').style.display='none';
     document.getElementById('pago-ia-incompleto').style.display='none';
     link.title='Não foi possível atualizar. Clique para consultar os resultados.';
-  }
+  } finally {carregandoResultadosHoje=false;}
 }
 carregarResultadosHoje();
 setInterval(()=>{if(!document.hidden)carregarResultadosHoje();},60000);

@@ -2041,6 +2041,15 @@ def consultar_resultados(inicio: str = '', fim: str = '', busca: str = '', orige
     return JSONResponse(dados, headers={'Cache-Control': 'no-store'})
 
 
+@app.get('/api/resultados/resumo')
+def resumo_resultados():
+    inicio=datetime.now(TZ).replace(hour=0,minute=0,second=0,microsecond=0)
+    dados=resultados.calcular(get_db,inicio,inicio+timedelta(days=1),somente_resumo=True)
+    return JSONResponse({'atualizado_em':dados['atualizado_em'],
+        'atividade':{k:dados['atividade'][k] for k in ('simulacoes','valor_propostas','propostas_sem_valor')},
+        'pagamentos':dados['pagamentos'],'comissoes':dados['comissoes']},headers={'Cache-Control':'no-store'})
+
+
 @app.get('/api/comissoes/regras')
 def regras_comissao():
     with closing(get_db()) as c:

@@ -200,7 +200,7 @@ def valor(v):
         return None
 
 
-def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agora=None):
+def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agora=None, somente_resumo=False):
     agora = agora or datetime.now(TZ)
     with closing(get_db()) as c:
         c.execute('BEGIN')
@@ -212,7 +212,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
         envios = c.execute("SELECT "+cpf_envio+" AS cpf,d.id,d.numero_id,d.telefone_destino,d.criado_em,d.canal,"
                            "COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio,'') tipo_envio,"
                            "n.nome FROM disparos d LEFT JOIN numeros n ON n.id=d.numero_id "
-                           "WHERE d.status='sucesso'").fetchall()
+                           "WHERE d.status='sucesso'").fetchall() if not somente_resumo else []
         manuais = [dict(r) for r in c.execute('SELECT * FROM pagamentos_manuais WHERE dia>=? AND dia<? ORDER BY dia DESC',
                                              (inicio.date().isoformat(), fim.date().isoformat()))]
         regras = comissoes.carregar_regras(c)
@@ -227,11 +227,17 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
             if a < fim.date() and b > inicio.date():
                 ajustes_mensais.append(dict(row, incluido=inicio.date() <= a and fim.date() >= b))
     chats, propostas, sends, por_fone = {}, {}, {}, defaultdict(list)
+    equipe_por_cpf, equipe_por_fone = defaultdict(dict), defaultdict(dict)
     for row in envios:
         r = dict(row); t = momento(r['criado_em'])
         if not t:
             continue
         r['t'] = t
+        if r['canal'] == 'whatsapp':
+            documento = atribuicao_equipe.cpf(r.get('cpf'))
+            telefone_equipe = atribuicao_equipe.telefone(r['telefone_destino'])
+            if documento: equipe_por_cpf[documento][r['id']] = r
+            if telefone_equipe: equipe_por_fone[telefone_equipe][r['id']] = r
         r['tipo'] = ('normais' if r['tipo_envio'] == 'vendeai_normal' else
                      'oficiais' if r['tipo_envio'] in ('meta','gupshup') else 'outros') if r['canal'] == 'whatsapp' else 'outros'
         sends[r['id']] = r
@@ -362,7 +368,9 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
         ref=(p['criado'] or p['atualizado']).date().isoformat()
         est=comissoes.estimar(regras,dados,ref,int(Decimal(str(v))*100) if v is not None else None)
         ct=chats.get(p['chat'],{}).get('contato',{})
-        envio_portal=atribuicao_equipe.encontrar([dict(e) for e in envios if e['canal']=='whatsapp'],ct.get('cpf'),ct.get('phone'),p['criado'])
+        candidatos = {**equipe_por_cpf.get(atribuicao_equipe.cpf(ct.get('cpf')), {}),
+                      **equipe_por_fone.get(atribuicao_equipe.telefone(ct.get('phone')), {})}
+        envio_portal=atribuicao_equipe.encontrar(candidatos.values(),ct.get('cpf'),ct.get('phone'),p['criado'])
         remetente_portal=remetentes.get(envio_portal['numero_id'],{}) if envio_portal else {}
         waba_portal=remetente_portal.get('waba_id','') if remetente_portal.get('tipo_envio')!='vendeai_normal' else ''
         if chats.get(p['chat'],{}).get('anuncio'):waba_portal=''
