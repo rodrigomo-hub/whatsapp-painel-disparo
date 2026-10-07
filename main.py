@@ -4,6 +4,8 @@ import csv
 import json
 import io
 import asyncio
+import threading
+import time
 import sqlite3
 import unicodedata
 import requests
@@ -2043,13 +2045,29 @@ def consultar_resultados(inicio: str = '', fim: str = '', busca: str = '', orige
     return JSONResponse(dados, headers={'Cache-Control': 'no-store'})
 
 
+_resumo_lock = threading.Lock()
+_resumo_cache = {}
+
+
+def invalidar_resumo():
+    with _resumo_lock:
+        _resumo_cache.clear()
+
+
 @app.get('/api/resultados/resumo')
 def resumo_resultados():
     inicio=datetime.now(TZ).replace(hour=0,minute=0,second=0,microsecond=0)
-    dados=resultados.calcular(get_db,inicio,inicio+timedelta(days=1),somente_resumo=True)
-    return JSONResponse({'atualizado_em':dados['atualizado_em'],
-        'atividade':{k:dados['atividade'][k] for k in ('simulacoes','valor_propostas','propostas_sem_valor')},
-        'pagamentos':dados['pagamentos'],'comissoes':dados['comissoes']},headers={'Cache-Control':'no-store'})
+    chave=(str(DB_FILE),inicio.isoformat())
+    # Um calculo por vez, inclusive quando varias abas abrem juntas.
+    with _resumo_lock:
+        hit=_resumo_cache.get('chave')==chave and time.monotonic()<_resumo_cache.get('expira',0)
+        if not hit:
+            dados=resultados.calcular(get_db,inicio,inicio+timedelta(days=1),somente_resumo=True)
+            corpo={'atualizado_em':dados['atualizado_em'],
+                'atividade':{k:dados['atividade'][k] for k in ('simulacoes','valor_propostas','propostas_sem_valor')},
+                'pagamentos':dados['pagamentos'],'comissoes':dados['comissoes']}
+            _resumo_cache.update(chave=chave,expira=time.monotonic()+30,corpo=corpo)
+        return JSONResponse(_resumo_cache['corpo'],headers={'Cache-Control':'no-store','X-Resumo-Cache':'hit' if hit else 'miss'})
 
 
 @app.get('/api/comissoes/regras')
@@ -2060,7 +2078,9 @@ def regras_comissao():
 
 @app.post('/api/resultados/equipe')
 def proposta_equipe(body: dict):
-    return comissoes.operar(get_db, body)
+    resposta=comissoes.operar(get_db, body)
+    invalidar_resumo()
+    return resposta
 
 
 @app.put('/api/resultados/custos-meta')
@@ -2076,7 +2096,9 @@ def consultar_pagamento_manual(dia: str):
 
 @app.put('/api/resultados/manuais/{dia}')
 def salvar_pagamento_manual(dia: str, body: dict):
-    return JSONResponse(resultados.salvar_manual(get_db, dia, body), headers={'Cache-Control': 'no-store'})
+    resposta=resultados.salvar_manual(get_db, dia, body)
+    invalidar_resumo()
+    return JSONResponse(resposta, headers={'Cache-Control': 'no-store'})
 
 
 @app.get("/webhook")
