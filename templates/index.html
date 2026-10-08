@@ -490,11 +490,11 @@
         <option value="">Selecione um template...</option>
       </select>
       <section id="editar-fixos" style="padding:14px;background:#f0f7f3;border:1px solid #d6e9dc;border-radius:9px;margin:0 0 14px;">
-        <strong>Textos das variáveis</strong>
+        <strong>Variáveis e botões do template</strong>
         <p id="editar-fixos-status" role="status" style="font-size:12px;color:#64748b;">Carregando…</p>
         <label id="editar-fixos-opcao" style="font-size:13px;"><input type="checkbox" id="editar-fixos-ativo"> Personalizar variáveis do template</label>
         <small style="display:block;margin:8px 0;">Vale para todos os números deste template e idioma na mesma WABA. Substitui os valores recebidos pela API/n8n ou planilha.</small>
-        <div id="editar-fixos-campos"></div>
+        <div id="editar-fixos-campos"></div><div id="editar-fixos-botoes"></div>
         <pre id="editar-fixos-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;font:13px system-ui;margin-bottom:0;"></pre>
       </section>
     <label style="font-size:13px;"><input type="checkbox" id="editar-sem-variaveis"> Texto do template sem variáveis (ignorar parâmetros recebidos)</label>
@@ -717,15 +717,36 @@ async function carregarFixosNumero(){
     mostrarPreview('editar-template','preview-editar');renderFixosNumero();
   }catch(e){if(seq===fixosNumeroSeq)document.getElementById('editar-fixos-status').textContent=e.message;}
 }
+
+function renderBotoesEncerramento(container,t,selecionados,onchange){
+  container.replaceChildren();
+  const botoes=(t.components||[]).filter(c=>c.type==='BUTTONS').flatMap(c=>c.buttons||[]);
+  const titulo=document.createElement('h3');titulo.textContent='Botões de encerramento';titulo.style.fontSize='14px';container.append(titulo);
+  const nota=document.createElement('p');nota.style.cssText='font-size:12px;color:#64748b;line-height:1.5';nota.textContent='Marque os botões que devem acionar a lista negra e o encerramento já configurado. Não precisa cadastrar a frase novamente. Desmarcar não libera clientes já bloqueados.';container.append(nota);
+  const checks=[];
+  for(const b of botoes){
+    const linha=document.createElement('label'),nome=document.createElement('span'),campo=document.createElement('span');
+    linha.style.cssText='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;margin:8px 0;border:1px solid #dce5df;border-radius:8px;background:#f8faf9';nome.textContent=b.text||b.type;linha.append(nome,campo);
+    if(b.type==='QUICK_REPLY'){
+      const check=document.createElement('input');check.type='checkbox';check.value=b.text;check.checked=selecionados.includes(b.text);check.style.cssText='width:auto;margin:0 6px 0 0;accent-color:#166534';
+      campo.style.cssText='display:flex;align-items:center;white-space:nowrap;font-size:12px';campo.append(check,document.createTextNode('Encerramento'));checks.push(check);
+      check.onchange=()=>onchange(checks.filter(c=>c.checked).map(c=>c.value));
+    }else{campo.textContent='Não envia resposta';campo.style.cssText='font-size:12px;color:#64748b';}
+    container.append(linha);
+  }
+  if(!botoes.length){const vazio=document.createElement('p');vazio.textContent='Este template não tem botões.';container.append(vazio);}
+}
+
 function renderFixosNumero(){
   const campos=document.getElementById('editar-fixos-campos'),toggle=document.getElementById('editar-fixos-ativo'),status=document.getElementById('editar-fixos-status');
-  campos.replaceChildren();document.getElementById('editar-fixos-preview').textContent='';toggle.disabled=true;toggle.checked=false;
+  campos.replaceChildren();document.getElementById('editar-fixos-botoes').replaceChildren();document.getElementById('editar-fixos-preview').textContent='';toggle.disabled=true;toggle.checked=false;
   if(!fixosNumero)return;
   const opt=document.getElementById('editar-template').selectedOptions[0],t=fixosNumero.templates.find(t=>t.name===opt?.value&&t.language===opt?.dataset.idioma);
   if(!t){status.textContent='Template não encontrado nesta WABA. Clique em Buscar templates para tentar novamente.';return;}
   const corpo=(t.components||[]).find(c=>c.type==='BODY')?.text||'',ids=[...new Set([...corpo.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map(m=>m[1]))].sort((a,b)=>Number(a)-Number(b));
   const key=JSON.stringify([t.name,t.language]),salvo=fixosNumero.salvos.find(f=>f.nome===t.name&&f.idioma===t.language);
-  const draft=fixosNumero.rascunhos[key]??={nome:t.name,idioma:t.language,ativo:!!salvo?.ativo,valores:salvo?.valores||[],alterado:false};
+  const draft=fixosNumero.rascunhos[key]??={nome:t.name,idioma:t.language,ativo:!!salvo?.ativo,valores:salvo?.valores||[],botoes_optout:salvo?.botoes_optout||[],alterado:false};
+  renderBotoesEncerramento(document.getElementById('editar-fixos-botoes'),t,draft.botoes_optout,v=>{draft.botoes_optout=v;draft.alterado=true;});
   const suportado=ids.length&&ids.every((v,i)=>v===String(i+1));
   status.textContent=!ids.length?'Este template não tem variáveis.':!suportado?'Este formato de variável ainda não é suportado.':'Escolha o primeiro nome do cliente ou um texto fixo em cada variável. A prévia usa Ana como exemplo.';
   toggle.checked=draft.ativo;toggle.disabled=!suportado&&!draft.ativo;
@@ -749,7 +770,7 @@ async function salvarFixosNumero(){
   const opt=document.getElementById('editar-template').selectedOptions[0],d=fixosNumero.rascunhos[JSON.stringify([opt?.value,opt?.dataset.idioma])];
   if(!d?.alterado)return;
   const r=await fetch('/api/wabas-painel/'+encodeURIComponent(fixosNumero.waba)+'/textos-fixos',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});
-  if(!r.ok){const e=await r.json();throw Error('O número foi salvo, mas os textos fixos não: '+(e.detail||'tente novamente.'));}
+  if(!r.ok){const e=await r.json();throw Error('O número foi salvo, mas a configuração do template não: '+(e.detail||'tente novamente.'));}
   d.alterado=false;
 }
 

@@ -49,7 +49,12 @@ def receber(c, d, evento_id):
     cfg = c.execute('SELECT * FROM optout_config WHERE id=1').fetchone()
     if not cfg or not cfg['habilitado'] or d.get('event') != 'conversation_created': return False
     texto = d.get('first_message')
-    if not isinstance(texto, str) or normalizar(texto) not in {normalizar(x) for x in json.loads(cfg['textos'])}: return False
+    textos={normalizar(x) for x in json.loads(cfg['textos'])}
+    # Marcações do template independem da opção de personalizar variáveis.
+    if c.execute("SELECT 1 FROM sqlite_master WHERE name='textos_templates'").fetchone():
+        for r in c.execute("SELECT botoes_optout FROM textos_templates WHERE botoes_optout<>'[]'"):
+            textos.update(normalizar(x) for x in json.loads(r['botoes_optout']))
+    if not isinstance(texto, str) or normalizar(texto) not in textos: return False
     chat = d.get('chat_summary') or {}; details = chat.get('details') or {}
     contact = details.get('contact') or {}; session = details.get('session') or {}
     p = telefone(contact.get('phone')); chat_id = str(chat.get('chat_id') or ''); account = str(chat.get('account_id') or '')

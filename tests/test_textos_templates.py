@@ -128,3 +128,36 @@ class TextosFixosTests(unittest.TestCase):
         self.whatsapp.assert_not_called()
         for valor in ({'tipo':'outro'},{'tipo':'primeiro_nome','extra':1},None):
             self.assertEqual(self.salvar(valores=[valor,'Texto']).status_code,400)
+
+    def test_optout_buttons_without_variables_and_preserve_manual_rules(self):
+        import optout
+        self.preparar()
+        self.template['components']=[{'type':'BODY','text':'Ola'},{'type':'BUTTONS','buttons':[
+            {'type':'QUICK_REPLY','text':'Agora nao, obrigado!'},
+            {'type':'QUICK_REPLY','text':'Consultar'},
+            {'type':'URL','text':'Abrir site','url':'https://example.com'}]}]
+        self.assertEqual(self.salvar(ativo=False,botoes_optout=['Agora nao, obrigado!']).status_code,200)
+        self.assertEqual(fixos.listar(main.get_db,'888')[0]['botoes_optout'],['Agora nao, obrigado!'])
+        event={'event':'conversation_created','first_message':' AGORA NAO, OBRIGADO! ',
+            'chat_summary':{'account_id':'33393','chat_id':'321','details':{'contact':{'phone':'11987654321'}}}}
+        with test_db() as c:
+            c.execute('UPDATE optout_config SET habilitado=1,excluir_conversa_primeiro=1')
+            self.assertFalse(optout.receber(c,{**event,'first_message':'Consultar'},1))
+            self.assertTrue(optout.receber(c,event,2))
+            self.assertEqual(c.execute('SELECT passo FROM optout_tarefas').fetchone()[0],'excluir_conversa')
+        self.assertTrue(optout.bloqueado(main.get_db,'11987654321'))
+        for bs in (['Abrir site'],['Inexistente'],[None],'texto'):
+            self.assertEqual(self.salvar(ativo=False,botoes_optout=bs).status_code,400)
+        # Alterar somente variaveis nao apaga marcacoes anteriores.
+        self.salvar(ativo=False)
+        self.assertEqual(fixos.listar(main.get_db,'888')[0]['botoes_optout'],['Agora nao, obrigado!'])
+        self.assertEqual(self.salvar(ativo=False,botoes_optout=[]).status_code,200)
+        with test_db() as c:
+            self.assertFalse(optout.receber(c,{**event,'chat_summary':{**event['chat_summary'],'chat_id':'322'}},3))
+            self.assertTrue(optout.receber(c,{**event,'first_message':'nao quero mensagens'},4))
+        self.assertTrue(optout.bloqueado(main.get_db,'11987654321'))
+
+    def test_button_validation_failure_is_atomic(self):
+        self.preparar();self.salvar()
+        self.assertEqual(self.salvar(valores=['novo','novo'],botoes_optout=['inventado']).status_code,400)
+        self.assertEqual(fixos.resolver(main.get_db,self.numero(),[]),['Texto fixo','Outra frase'])

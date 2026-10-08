@@ -9,11 +9,13 @@ def migrar(c):
         waba_id TEXT NOT NULL, nome TEXT NOT NULL, idioma TEXT NOT NULL,
         ativo INTEGER NOT NULL DEFAULT 0, valores TEXT NOT NULL DEFAULT '[]',
         PRIMARY KEY(waba_id,nome,idioma))''')
+    if 'botoes_optout' not in {r[1] for r in c.execute('PRAGMA table_info(textos_templates)')}:
+        c.execute("ALTER TABLE textos_templates ADD COLUMN botoes_optout TEXT NOT NULL DEFAULT '[]'")
 
 
 def listar(get_db,waba):
     with closing(get_db()) as c:
-        return [{**dict(r),'ativo':bool(r['ativo']),'valores':json.loads(r['valores'])}
+        return [{**dict(r),'ativo':bool(r['ativo']),'valores':json.loads(r['valores']),'botoes_optout':json.loads(r['botoes_optout'])}
                 for r in c.execute('SELECT * FROM textos_templates WHERE waba_id=?',(waba,))]
 
 
@@ -24,24 +26,32 @@ def salvar(get_db,waba,body,consultar,estrutura):
     with closing(get_db()) as c:
         w=c.execute('SELECT access_token FROM wabas_salvas WHERE waba_id=?',(waba,)).fetchone()
     if not w:raise HTTPException(404,'WABA não cadastrada.')
-    if not ativo:
-        with closing(get_db()) as c,c:
-            c.execute('UPDATE textos_templates SET ativo=0 WHERE waba_id=? AND nome=? AND idioma=?',(waba,nome,idioma))
-        return {'status':'ok','ativo':False}
+    botoes=body.get('botoes_optout')
+    if 'botoes_optout' in body and (not isinstance(botoes,list) or len(botoes)>10 or any(not isinstance(v,str) or not v.strip() or len(v)>100 for v in botoes)):
+        raise HTTPException(400,'Selecione os botões de encerramento do template.')
     valores=body.get('valores')
-    if not isinstance(valores,list) or not 1<=len(valores)<=100 or any(v != {'tipo':'primeiro_nome'} and (not isinstance(v,str) or not v.strip() or len(v)>1024) for v in valores):
+    if ativo and (not isinstance(valores,list) or not 1<=len(valores)<=100 or any(v != {'tipo':'primeiro_nome'} and (not isinstance(v,str) or not v.strip() or len(v)>1024) for v in valores)):
         raise HTTPException(400,'Preencha todas as variáveis com textos de até 1.024 caracteres.')
-    resposta=consultar(waba,w['access_token'],'/message_templates','id,name,language,components,parameter_format')
-    if resposta.get('erro'):raise HTTPException(502,'Não foi possível confirmar as variáveis na Meta. Tente novamente.')
-    t=next((t for t in resposta.get('dados',[]) if t.get('name')==nome and t.get('language')==idioma),None)
-    if not t:raise HTTPException(400,'Template não encontrado nesta WABA e idioma.')
-    _,_,ids=estrutura(t)
-    if not ids or len(valores)!=len(ids):raise HTTPException(400,'Preencha exatamente uma vez cada variável do corpo do template.')
+    if ativo or botoes:
+        resposta=consultar(waba,w['access_token'],'/message_templates','id,name,language,components,parameter_format')
+        if resposta.get('erro'):raise HTTPException(502,'Não foi possível confirmar o template na Meta. Tente novamente.')
+        t=next((t for t in resposta.get('dados',[]) if t.get('name')==nome and t.get('language')==idioma),None)
+        if not t:raise HTTPException(400,'Template não encontrado nesta WABA e idioma.')
+        if ativo:
+            _,_,ids=estrutura(t)
+            if not ids or len(valores)!=len(ids):raise HTTPException(400,'Preencha exatamente uma vez cada variável do corpo do template.')
+        permitidos={b.get('text') for c in t.get('components',[]) if c.get('type')=='BUTTONS' for b in c.get('buttons',[]) if b.get('type')=='QUICK_REPLY'}
+        if botoes and any(b not in permitidos for b in botoes):
+            raise HTTPException(400,'Marque somente botões de resposta rápida existentes neste template.')
     with closing(get_db()) as c,c:
-        c.execute('''INSERT INTO textos_templates(waba_id,nome,idioma,ativo,valores) VALUES(?,?,?,1,?)
-            ON CONFLICT(waba_id,nome,idioma) DO UPDATE SET ativo=1,valores=excluded.valores''',
-            (waba,nome,idioma,json.dumps(valores,ensure_ascii=False)))
-    return {'status':'ok','ativo':True}
+        c.execute('INSERT OR IGNORE INTO textos_templates(waba_id,nome,idioma) VALUES(?,?,?)',(waba,nome,idioma))
+        c.execute('UPDATE textos_templates SET ativo=? WHERE waba_id=? AND nome=? AND idioma=?',(int(ativo),waba,nome,idioma))
+        if ativo:
+            c.execute('UPDATE textos_templates SET valores=? WHERE waba_id=? AND nome=? AND idioma=?',(json.dumps(valores,ensure_ascii=False),waba,nome,idioma))
+        if botoes is not None:
+            c.execute('UPDATE textos_templates SET botoes_optout=? WHERE waba_id=? AND nome=? AND idioma=?',(json.dumps(list(dict.fromkeys(botoes)),ensure_ascii=False),waba,nome,idioma))
+    return {'status':'ok','ativo':ativo}
+
 
 
 def fixos(c,numero):
