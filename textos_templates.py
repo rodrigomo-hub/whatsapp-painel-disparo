@@ -29,7 +29,7 @@ def salvar(get_db,waba,body,consultar,estrutura):
             c.execute('UPDATE textos_templates SET ativo=0 WHERE waba_id=? AND nome=? AND idioma=?',(waba,nome,idioma))
         return {'status':'ok','ativo':False}
     valores=body.get('valores')
-    if not isinstance(valores,list) or not 1<=len(valores)<=100 or any(not isinstance(v,str) or not v.strip() or len(v)>1024 for v in valores):
+    if not isinstance(valores,list) or not 1<=len(valores)<=100 or any(v != {'tipo':'primeiro_nome'} and (not isinstance(v,str) or not v.strip() or len(v)>1024) for v in valores):
         raise HTTPException(400,'Preencha todas as variáveis com textos de até 1.024 caracteres.')
     resposta=consultar(waba,w['access_token'],'/message_templates','id,name,language,components,parameter_format')
     if resposta.get('erro'):raise HTTPException(502,'Não foi possível confirmar as variáveis na Meta. Tente novamente.')
@@ -52,6 +52,12 @@ def fixos(c,numero):
     return json.loads(r['valores']) if r else None
 
 
-def resolver(get_db,numero,recebidos):
+def resolver(get_db,numero,recebidos,nome=""):
     with closing(get_db()) as c:valores=fixos(c,numero)
-    return valores if valores is not None else recebidos
+    if valores is None:return recebidos
+    if any(v == {'tipo':'primeiro_nome'} for v in valores):
+        if not isinstance(nome,str) or not nome.strip():
+            raise ValueError('NOME_AUSENTE: o template exige o primeiro nome do cliente')
+        primeiro=nome.strip().split()[0].capitalize()
+        return [primeiro if v == {'tipo':'primeiro_nome'} else v for v in valores]
+    return valores

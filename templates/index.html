@@ -492,7 +492,7 @@
       <section id="editar-fixos" style="padding:14px;background:#f0f7f3;border:1px solid #d6e9dc;border-radius:9px;margin:0 0 14px;">
         <strong>Textos das variáveis</strong>
         <p id="editar-fixos-status" role="status" style="font-size:12px;color:#64748b;">Carregando…</p>
-        <label id="editar-fixos-opcao" style="font-size:13px;"><input type="checkbox" id="editar-fixos-ativo"> Usar textos fixos nas variáveis</label>
+        <label id="editar-fixos-opcao" style="font-size:13px;"><input type="checkbox" id="editar-fixos-ativo"> Personalizar variáveis do template</label>
         <small style="display:block;margin:8px 0;">Vale para todos os números deste template e idioma na mesma WABA. Substitui os valores recebidos pela API/n8n ou planilha.</small>
         <div id="editar-fixos-campos"></div>
         <pre id="editar-fixos-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;font:13px system-ui;margin-bottom:0;"></pre>
@@ -727,18 +727,19 @@ function renderFixosNumero(){
   const key=JSON.stringify([t.name,t.language]),salvo=fixosNumero.salvos.find(f=>f.nome===t.name&&f.idioma===t.language);
   const draft=fixosNumero.rascunhos[key]??={nome:t.name,idioma:t.language,ativo:!!salvo?.ativo,valores:salvo?.valores||[],alterado:false};
   const suportado=ids.length&&ids.every((v,i)=>v===String(i+1));
-  status.textContent=!ids.length?'Este template não tem variáveis.':!suportado?'Este formato de variável ainda não é suportado.':'Preencha os textos que serão usados nos envios.';
+  status.textContent=!ids.length?'Este template não tem variáveis.':!suportado?'Este formato de variável ainda não é suportado.':'Escolha o primeiro nome do cliente ou um texto fixo em cada variável. A prévia usa Ana como exemplo.';
   toggle.checked=draft.ativo;toggle.disabled=!suportado&&!draft.ativo;
   const inputs=[];
   for(const [i,id] of ids.entries()){
     const label=document.createElement('label'),input=document.createElement('textarea');label.textContent='Variável {{'+id+'}}';label.htmlFor='editar-fixo-'+i;
-    input.id=label.htmlFor;input.rows=2;input.maxLength=1024;input.value=draft.valores[i]||'';input.style.cssText='display:block;width:100%;box-sizing:border-box;padding:10px;border:1px solid #cad8ce;border-radius:6px;margin:6px 0 10px;font:inherit;resize:vertical';
-    inputs.push(input);campos.append(label,input);
+    input.id=label.htmlFor;input.rows=2;input.maxLength=1024;input.value=typeof draft.valores[i]==='string'?draft.valores[i]:'';input.style.cssText='display:block;width:100%;box-sizing:border-box;padding:10px;border:1px solid #cad8ce;border-radius:6px;margin:6px 0 10px;font:inherit;resize:vertical';
+    const modo=document.createElement('select');modo.add(new Option('Texto fixo','fixo'));modo.add(new Option('Primeiro nome do cliente','primeiro_nome'));modo.value=draft.valores[i]?.tipo==='primeiro_nome'?'primeiro_nome':'fixo';modo.style.cssText='display:block;width:100%;margin:6px 0 12px;padding:10px;border:1px solid #cad8ce;border-radius:7px;font:inherit';modo.setAttribute('aria-label','Preenchimento da variável '+id);input.modo=modo;modo.onchange=()=>atualizar(true);
+    inputs.push(input);campos.append(label,modo,input);
   }
   function atualizar(alterado){
-    draft.ativo=toggle.checked;draft.valores=inputs.map(i=>i.value);if(alterado)draft.alterado=true;
-    for(const input of inputs){input.disabled=!draft.ativo;input.required=draft.ativo;}
-    document.getElementById('editar-fixos-preview').textContent=draft.ativo?corpo.replace(/\{\{\s*(\d+)\s*\}\}/g,(m,n)=>draft.valores[Number(n)-1]||m):'';
+    draft.ativo=toggle.checked;draft.valores=inputs.map(i=>i.modo.value==='primeiro_nome'?{tipo:'primeiro_nome'}:i.value);if(alterado)draft.alterado=true;
+    for(const input of inputs){input.modo.disabled=!draft.ativo;input.hidden=input.modo.value==='primeiro_nome';input.style.display=input.hidden?'none':'block';input.disabled=!draft.ativo||input.hidden;input.required=draft.ativo&&!input.hidden;}
+    document.getElementById('editar-fixos-preview').textContent=draft.ativo?corpo.replace(/\{\{\s*(\d+)\s*\}\}/g,(m,n)=>(draft.valores[Number(n)-1]?.tipo==='primeiro_nome'?'Ana':draft.valores[Number(n)-1])||m):'';
     if(draft.ativo)document.getElementById('editar-sem-variaveis').checked=false;
   }
   toggle.onchange=()=>atualizar(true);inputs.forEach(i=>i.oninput=()=>atualizar(true));atualizar(false);

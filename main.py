@@ -1656,7 +1656,8 @@ def enviar_por_numero(numero, telefone, variaveis, nome):
         return False,'TIPO_FORA_DO_RODIZIO: este tipo de numero nao esta selecionado',''
     if conexoes_normais.normal(numero):
         return conexoes_normais.enviar(get_db,numero,telefone,nome,carregar_configuracao(),VENDEAI_API_TOKEN,lambda p: optout.bloqueado(get_db,p))
-    variaveis=textos_templates.resolver(get_db,numero,variaveis)
+    try:variaveis=textos_templates.resolver(get_db,numero,variaveis,nome)
+    except ValueError as exc:return False,str(exc),''
     if gupshup.via(numero):
         return gupshup.enviar(get_db,numero,telefone,variaveis,lambda p: optout.bloqueado(get_db,p))
     if oficiais_vendeai.via(numero):

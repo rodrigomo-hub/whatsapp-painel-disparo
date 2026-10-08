@@ -108,3 +108,23 @@ class TextosFixosTests(unittest.TestCase):
             self.assertEqual(r.status_code,200,r.text)
             self.whatsapp.assert_called_once()
             self.assertEqual(self.whatsapp.call_args.args[2],['Texto fixo','Outra frase'])
+
+    def test_mixed_name_and_fixed_override_api(self):
+        self.preparar()
+        self.assertEqual(self.salvar(valores=[{'tipo':'primeiro_nome'},'Oferta CLT']).status_code,200)
+        self.assertEqual(fixos.resolver(main.get_db,self.numero(),['Nome errado','API'],'  MARIA Silva '),['Maria','Oferta CLT'])
+        main.enviar_por_numero(self.numero(),'5511987654321',['Outro','API'],'JOAO Silva')
+        self.assertEqual(self.whatsapp.call_args.args[2],['Joao','Oferta CLT'])
+        n={**self.numero(),'via_envio':'vendeai'}
+        with patch.object(main.oficiais_vendeai,'enviar',return_value=(True,'','id')) as enviar:
+            main.enviar_por_numero(n,'5511987654321',[],'Ana Silva')
+            self.assertEqual(enviar.call_args.args[3],['Ana','Oferta CLT'])
+
+    def test_missing_name_never_sends_marker_or_api_name(self):
+        self.preparar();self.salvar(valores=[{'tipo':'primeiro_nome'},'Texto'])
+        self.whatsapp.reset_mock()
+        result=main.enviar_por_numero(self.numero(),'5511987654321',['API'], ' ')
+        self.assertFalse(result[0]);self.assertIn('NOME_AUSENTE',result[1])
+        self.whatsapp.assert_not_called()
+        for valor in ({'tipo':'outro'},{'tipo':'primeiro_nome','extra':1},None):
+            self.assertEqual(self.salvar(valores=[valor,'Texto']).status_code,400)

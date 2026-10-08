@@ -9,8 +9,8 @@
 <form id="fixos-form">
 <div class="top"><h2>Textos das variáveis</h2><button type="button" id="fixos-fechar" aria-label="Fechar">Fechar</button></div>
 <p id="fixos-template" class="muted"></p>
-<label style="display:flex;align-items:center;gap:10px"><input type="checkbox" id="fixos-ativo" style="width:auto;margin:0">Usar textos fixos</label>
-<p class="muted">Quando ativo, todos os números deste template e idioma nesta WABA usam os textos abaixo, ignorando as variáveis do n8n, API ou planilha.</p>
+<label style="display:flex;align-items:center;gap:10px"><input type="checkbox" id="fixos-ativo" style="width:auto;margin:0">Personalizar variáveis</label>
+<p class="muted">Escolha o primeiro nome do cliente ou texto fixo para cada variável. Vale para todos os números deste template e idioma nesta WABA. A prévia usa Ana como exemplo.</p>
 <div id="fixos-campos"></div>
 <strong>Prévia da mensagem</strong><pre id="fixos-preview" style="white-space:pre-wrap;overflow-wrap:anywhere;background:#f8fafc;padding:14px;border-radius:8px;font:14px system-ui;line-height:1.6"></pre>
 <button class="primary" id="fixos-salvar">Salvar configuração</button><p id="fixos-status" role="status"></p>
@@ -48,22 +48,23 @@ function abrirFixos(t){
   for(const [i,id] of ids.entries()){
     const label=el('label','Variável {{'+id+'}}'),input=el('textarea');
     input.id='fixo-valor-'+i;label.htmlFor=input.id;input.rows=2;input.maxLength=1024;
-    input.value=salvo?.valores?.[i]||'';
+    const valor=salvo?.valores?.[i];input.value=typeof valor==='string'?valor:'';
+    const modo=document.createElement('select');modo.add(new Option('Texto fixo','fixo'));modo.add(new Option('Primeiro nome do cliente','primeiro_nome'));modo.value=valor?.tipo==='primeiro_nome'?'primeiro_nome':'fixo';modo.style.cssText='display:block;width:100%;margin:6px 0 12px;padding:10px;border:1px solid #cad8ce;border-radius:7px;font:inherit';modo.setAttribute('aria-label','Preenchimento da variável '+id);input.modo=modo;modo.onchange=previewFixos;
     input.style.cssText='display:block;width:100%;font:inherit;resize:vertical;border:1px solid #d4dbe5;border-radius:7px;padding:10px;margin:6px 0 14px';
-    input.oninput=previewFixos;$('fixos-campos').append(label,input);
+    input.oninput=previewFixos;$('fixos-campos').append(label,modo,input);
   }
   previewFixos();$('fixos-dialog').showModal();
 }
 function previewFixos(){
   if(!edicaoFixa)return;
   const ativo=$('fixos-ativo').checked,inputs=[...$('fixos-campos').querySelectorAll('textarea')];
-  for(const input of inputs){input.disabled=!ativo;input.required=ativo;}
-  $('fixos-preview').textContent=ativo?edicaoFixa.corpo.replace(/\{\{\s*(\d+)\s*\}\}/g,(m,n)=>inputs[Number(n)-1]?.value||m):edicaoFixa.corpo;
+  for(const input of inputs){input.modo.disabled=!ativo;input.hidden=input.modo.value==='primeiro_nome';input.style.display=input.hidden?'none':'block';input.disabled=!ativo||input.hidden;input.required=ativo&&!input.hidden;}
+  $('fixos-preview').textContent=ativo?edicaoFixa.corpo.replace(/\{\{\s*(\d+)\s*\}\}/g,(m,n)=>(inputs[Number(n)-1]?.modo.value==='primeiro_nome'?'Ana':inputs[Number(n)-1]?.value)||m):edicaoFixa.corpo;
 }
 $('fixos-ativo').onchange=previewFixos;
 $('fixos-fechar').onclick=()=>{$('fixos-dialog').close();};
 $('fixos-form').onsubmit=async ev=>{
-  ev.preventDefault();const e=edicaoFixa,ativo=$('fixos-ativo').checked,valores=[...$('fixos-campos').querySelectorAll('textarea')].map(i=>i.value);
+  ev.preventDefault();const e=edicaoFixa,ativo=$('fixos-ativo').checked,valores=[...$('fixos-campos').querySelectorAll('textarea')].map(i=>i.modo.value==='primeiro_nome'?{tipo:'primeiro_nome'}:i.value);
   $('fixos-salvar').disabled=true;$('fixos-status').textContent='Salvando…';
   try{
     const r=await fetch('/api/wabas-painel/'+encodeURIComponent(e.waba)+'/textos-fixos',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({nome:e.t.name,idioma:e.t.language,ativo,valores})});
