@@ -59,3 +59,26 @@ class TemplatesLoteTests(unittest.TestCase):
         self.assertEqual(self.client.get('/wabas/criar-templates').status_code,200)
         self.client.cookies.clear()
         self.assertEqual(self.client.post('/api/templates-lotes',json=self.body,follow_redirects=False).status_code,401)
+
+    def test_categoria_atual_consultada_independente_da_aprovacao(self):
+        self.body['category']='UTILITY';ident=self.lote()
+        with test_db() as c:
+            c.execute("UPDATE numeros SET waba_id='123',template_nome='teste',template_idioma='pt_BR',template_categoria='UTILITY'")
+        consulta=Mock(return_value={'dados':[{'id':'t','name':'teste','language':'pt_BR','status':'APPROVED','category':'MARKETING'}]})
+        self.executar(ident,consulta,True)
+        self.assertIn('category',consulta.call_args.args[3])
+        self.assertEqual(self.item(ident)['meta_categoria'],'MARKETING')
+        self.assertEqual(self.item(ident)['meta_status'],'APPROVED')
+        self.assertEqual(tl.resumo(main.get_db,ident)['categoria_solicitada'],'UTILITY')
+        with test_db() as c:self.assertEqual(c.execute('SELECT template_categoria FROM numeros WHERE id=1').fetchone()[0],'MARKETING')
+        self.api.assert_not_called()
+        self.executar(ident,Mock(return_value={'erro':'offline'}),True)
+        self.assertEqual(self.item(ident)['meta_categoria'],'MARKETING')
+
+    def test_categoria_retornada_na_criacao_e_isolamento(self):
+        ident=self.lote()
+        with test_db() as c:c.execute("UPDATE numeros SET waba_id='outra',template_nome='teste',template_categoria='UTILITY'")
+        self.api.return_value=Mock(status_code=200,json=Mock(return_value={'id':'t','status':'PENDING','category':'MARKETING'}))
+        self.executar(ident)
+        self.assertEqual(self.item(ident)['meta_categoria'],'MARKETING')
+        with test_db() as c:self.assertEqual(c.execute('SELECT template_categoria FROM numeros WHERE id=1').fetchone()[0],'UTILITY')

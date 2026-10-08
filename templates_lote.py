@@ -19,6 +19,8 @@ def migrar(c):
         estado TEXT NOT NULL DEFAULT 'AGUARDANDO', detalhe TEXT NOT NULL DEFAULT '',
         meta_id TEXT NOT NULL DEFAULT '', meta_status TEXT NOT NULL DEFAULT '', atualizado_em REAL NOT NULL,
         PRIMARY KEY(lote_id,waba_id))''')
+    if 'meta_categoria' not in {r[1] for r in c.execute('PRAGMA table_info(template_lote_itens)')}:
+        c.execute("ALTER TABLE template_lote_itens ADD COLUMN meta_categoria TEXT NOT NULL DEFAULT ''")
 
 
 def validar(body):
@@ -116,12 +118,17 @@ def resumo(get_db,ident):
         if not lote:raise HTTPException(404,'Criação não encontrada.')
         itens=[dict(r) for r in c.execute('SELECT i.*,COALESCE(w.nome,i.waba_id) as waba_nome FROM template_lote_itens i LEFT JOIN wabas_salvas w ON w.waba_id=i.waba_id WHERE lote_id=?',(ident,))]
     p=json.loads(lote['payload'])
-    return {'id':ident,'name':p['name'],'language':p['language'],'itens':itens}
+    return {'id':ident,'name':p['name'],'language':p['language'],'categoria_solicitada':p['category'],'itens':itens}
 
 
-def gravar(get_db,lote,waba,estado,detalhe='',meta_id='',meta_status=''):
+def gravar(get_db,lote,waba,estado,detalhe='',meta_id='',meta_status='',meta_categoria=None):
     with closing(get_db()) as c,c:
         c.execute('UPDATE template_lote_itens SET estado=?,detalhe=?,meta_id=?,meta_status=?,atualizado_em=? WHERE lote_id=? AND waba_id=?',(estado,detalhe[:800],meta_id,meta_status,time.time(),lote,waba))
+        if meta_categoria in ('UTILITY','MARKETING','AUTHENTICATION'):
+            c.execute('UPDATE template_lote_itens SET meta_categoria=? WHERE lote_id=? AND waba_id=?',(meta_categoria,lote,waba))
+            item=c.execute('SELECT nome,idioma FROM template_lote_itens WHERE lote_id=? AND waba_id=?',(lote,waba)).fetchone()
+            c.execute("UPDATE numeros SET template_categoria=? WHERE waba_id=? AND template_nome=? AND COALESCE(NULLIF(template_idioma,''),'pt_BR')=? AND tipo_envio='meta'",(meta_categoria,waba,item['nome'],item['idioma']))
+
 
 
 def erro_meta(d,token):
@@ -146,7 +153,7 @@ def executar(get_db,consultar,lote,waba,apenas_consultar=False):
             c.execute("UPDATE template_lote_itens SET estado='PROCESSANDO',detalhe='',atualizado_em=? WHERE lote_id=? AND waba_id=?",(time.time(),lote,waba))
     token=cred['access_token'];post_iniciado=False
     try:
-        lista=consultar(waba,token,'/message_templates','id,name,language,status')
+        lista=consultar(waba,token,'/message_templates','id,name,language,status,category')
         if 'erro' in lista:
             if not apenas_consultar:gravar(get_db,lote,waba,'ERRO','Não foi possível conferir templates existentes. Nenhuma criação foi enviada.')
             return resumo(get_db,lote)
@@ -154,7 +161,7 @@ def executar(get_db,consultar,lote,waba,apenas_consultar=False):
         if existente:
             # Never overwrite a template with the same name, including a different body.
             estado='CRIADO' if row['meta_id'] and row['meta_id']==str(existente['id']) else 'EXISTENTE'
-            gravar(get_db,lote,waba,estado,'Template localizado na Meta; conteúdo existente preservado.',str(existente['id']),existente.get('status','UNKNOWN'))
+            gravar(get_db,lote,waba,estado,'Template localizado na Meta; conteúdo existente preservado.',str(existente['id']),existente.get('status','UNKNOWN'),existente.get('category'))
         elif apenas_consultar:
             # An inconclusive send must never be retried automatically.
             if row['estado'] in ('INCERTO','PROCESSANDO') and time.time()-row['atualizado_em']>120:
@@ -175,7 +182,7 @@ def executar(get_db,consultar,lote,waba,apenas_consultar=False):
             r=requests.post(GRAPH+waba+'/message_templates',json={'name':p['name'],'language':p['language'],'category':p['category'],'components':componentes(p,handle)},headers=headers,timeout=(5,30),allow_redirects=False)
             d=r.json()
             if r.status_code==200 and d.get('id'):
-                gravar(get_db,lote,waba,'CRIADO','Solicitação aceita pela Meta.',str(d['id']),d.get('status','UNKNOWN'))
+                gravar(get_db,lote,waba,'CRIADO','Solicitação aceita pela Meta.',str(d['id']),d.get('status','UNKNOWN'),d.get('category'))
             elif 400<=r.status_code<500 and isinstance(d.get('error'),dict):
                 gravar(get_db,lote,waba,'ERRO',erro_meta(d,token))
             else:gravar(get_db,lote,waba,'INCERTO','Resposta sem confirmação. Consulte o resultado antes de tentar novamente.')
