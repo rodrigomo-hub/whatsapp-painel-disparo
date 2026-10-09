@@ -708,7 +708,7 @@ async function carregarFixosNumero(){
     fixosNumero={waba:n.waba_id,templates:d.templates,salvos:d.textos_fixos,rascunhos:{}};
     select.replaceChildren();let encontrado=false;
     for(const t of d.templates){
-      const corpo=(t.components||[]).find(c=>c.type==='BODY')?.text||'',opt=new Option(t.name+' · '+t.language+' · '+({APPROVED:'Aprovado',PENDING:'Em análise',PAUSED:'Pausado',REJECTED:'Rejeitado',DISABLED:'Desativado'}[t.status]||t.status),t.name);
+      const corpo=(t.components||[]).find(c=>c.type==='BODY')?.text||'',opt=new Option(t.name+' · '+({UTILITY:'Utilidade',MARKETING:'Marketing',AUTHENTICATION:'Autenticação'}[t.category]||'Categoria não informada')+' · '+t.language+' · '+({APPROVED:'Aprovado',PENDING:'Em análise',PAUSED:'Pausado',REJECTED:'Rejeitado',DISABLED:'Desativado'}[t.status]||t.status),t.name);
       opt.dataset.idioma=t.language;opt.dataset.semVariaveis=String(!/\{\{/.test(corpo));opt.dataset.header=(t.components||[]).find(c=>c.type==='HEADER')?.format||'';
       templatesEncontrados[t.name]=corpo;select.append(opt);
       if(t.name===nome&&t.language===idioma){opt.selected=true;encontrado=true;}
