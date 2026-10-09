@@ -73,11 +73,19 @@ def buscar(get_db,cfg,doc):
     # A busca e textual: exigir CPF exato, nunca selecionar por nome ou proximidade.
     if int(d.get('total_paginas') or 1)>1:raise ValueError('Busca retornou varias paginas; revisar correspondencia')
     encontrados=[x for x in d['items'] if isinstance(x,dict) and cpf(x.get('cpf'))==doc and not x.get('duplicado_de_id')]
-    if len(encontrados)!=1:raise ValueError('CPF sem resultado unico na Esteira')
-    lead=encontrados[0];resultado=lead.get('resultado') or {}
-    texto=lead.get('texto_oferta') or (resultado.get('oferta') if isinstance(resultado,dict) else None)
-    if not isinstance(texto,str) or not texto.strip():raise ValueError('Oferta ainda indisponivel')
-    return texto.strip()
+    ofertas=[]
+    for lead in encontrados:
+        # Um registro em processamento nao invalida outra oferta pronta do mesmo CPF.
+        # Se a API informa status, somente com_oferta pode fornecer a nota.
+        if lead.get('status') and lead['status']!='com_oferta':continue
+        resultado=lead.get('resultado') or {}
+        candidatos=[lead.get('texto_oferta'),resultado.get('oferta') if isinstance(resultado,dict) else None]
+        texto=next((v.strip() for v in candidatos if isinstance(v,str) and v.strip()),None)
+        if texto:ofertas.append(texto)
+    if not ofertas:raise ValueError('Oferta ainda indisponivel')
+    if len(ofertas)!=1:raise ValueError('Mais de uma oferta valida; revisar correspondencia')
+    return ofertas[0]
+
 
 
 def finalizar(get_db,item,estado,detalhe='',message_id=None):

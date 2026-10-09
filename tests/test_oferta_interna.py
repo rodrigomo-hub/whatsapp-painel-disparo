@@ -53,3 +53,19 @@ class OfertaTests(unittest.TestCase):
         with test_db() as c:c.execute("insert into optout_tarefas(account_id,chat_id,criado_em) values('33393','123',0)")
         with patch.object(oi.requests,'get',return_value=self.response(200,{'items':[{'cpf':'06235558597','texto_oferta':'Oferta'}]})):oi.processar_um(main.get_db,'33393','crm')
         self.assertEqual(self.state()['estado'],'CANCELADO');self.api.assert_not_called()
+
+    def test_ready_offer_wins_over_processing_record_in_any_order(self):
+        ready={'cpf':'06235558597','status':'com_oferta','texto_oferta':'  ','resultado':{'banco':'V8','oferta':'Oferta V8'}}
+        pending={'cpf':'06235558597','status':'processando','resultado':None}
+        for items in ([pending,ready],[ready,pending]):
+            with patch.object(oi.requests,'get',return_value=self.response(200,{'items':items})):
+                self.assertEqual(oi.buscar(main.get_db,{'token':'cached'},'06235558597'),'Oferta V8')
+        self.api.assert_not_called()
+
+    def test_cancelled_or_wrong_cpf_offers_do_not_count(self):
+        items=[{'cpf':'06235558597','status':'cancelado','texto_oferta':'Oferta antiga'},
+               {'cpf':'11111111111','status':'com_oferta','texto_oferta':'Outro cliente'},
+               {'cpf':'06235558597','status':'processando','texto_oferta':'Texto antigo'}]
+        with patch.object(oi.requests,'get',return_value=self.response(200,{'items':items})):
+            with self.assertRaises(ValueError):oi.buscar(main.get_db,{'token':'cached'},'06235558597')
+        self.api.assert_not_called()
