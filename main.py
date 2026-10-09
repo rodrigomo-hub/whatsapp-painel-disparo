@@ -17,6 +17,7 @@ import imagens_template
 import templates_lote
 import textos_templates
 import link_conversa
+import oferta_interna
 import campanhas_sms
 import lembretes_sms
 import vendeai_eventos
@@ -1196,6 +1197,16 @@ async def loop_link_conversa():
         await asyncio.sleep(0 if fez else 0.1)
 
 
+async def loop_oferta_interna():
+    while True:
+        try:
+            cfg=carregar_configuracao()
+            await asyncio.to_thread(oferta_interna.processar_um,get_db,cfg['vendeai_account_id'],VENDEAI_API_TOKEN or cfg.get('vendeai_mailing_token'))
+        except Exception:
+            registrar_evento(None,'oferta_interna_erro','Falha no processamento da nota interna')
+        await asyncio.sleep(2)
+
+
 async def loop_eventos_new():
     while True:
         try:
@@ -1217,6 +1228,8 @@ async def loop_etiquetas_disparo():
 @app.on_event("startup")
 async def startup():
     init_db()
+    oferta_interna.recuperar(get_db)
+    app.state.oferta_interna_task=asyncio.create_task(loop_oferta_interna())
     link_conversa.recuperar(get_db)
     app.state.link_tasks=[asyncio.create_task(loop_link_conversa()) for _ in range(2)]
     optout.recuperar(get_db)

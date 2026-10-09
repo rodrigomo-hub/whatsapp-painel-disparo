@@ -17,6 +17,7 @@ COPY imagens_template.py .
 COPY templates_lote.py .
 COPY textos_templates.py .
 COPY link_conversa.py .
+COPY oferta_interna.py .
 COPY campanhas_sms.py .
 COPY lembretes_sms.py .
 COPY vendeai_eventos.py .

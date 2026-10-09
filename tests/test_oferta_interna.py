@@ -1,0 +1,55 @@
+import unittest
+from unittest.mock import patch,Mock
+import requests,main,oferta_interna as oi,test_mailing
+from test_mailing import test_db
+
+class OfertaTests(unittest.TestCase):
+    resposta=staticmethod(test_mailing.MailingTests.resposta)
+    def setUp(self):
+        test_mailing.MailingTests.setUp(self)
+        with test_db() as c:c.execute("UPDATE oferta_interna_config SET ativo=1,usuario='u',senha='s',token='cached'")
+        self.event={'event':'stage_updated','chat_summary':{'account_id':'33393','chat_id':'123','details':{'contact':{'cpf':'062.355.585-97'}}}}
+    def schedule(self):
+        with test_db() as c:oi.agendar(c,self.event,1)
+    def state(self):
+        with test_db() as c:return dict(c.execute('select * from oferta_interna_notas').fetchone())
+    def response(self,status,data):return Mock(status_code=status,json=Mock(return_value=data))
+    def test_private_note_cached_token_exact_match_and_dedup(self):
+        self.schedule();self.schedule()
+        lookup={'items':[{'cpf':'99999999999','texto_oferta':'wrong'},{'cpf':'6235558597','resultado':{'oferta':'Oferta correta'}}]}
+        self.api.return_value=self.response(200,{'id':5,'private':True})
+        with patch.object(oi.requests,'get',return_value=self.response(200,lookup)) as get:
+            self.assertTrue(oi.processar_um(main.get_db,'33393','crm'))
+            self.assertFalse(oi.processar_um(main.get_db,'33393','crm'))
+            self.assertEqual(get.call_args.kwargs['headers']['Authorization'],'Bearer cached')
+        self.api.assert_called_once()
+        body=self.api.call_args.kwargs['json'];self.assertIs(body['private'],True);self.assertIn('Oferta correta',body['content'])
+        self.assertEqual(self.state()['estado'],'CONCLUIDO')
+    def test_refresh_401_and_cache_new_token(self):
+        self.schedule()
+        self.api.side_effect=[self.response(200,{'access_token':'fresh'}),self.response(200,{'id':1,'private':True})]
+        with patch.object(oi.requests,'get',side_effect=[self.response(401,{}),self.response(200,{'items':[{'cpf':'06235558597','texto_oferta':'Oferta'}]})]):oi.processar_um(main.get_db,'33393','crm')
+        self.assertEqual(self.state()['estado'],'CONCLUIDO')
+        with test_db() as c:self.assertEqual(c.execute('select token from oferta_interna_config').fetchone()[0],'fresh')
+    def test_no_match_or_ambiguous_never_posts_note(self):
+        self.schedule()
+        for items in ([],[{'cpf':'11111111111','texto_oferta':'wrong'}],[{'cpf':'06235558597','texto_oferta':'a'}]*2):
+            with test_db() as c:c.execute("update oferta_interna_notas set estado='PENDENTE',tentar_em=0")
+            with patch.object(oi.requests,'get',return_value=self.response(200,{'items':items})):oi.processar_um(main.get_db,'33393','crm')
+        self.api.assert_not_called();self.assertEqual(self.state()['estado'],'REVISAR')
+    def test_timeout_note_is_not_repeated(self):
+        self.schedule();self.api.side_effect=requests.Timeout()
+        with patch.object(oi.requests,'get',return_value=self.response(200,{'items':[{'cpf':'06235558597','texto_oferta':'Oferta'}]})):
+            oi.processar_um(main.get_db,'33393','crm');oi.recuperar(main.get_db);oi.processar_um(main.get_db,'33393','crm')
+        self.assertEqual(self.state()['estado'],'INCERTO');self.api.assert_called_once()
+    def test_disabled_wrong_account_and_missing_cpf(self):
+        with test_db() as c:
+            oi.agendar(c,{'chat_summary':{'account_id':'32239','chat_id':'123','details':{'contact':{'cpf':'06235558597'}}}},1)
+            oi.agendar(c,{'chat_summary':{'account_id':'33393','chat_id':'123'}},1)
+            c.execute('update oferta_interna_config set ativo=0');oi.agendar(c,self.event,1)
+            self.assertEqual(c.execute('select count(*) from oferta_interna_notas').fetchone()[0],0)
+    def test_optout_prevents_note(self):
+        self.schedule()
+        with test_db() as c:c.execute("insert into optout_tarefas(account_id,chat_id,criado_em) values('33393','123',0)")
+        with patch.object(oi.requests,'get',return_value=self.response(200,{'items':[{'cpf':'06235558597','texto_oferta':'Oferta'}]})):oi.processar_um(main.get_db,'33393','crm')
+        self.assertEqual(self.state()['estado'],'CANCELADO');self.api.assert_not_called()
