@@ -69,3 +69,26 @@ class OfertaTests(unittest.TestCase):
         with patch.object(oi.requests,'get',return_value=self.response(200,{'items':items})):
             with self.assertRaises(ValueError):oi.buscar(main.get_db,{'token':'cached'},'06235558597')
         self.api.assert_not_called()
+
+    def test_v8_note_then_tag_preserves_existing_labels(self):
+        self.schedule();self.api.return_value=self.response(200,{'id':7,'private':True})
+        with patch.object(oi.requests,'get',return_value=self.response(200,{'items':[{'cpf':'06235558597','status':'com_oferta','resultado':{'banco':'V8','oferta':'Oferta'}}]})):
+            oi.processar_um(main.get_db,'33393','crm')
+        self.assertEqual(self.state()['tag_estado'],'PENDENTE')
+        self.api.reset_mock();self.api.return_value=self.response(200,{})
+        with patch.object(oi.requests,'get',side_effect=[self.response(200,{'payload':['clt','cliente']}),self.response(200,{'payload':['clt','cliente','oferta_v8']})]):
+            oi.processar_tag(main.get_db,'33393','crm')
+        self.api.assert_called_once();self.assertEqual(self.api.call_args.kwargs['json']['labels'],['clt','cliente','oferta_v8'])
+        self.assertEqual(self.state()['estado'],'CONCLUIDO');self.assertEqual(self.state()['tag_estado'],'CONCLUIDO')
+        self.assertFalse(oi.processar_tag(main.get_db,'33393','crm'))
+
+    def test_tag_failure_never_reposts_note_or_overwrites_unknown_labels(self):
+        self.schedule()
+        with test_db() as c:c.execute("update oferta_interna_notas set estado='CONCLUIDO',banco='V8',tag_estado='PENDENTE'")
+        with patch.object(oi.requests,'get',return_value=self.response(500,{})):
+            oi.processar_tag(main.get_db,'33393','crm')
+        self.api.assert_not_called();self.assertEqual(self.state()['estado'],'CONCLUIDO');self.assertEqual(self.state()['tag_estado'],'PENDENTE')
+        with test_db() as c:c.execute('update oferta_interna_notas set tag_tentar_em=0')
+        with patch.object(oi.requests,'get',return_value=self.response(200,{'payload':['oferta_v8']})):
+            oi.processar_tag(main.get_db,'33393','crm')
+        self.api.assert_not_called();self.assertEqual(self.state()['tag_estado'],'CONCLUIDO')
