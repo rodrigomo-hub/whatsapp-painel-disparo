@@ -131,3 +131,22 @@ class OfertaTests(unittest.TestCase):
         with patch.object(oi.requests,'get') as get,patch.object(oi.requests,'put') as put:
             oi.processar_nome(main.get_db,'33393','crm');get.assert_not_called();put.assert_not_called()
         self.assertEqual(self.state()['nome_estado'],'CANCELADO')
+
+    def test_empty_crm_name_uses_verified_offer_name(self):
+        self.schedule()
+        with test_db() as c:c.execute("update oferta_interna_notas set estado='CONCLUIDO',banco='V8'")
+        responses=[self.response(200,{'meta':{'sender':{'id':45}}}),self.response(200,{'payload':{'id':45,'name':''}}),self.response(200,{'payload':{'id':45,'name':'Ana Silva · OFERTA V8'}})]
+        with patch.object(oi,'buscar',return_value={'nome':'Ana Silva','banco':'V8'}) as buscar,patch.object(oi.requests,'get',side_effect=responses),patch.object(oi.requests,'put',return_value=self.response(200,{})) as put:
+            oi.processar_nome(main.get_db,'33393','crm')
+            self.assertEqual(buscar.call_args.args[2],'06235558597')
+            self.assertEqual(put.call_args.kwargs['json'],{'name':'Ana Silva · OFERTA V8'})
+        self.assertEqual(self.state()['nome_estado'],'CONCLUIDO')
+
+    def test_empty_name_without_verified_v8_never_updates(self):
+        self.schedule()
+        with test_db() as c:c.execute("update oferta_interna_notas set estado='CONCLUIDO',banco='V8'")
+        for offer in ({'nome':'Ana','banco':'FACTA'},{'nome':'','banco':'V8'}):
+            with test_db() as c:c.execute('update oferta_interna_notas set nome_tentar_em=0')
+            responses=[self.response(200,{'meta':{'sender':{'id':45}}}),self.response(200,{'payload':{'id':45,'name':''}})]
+            with patch.object(oi,'buscar',return_value=offer),patch.object(oi.requests,'get',side_effect=responses),patch.object(oi.requests,'put') as put:
+                oi.processar_nome(main.get_db,'33393','crm');put.assert_not_called()

@@ -85,7 +85,7 @@ def buscar(get_db,cfg,doc,detalhes=False):
         resultado=lead.get('resultado') or {}
         candidatos=[lead.get('texto_oferta'),resultado.get('oferta') if isinstance(resultado,dict) else None]
         texto=next((v.strip() for v in candidatos if isinstance(v,str) and v.strip()),None)
-        if texto:ofertas.append({'texto':texto,'banco':str(resultado.get('banco') or '').strip().upper() if isinstance(resultado,dict) else ''})
+        if texto:ofertas.append({'texto':texto,'nome':str(lead.get('nome') or '').strip(),'banco':str(resultado.get('banco') or '').strip().upper() if isinstance(resultado,dict) else ''})
     if not ofertas:raise ValueError('Oferta ainda indisponivel')
     if len(ofertas)!=1:raise ValueError('Mais de uma oferta valida; revisar correspondencia')
     return ofertas[0] if detalhes else ofertas[0]['texto']
@@ -199,7 +199,13 @@ def processar_nome(get_db,conta,token_crm):
             contato=get(url);contato=contato.get('payload',contato)
             if not isinstance(contato,dict) or str(contato.get('id'))!=ident:raise ValueError('Contato invalido')
             nome=contato.get('name')
-            if not isinstance(nome,str) or not nome.strip():raise ValueError('Nome ausente')
+            if not isinstance(nome,str) or not nome.strip():
+                with closing(get_db()) as c:
+                    cfg=dict(c.execute('SELECT * FROM oferta_interna_config WHERE id=1').fetchone())
+                oferta=buscar(get_db,cfg,item['cpf'],detalhes=True)
+                if oferta['banco'] not in ('V8','V8 BANK'):raise ValueError('Oferta V8 nao confirmada')
+                nome=oferta['nome']
+                if not nome:raise ValueError('Nome ausente na consulta confirmada')
             if not re.search(r'(?:^|[\s|·-])OFERTA V8\s*$',nome,re.I):
                 novo=nome.rstrip()+' · OFERTA V8'
                 with closing(get_db()) as c,c:
