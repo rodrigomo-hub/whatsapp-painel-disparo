@@ -7,7 +7,7 @@ import requests
 import optout
 
 BASE = 'https://app.esteiradeleads.shop'
-CONTA = '33393'
+
 
 
 def migrar(c):
@@ -39,7 +39,7 @@ def agendar(c,d,evento):
     ident=str(chat.get('chat_id') or '')
     contato=(chat.get('details') or {}).get('contact') or {}
     doc=cpf(contato.get('cpf'))
-    if not cfg or not cfg['ativo'] or conta!=CONTA or not ident.isdigit() or not doc:return
+    if not cfg or not cfg['ativo'] or conta!=str(c.execute('SELECT vendeai_account_id FROM configuracao WHERE id=1').fetchone()[0]) or not ident.isdigit() or not doc:return
     if impedido(c,conta,ident):return
     now=time.time()
     c.execute('INSERT OR IGNORE INTO oferta_interna_notas(conta,chat,cpf,evento_id,criado_em,atualizado_em) VALUES(?,?,?,?,?,?)',
@@ -99,15 +99,18 @@ def finalizar(get_db,item,estado,detalhe='',message_id=None):
 
 
 def processar_um(get_db,conta,token_crm):
-    if str(conta)!=CONTA or not token_crm:return False
+    conta=str(conta)
+    if not conta.isdigit() or not token_crm:return False
+    with closing(get_db()) as c:
+        if conta!=str(c.execute('SELECT vendeai_account_id FROM configuracao WHERE id=1').fetchone()[0]):return False
     with closing(get_db()) as c,c:
         c.execute('BEGIN IMMEDIATE')
         cfg=dict(c.execute('SELECT * FROM oferta_interna_config WHERE id=1').fetchone())
         if not cfg['ativo'] or not cfg['usuario'] or not cfg['senha']:return False
-        r=c.execute("SELECT * FROM oferta_interna_notas WHERE conta=? AND estado='PENDENTE' AND tentar_em<=? ORDER BY criado_em LIMIT 1",(CONTA,time.time())).fetchone()
+        r=c.execute("SELECT * FROM oferta_interna_notas WHERE conta=? AND estado='PENDENTE' AND tentar_em<=? ORDER BY criado_em LIMIT 1",(conta,time.time())).fetchone()
         if not r:return False
         item=dict(r);item['tentativas']+=1
-        c.execute("UPDATE oferta_interna_notas SET estado='CONSULTANDO',tentativas=?,atualizado_em=? WHERE conta=? AND chat=? AND cpf=?",(item['tentativas'],time.time(),CONTA,item['chat'],item['cpf']))
+        c.execute("UPDATE oferta_interna_notas SET estado='CONSULTANDO',tentativas=?,atualizado_em=? WHERE conta=? AND chat=? AND cpf=?",(item['tentativas'],time.time(),conta,item['chat'],item['cpf']))
     try:
         oferta=buscar(get_db,cfg,item['cpf'],detalhes=True)
         texto=oferta['texto']
@@ -115,12 +118,12 @@ def processar_um(get_db,conta,token_crm):
         finalizar(get_db,item,'PENDENTE' if item['tentativas']<3 else 'REVISAR','Consulta sem oferta confirmada; nenhuma nota enviada.')
         return True
     with closing(get_db()) as c,c:
-        if not c.execute('SELECT ativo FROM oferta_interna_config WHERE id=1').fetchone()[0] or impedido(c,CONTA,item['chat']):
-            c.execute("UPDATE oferta_interna_notas SET estado='CANCELADO' WHERE conta=? AND chat=? AND cpf=?",(CONTA,item['chat'],item['cpf']))
+        if not c.execute('SELECT ativo FROM oferta_interna_config WHERE id=1').fetchone()[0] or impedido(c,conta,item['chat']):
+            c.execute("UPDATE oferta_interna_notas SET estado='CANCELADO' WHERE conta=? AND chat=? AND cpf=?",(conta,item['chat'],item['cpf']))
             return True
-        c.execute("UPDATE oferta_interna_notas SET estado='ENVIANDO',oferta=?,banco=?,tag_estado=?,atualizado_em=? WHERE conta=? AND chat=? AND cpf=?",(texto,oferta['banco'],'PENDENTE' if oferta['banco'] in ('V8','V8 BANK') else '',time.time(),CONTA,item['chat'],item['cpf']))
+        c.execute("UPDATE oferta_interna_notas SET estado='ENVIANDO',oferta=?,banco=?,tag_estado=?,atualizado_em=? WHERE conta=? AND chat=? AND cpf=?",(texto,oferta['banco'],'PENDENTE' if oferta['banco'] in ('V8','V8 BANK') else '',time.time(),conta,item['chat'],item['cpf']))
     try:
-        r=requests.post('https://crm.vendeaitecnologia.com.br/api/v1/accounts/'+CONTA+'/conversations/'+item['chat']+'/messages',
+        r=requests.post('https://crm.vendeaitecnologia.com.br/api/v1/accounts/'+conta+'/conversations/'+item['chat']+'/messages',
             headers={'api_access_token':token_crm},json={'content':'Oferta consultada na Esteira de Leads\n\n'+texto,'message_type':'outgoing','private':True,'content_type':'text'},timeout=(4,15),allow_redirects=False)
         if 200<=r.status_code<300:
             d=r.json()
@@ -137,18 +140,21 @@ def processar_um(get_db,conta,token_crm):
 
 
 def processar_tag(get_db,conta,token_crm):
-    if str(conta)!=CONTA or not token_crm:return False
+    conta=str(conta)
+    if not conta.isdigit() or not token_crm:return False
+    with closing(get_db()) as c:
+        if conta!=str(c.execute('SELECT vendeai_account_id FROM configuracao WHERE id=1').fetchone()[0]):return False
     with closing(get_db()) as c:
         if not c.execute('SELECT ativo FROM oferta_interna_config WHERE id=1').fetchone()[0]:return False
-        r=c.execute("SELECT * FROM oferta_interna_notas WHERE conta=? AND estado='CONCLUIDO' AND tag_estado='PENDENTE' AND tag_tentar_em<=? ORDER BY criado_em LIMIT 1",(CONTA,time.time())).fetchone()
+        r=c.execute("SELECT * FROM oferta_interna_notas WHERE conta=? AND estado='CONCLUIDO' AND tag_estado='PENDENTE' AND tag_tentar_em<=? ORDER BY criado_em LIMIT 1",(conta,time.time())).fetchone()
         if not r:return False
         item=dict(r)
-        blocked=impedido(c,CONTA,item['chat'])
+        blocked=impedido(c,conta,item['chat'])
     estado='CANCELADO' if blocked else 'CONCLUIDO'
     tentativa=item['tag_tentativas']+1
     if not blocked:
         try:
-            url=optout.BASE+CONTA+'/conversations/'+item['chat']+'/labels'
+            url=optout.BASE+conta+'/conversations/'+item['chat']+'/labels'
             headers={'api_access_token':token_crm}
             def ler():
                 r=requests.get(url,headers=headers,timeout=(3,10),allow_redirects=False)
@@ -165,5 +171,5 @@ def processar_tag(get_db,conta,token_crm):
             estado='PENDENTE' if tentativa<3 else 'REVISAR'
     with closing(get_db()) as c,c:
         c.execute('UPDATE oferta_interna_notas SET tag_estado=?,tag_tentativas=?,tag_tentar_em=? WHERE conta=? AND chat=? AND cpf=?',
-                  (estado,tentativa,time.time()+60*tentativa,CONTA,item['chat'],item['cpf']))
+                  (estado,tentativa,time.time()+60*tentativa,conta,item['chat'],item['cpf']))
     return True

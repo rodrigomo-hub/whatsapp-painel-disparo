@@ -92,3 +92,19 @@ class OfertaTests(unittest.TestCase):
         with patch.object(oi.requests,'get',return_value=self.response(200,{'payload':['oferta_v8']})):
             oi.processar_tag(main.get_db,'33393','crm')
         self.api.assert_not_called();self.assertEqual(self.state()['tag_estado'],'CONCLUIDO')
+
+    def test_simplifica_uses_only_its_own_account(self):
+        with test_db() as c:c.execute("update configuracao set vendeai_account_id='32239'")
+        self.schedule()
+        with test_db() as c:self.assertEqual(c.execute('select count(*) from oferta_interna_notas').fetchone()[0],0)
+        self.event['chat_summary']['account_id']='32239';self.schedule()
+        self.api.return_value=self.response(200,{'id':8,'private':True})
+        with patch.object(oi.requests,'get',return_value=self.response(200,{'items':[{'cpf':'06235558597','resultado':{'banco':'V8','oferta':'Oferta'}}]})):
+            self.assertFalse(oi.processar_um(main.get_db,'33393','wrong-token'))
+            self.assertTrue(oi.processar_um(main.get_db,'32239','simplifica-token'))
+        self.assertIn('/accounts/32239/conversations/123/messages',self.api.call_args.args[0])
+        self.assertEqual(self.api.call_args.kwargs['headers']['api_access_token'],'simplifica-token')
+        self.api.reset_mock();self.api.return_value=self.response(200,{})
+        with patch.object(oi.requests,'get',side_effect=[self.response(200,{'payload':[]}),self.response(200,{'payload':['oferta_v8']})]):
+            oi.processar_tag(main.get_db,'32239','simplifica-token')
+        self.assertIn('/accounts/32239/conversations/123/labels',self.api.call_args.args[0])
