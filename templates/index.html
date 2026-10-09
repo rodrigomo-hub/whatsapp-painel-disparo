@@ -1093,11 +1093,14 @@ async function carregarFila() {
   } catch (erro) { document.getElementById('fila-proxima').textContent = 'Não foi possível atualizar a fila. Tentaremos novamente.'; }
 }
 
-let banidosHojeCache='—';
+let banidosHojeCache='—', qualidadeSubiramCache='—', qualidadeBaixaramCache='—';
 async function carregarTotalHoje() {
   const res = await fetch('/api/total-hoje');
   const dados = await res.json();
   banidosHojeCache=dados.total_banidos_hoje;
+  qualidadeSubiramCache=dados.qualidade_subiram_hoje??'—';
+  qualidadeBaixaramCache=dados.qualidade_baixaram_hoje??'—';
+  for(const [id,valor] of [['qualidade-subiram-hoje',qualidadeSubiramCache],['qualidade-baixaram-hoje',qualidadeBaixaramCache]]){const el=document.getElementById(id);if(el)el.textContent=valor;}
   const banidosHoje=document.getElementById('banidos-hoje');if(banidosHoje)banidosHoje.textContent=banidosHojeCache;
   document.getElementById('total-hoje').textContent = dados.total_sucesso_hoje;
   document.getElementById('enviados-normais-hoje').textContent=dados.total_normais_hoje;
@@ -1180,6 +1183,8 @@ async function carregarNumeros() {
     <div><span style="font-size:22px; font-weight:700; color:#dc2626;">${totalQualidadeBaixa}</span> <span style="font-size:13px; color:#888;">oficiais com qualidade baixa</span></div>
     <div title="Números oficiais com banimento identificado na Meta, no número ou na WABA."><span id="total-banidos" style="font-size:22px;font-weight:700;color:#b42318;">${totalBanidos}</span> <span style="font-size:13px;color:#888;">banidos pela Meta</span></div>
     <div style="background:#fff1f2;border-radius:8px;padding:5px 10px;" title="Números com novo banimento detectado hoje pelo painel, no horário de Brasília. Contagem iniciada com esta atualização."><span id="banidos-hoje" style="font-size:22px;font-weight:700;color:#b42318;">${banidosHojeCache}</span> <span style="font-size:13px;color:#b42318;font-weight:600;">banidos hoje</span></div>
+    <div style="background:#f0fdf4;border-radius:8px;padding:5px 10px;" title="Números que melhoraram entre baixa, média e alta hoje, em Brasília. Cada número conta uma vez; se também piorou, aparece nos dois indicadores. Qualidade desconhecida não conta."><span id="qualidade-subiram-hoje" style="font-size:22px;font-weight:700;color:#15803d;">${qualidadeSubiramCache}</span> <span style="font-size:13px;color:#15803d;font-weight:600;">↑ qualidade subiu hoje</span></div>
+    <div style="background:#fff7ed;border-radius:8px;padding:5px 10px;" title="Números que pioraram entre alta, média e baixa hoje, em Brasília. Cada número conta uma vez; se também melhorou, aparece nos dois indicadores. Qualidade desconhecida não conta."><span id="qualidade-baixaram-hoje" style="font-size:22px;font-weight:700;color:#c2410c;">${qualidadeBaixaramCache}</span> <span style="font-size:13px;color:#c2410c;font-weight:600;">↓ qualidade caiu hoje</span></div>
     <div><span style="font-size:22px; font-weight:700; color:#1a1a2e;">${numerosCache.length}</span> <span style="font-size:13px; color:#888;">total cadastrados</span></div>
   `;
 

@@ -22,3 +22,17 @@ def recentes(c, numero_id):
     return [dict(r) for r in c.execute(
         'SELECT anterior,atual,detectado_em,fonte,intervalo_inicio FROM qualidade_historico WHERE numero_id=? ORDER BY julianday(detectado_em) DESC,id DESC LIMIT 5',
         (numero_id,))]
+
+
+def resumo_dia(c, dia):
+    """Conta numeros distintos por direcao, somente entre qualidades conhecidas."""
+    row=c.execute("""WITH mudancas AS (
+        SELECT numero_id,
+          CASE anterior WHEN 'RED' THEN 1 WHEN 'YELLOW' THEN 2 WHEN 'GREEN' THEN 3 END AS antes,
+          CASE atual WHEN 'RED' THEN 1 WHEN 'YELLOW' THEN 2 WHEN 'GREEN' THEN 3 END AS depois
+        FROM qualidade_historico
+        WHERE date(detectado_em,'-3 hours')=?
+    ) SELECT COUNT(DISTINCT CASE WHEN depois>antes THEN numero_id END),
+             COUNT(DISTINCT CASE WHEN depois<antes THEN numero_id END)
+      FROM mudancas""",(dia,)).fetchone()
+    return {'subiram':row[0],'baixaram':row[1]}

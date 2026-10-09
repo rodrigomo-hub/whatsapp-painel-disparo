@@ -2204,6 +2204,7 @@ async def receber_webhook(request: Request):
 def total_hoje():
     conn = get_db()
     agora = datetime.now(TZ)
+    mudancas_qualidade=qualidade_historico.resumo_dia(conn,agora.date().isoformat())
     banidos_hoje=conn.execute('SELECT COUNT(*) FROM banimentos_meta WHERE dia=?',(agora.date().isoformat(),)).fetchone()[0]
     inicio_dia = agora.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     row = conn.execute(
@@ -2232,6 +2233,8 @@ def total_hoje():
     return {
         "total_sucesso_hoje": row["c"],
         "total_banidos_hoje": banidos_hoje,
+        "qualidade_subiram_hoje": mudancas_qualidade['subiram'],
+        "qualidade_baixaram_hoje": mudancas_qualidade['baixaram'],
         "total_normais_hoje": tipos['normais'],
         "total_oficiais_hoje": tipos['oficiais'],
         "total_sms_hoje": tipos['sms'],
