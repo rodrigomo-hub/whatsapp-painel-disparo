@@ -23,7 +23,7 @@ def migrar(c):
         detalhe TEXT NOT NULL DEFAULT '',message_id TEXT,oferta TEXT,
         PRIMARY KEY(conta,chat,cpf))""")
     cols={r[1] for r in c.execute('PRAGMA table_info(oferta_interna_notas)')}
-    for nome,tipo in [('banco',"TEXT NOT NULL DEFAULT ''"),('tag_estado',"TEXT NOT NULL DEFAULT ''"),('tag_tentativas','INTEGER NOT NULL DEFAULT 0'),('tag_tentar_em','REAL NOT NULL DEFAULT 0')]:
+    for nome,tipo in [('banco',"TEXT NOT NULL DEFAULT ''"),('tag_estado',"TEXT NOT NULL DEFAULT ''"),('tag_tentativas','INTEGER NOT NULL DEFAULT 0'),('tag_tentar_em','REAL NOT NULL DEFAULT 0'),('nome_estado',"TEXT NOT NULL DEFAULT ''"),('nome_original',"TEXT NOT NULL DEFAULT ''"),('nome_contact_id',"TEXT NOT NULL DEFAULT ''"),('nome_tentativas','INTEGER NOT NULL DEFAULT 0'),('nome_tentar_em','REAL NOT NULL DEFAULT 0')]:
         if nome not in cols:c.execute(f'ALTER TABLE oferta_interna_notas ADD COLUMN {nome} {tipo}')
 
 
@@ -172,4 +172,46 @@ def processar_tag(get_db,conta,token_crm):
     with closing(get_db()) as c,c:
         c.execute('UPDATE oferta_interna_notas SET tag_estado=?,tag_tentativas=?,tag_tentar_em=? WHERE conta=? AND chat=? AND cpf=?',
                   (estado,tentativa,time.time()+60*tentativa,conta,item['chat'],item['cpf']))
+    return True
+
+
+def processar_nome(get_db,conta,token_crm):
+    conta=str(conta)
+    if not conta.isdigit() or not token_crm:return False
+    with closing(get_db()) as c:
+        if conta!=str(c.execute('SELECT vendeai_account_id FROM configuracao WHERE id=1').fetchone()[0]):return False
+        if not c.execute('SELECT ativo FROM oferta_interna_config WHERE id=1').fetchone()[0]:return False
+        row=c.execute("SELECT * FROM oferta_interna_notas WHERE conta=? AND estado='CONCLUIDO' AND banco IN ('V8','V8 BANK') AND nome_estado IN ('','PENDENTE') AND nome_tentar_em<=? ORDER BY criado_em LIMIT 1",(conta,time.time())).fetchone()
+        if not row:return False
+        item=dict(row);blocked=impedido(c,conta,item['chat'])
+    estado='CANCELADO' if blocked else 'CONCLUIDO';attempt=item['nome_tentativas']+1
+    if not blocked:
+        try:
+            headers={'api_access_token':token_crm};base=optout.BASE+conta
+            def get(url):
+                r=requests.get(url,headers=headers,timeout=(3,10),allow_redirects=False)
+                if r.status_code!=200:raise ValueError('CRM indisponivel')
+                return r.json()
+            conv=get(base+'/conversations/'+item['chat'])
+            ident=str(conv.get('meta',{}).get('sender',{}).get('id') or '')
+            if not ident.isdigit():raise ValueError('Contato nao confirmado')
+            url=base+'/contacts/'+ident
+            contato=get(url);contato=contato.get('payload',contato)
+            if not isinstance(contato,dict) or str(contato.get('id'))!=ident:raise ValueError('Contato invalido')
+            nome=contato.get('name')
+            if not isinstance(nome,str) or not nome.strip():raise ValueError('Nome ausente')
+            if not re.search(r'(?:^|[\s|·-])OFERTA V8\s*$',nome,re.I):
+                novo=nome.rstrip()+' · OFERTA V8'
+                with closing(get_db()) as c,c:
+                    if impedido(c,conta,item['chat']):raise ValueError('Optout')
+                    c.execute("UPDATE oferta_interna_notas SET nome_original=CASE WHEN nome_original='' THEN ? ELSE nome_original END,nome_contact_id=? WHERE conta=? AND chat=? AND cpf=?",(nome,ident,conta,item['chat'],item['cpf']))
+                r=requests.put(url,headers=headers,json={'name':novo},timeout=(3,10),allow_redirects=False)
+                if not 200<=r.status_code<300:raise ValueError('Nome recusado')
+                contato=get(url);contato=contato.get('payload',contato)
+                if contato.get('name')!=novo:raise ValueError('Nome nao confirmado')
+        except (requests.RequestException,ValueError,TypeError,AttributeError):
+            estado='PENDENTE' if attempt<3 else 'REVISAR'
+    with closing(get_db()) as c,c:
+        c.execute('UPDATE oferta_interna_notas SET nome_estado=?,nome_tentativas=?,nome_tentar_em=? WHERE conta=? AND chat=? AND cpf=?',
+                  (estado,attempt,time.time()+60*attempt,conta,item['chat'],item['cpf']))
     return True

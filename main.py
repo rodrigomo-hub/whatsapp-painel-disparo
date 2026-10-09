@@ -1203,6 +1203,7 @@ async def loop_oferta_interna():
             cfg=carregar_configuracao()
             await asyncio.to_thread(oferta_interna.processar_um,get_db,cfg['vendeai_account_id'],VENDEAI_API_TOKEN or cfg.get('vendeai_mailing_token'))
             await asyncio.to_thread(oferta_interna.processar_tag,get_db,cfg['vendeai_account_id'],VENDEAI_API_TOKEN or cfg.get('vendeai_mailing_token'))
+            await asyncio.to_thread(oferta_interna.processar_nome,get_db,cfg['vendeai_account_id'],VENDEAI_API_TOKEN or cfg.get('vendeai_mailing_token'))
         except Exception:
             registrar_evento(None,'oferta_interna_erro','Falha no processamento da nota interna')
         await asyncio.sleep(2)

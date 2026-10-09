@@ -108,3 +108,26 @@ class OfertaTests(unittest.TestCase):
         with patch.object(oi.requests,'get',side_effect=[self.response(200,{'payload':[]}),self.response(200,{'payload':['oferta_v8']})]):
             oi.processar_tag(main.get_db,'32239','simplifica-token')
         self.assertIn('/accounts/32239/conversations/123/labels',self.api.call_args.args[0])
+
+    def test_name_suffix_preserves_original_and_only_updates_name(self):
+        self.schedule()
+        with test_db() as c:c.execute("update oferta_interna_notas set estado='CONCLUIDO',banco='V8'")
+        responses=[self.response(200,{'meta':{'sender':{'id':45}}}),self.response(200,{'payload':{'id':45,'name':'Ana Silva'}}),self.response(200,{'payload':{'id':45,'name':'Ana Silva · OFERTA V8'}})]
+        with patch.object(oi.requests,'get',side_effect=responses),patch.object(oi.requests,'put',return_value=self.response(200,{})) as put:
+            oi.processar_nome(main.get_db,'33393','crm')
+            self.assertEqual(put.call_args.kwargs['json'],{'name':'Ana Silva · OFERTA V8'})
+            self.assertFalse(oi.processar_nome(main.get_db,'33393','crm'))
+        self.assertEqual(self.state()['nome_original'],'Ana Silva')
+        self.assertEqual(self.state()['nome_estado'],'CONCLUIDO')
+
+    def test_existing_suffix_or_optout_never_renames(self):
+        self.schedule()
+        with test_db() as c:c.execute("update oferta_interna_notas set estado='CONCLUIDO',banco='V8'")
+        with patch.object(oi.requests,'get',side_effect=[self.response(200,{'meta':{'sender':{'id':45}}}),self.response(200,{'payload':{'id':45,'name':'Ana Silva · OFERTA V8'}})]),patch.object(oi.requests,'put') as put:
+            oi.processar_nome(main.get_db,'33393','crm');put.assert_not_called()
+        with test_db() as c:
+            c.execute("update oferta_interna_notas set nome_estado='PENDENTE',nome_tentar_em=0")
+            c.execute("insert into optout_tarefas(account_id,chat_id,criado_em) values('33393','123',0)")
+        with patch.object(oi.requests,'get') as get,patch.object(oi.requests,'put') as put:
+            oi.processar_nome(main.get_db,'33393','crm');get.assert_not_called();put.assert_not_called()
+        self.assertEqual(self.state()['nome_estado'],'CANCELADO')
