@@ -2634,6 +2634,17 @@ def salvar_waba_painel(body: dict):
     return {'id': waba_id, 'nome': nome}
 
 
+@app.delete('/api/wabas-painel/{waba_id}')
+def excluir_waba_painel(waba_id: str):
+    with closing(get_db()) as conn, conn:
+        conn.execute('BEGIN IMMEDIATE')
+        vinculados=conn.execute('SELECT COUNT(*) FROM numeros WHERE waba_id=?',(waba_id,)).fetchone()[0]
+        if vinculados:
+            raise HTTPException(409, f'Esta WABA tem {vinculados} número(s) cadastrado(s) no painel. Remova esses números antes de excluir a WABA.')
+        conn.execute('DELETE FROM wabas_salvas WHERE waba_id=?',(waba_id,))
+    return {'ok': True}
+
+
 @app.get('/api/wabas-painel/{waba_id}')
 def detalhes_waba_painel(waba_id: str):
     with closing(get_db()) as conn:
