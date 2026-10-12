@@ -112,7 +112,7 @@ class Fila:
     def existente(self, preparado, original, cfg, chave_explicita=None):
         if chave_explicita is not None and (not isinstance(chave_explicita, str) or not 1 <= len(chave_explicita.strip()) <= 200):
             raise HTTPException(400, "idempotency_key deve ter de 1 a 200 caracteres")
-        base = json.loads(serializar(preparado))
+        base = json.loads(serializar(preparado)); base.pop("_nao_compartilhar", None)
         if not (original.get("email") or "").strip() and not ((original.get("info_extra") or {}).get("email") or "").strip():
             base["mailing"].pop("email", None)
         fp = hashlib.sha256(serializar([destino(cfg), base, "individual", []]).encode()).hexdigest()
@@ -140,7 +140,7 @@ class Fila:
                     raise HTTPException(409,'optout: telefone na lista negra')
                 if chave_explicita is not None and (not isinstance(chave_explicita, str) or not 1 <= len(chave_explicita.strip()) <= 200):
                     raise HTTPException(400, "idempotency_key deve ter de 1 a 200 caracteres")
-                base = json.loads(serializar(preparado))
+                base = json.loads(serializar(preparado)); base.pop("_nao_compartilhar", None)
                 # Email sintetico nao participa da identidade: um retry nao deve mudar o cadastro.
                 if not (original.get("email") or "").strip() and not ((original.get("info_extra") or {}).get("email") or "").strip():
                     base["mailing"].pop("email", None)

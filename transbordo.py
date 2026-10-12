@@ -13,6 +13,7 @@ import requests
 from fastapi import HTTPException
 
 CONFIG_COLUMNS = {
+    'disparo_compartilhado': 'INTEGER NOT NULL DEFAULT 0',
     'transbordo_habilitado': 'INTEGER NOT NULL DEFAULT 0',
     'transbordo_url': "TEXT NOT NULL DEFAULT ''",
     'transbordo_nome': "TEXT NOT NULL DEFAULT ''",
@@ -30,6 +31,7 @@ def migrar(c):
         destino TEXT NOT NULL, destino_nome TEXT NOT NULL, nome TEXT NOT NULL,
         telefone TEXT NOT NULL, status TEXT NOT NULL, status_destino TEXT NOT NULL DEFAULT '',
         motivo TEXT NOT NULL DEFAULT '', criado_em REAL NOT NULL, atualizado_em REAL NOT NULL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS disparos_compartilhados(id TEXT PRIMARY KEY, disparo_id INTEGER UNIQUE, destino TEXT NOT NULL, payload TEXT NOT NULL, estado TEXT NOT NULL DEFAULT 'pendente', criado_em REAL NOT NULL, resultado TEXT NOT NULL DEFAULT '{}')''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_transbordo_chave ON transbordos(chave,criado_em)')
     c.execute('''CREATE TABLE IF NOT EXISTS transbordos_recebidos (
         id INTEGER PRIMARY KEY AUTOINCREMENT, recibo TEXT NOT NULL,
@@ -194,3 +196,42 @@ class Transbordo:
         except (requests.RequestException,ValueError,TypeError,AttributeError):
             pass
         return self.publico(row)
+
+
+def agendar_compartilhado(c, disparo_id, preparado):
+    if not preparado or preparado.get('_nao_compartilhar'):return
+    cfg=dict(c.execute('SELECT * FROM configuracao WHERE id=1').fetchone())
+    if str(cfg.get('vendeai_account_id'))!='33393' or not cfg.get('disparo_compartilhado'):return
+    if not cfg.get('transbordo_url') or not cfg.get('transbordo_token'):return
+    lead=preparado['mailing']
+    body={k:v for k,v in lead.items() if k in ('phone','cpf','name','birth_date','email','product','campaign')}
+    body['variaveis_template']=preparado.get('variaveis_template',[])
+    c.execute('INSERT OR IGNORE INTO disparos_compartilhados(id,disparo_id,destino,payload,criado_em) VALUES(?,?,?,?,?)',
+              (uuid.uuid4().hex,disparo_id,cfg['transbordo_url'],json.dumps(body,ensure_ascii=False),time.time()))
+
+
+def recuperar_compartilhados(get_db):
+    with closing(get_db()) as c,c:
+        c.execute("UPDATE disparos_compartilhados SET estado='incerto' WHERE estado='enviando'")
+
+
+def processar_compartilhado(get_db,cfg):
+    with closing(get_db()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        r=c.execute("SELECT * FROM disparos_compartilhados WHERE estado='pendente' ORDER BY criado_em LIMIT 1").fetchone()
+        if not r:return False
+        item=dict(r)
+        permitido=(str(cfg.get('vendeai_account_id'))=='33393' and cfg.get('disparo_compartilhado') and cfg.get('transbordo_token') and cfg.get('transbordo_url')==item['destino'] and time.time()-item['criado_em']<=300)
+        c.execute('UPDATE disparos_compartilhados SET estado=? WHERE id=?',('enviando' if permitido else 'cancelado',item['id']))
+    if not permitido:return True
+    body=json.loads(item['payload'])
+    try:
+        validar_lead(body)
+        result=Transbordo(get_db).encaminhar(body,'compartilhado:'+item['id'],cfg,body)
+    except Exception:
+        # Sem repetir automaticamente um envio cujo resultado nao foi confirmado.
+        result={'status':'incerto','motivo_codigo':'compartilhamento_sem_confirmacao'}
+    with closing(get_db()) as c,c:
+        c.execute('UPDATE disparos_compartilhados SET estado=?,resultado=? WHERE id=?',
+                  ('incerto' if result['status']=='pendente' else result['status'],json.dumps(result,ensure_ascii=False),item['id']))
+    return True

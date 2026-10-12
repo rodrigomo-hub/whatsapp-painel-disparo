@@ -310,6 +310,7 @@
   <h2>Transbordo de leads</h2>
   <p>Sem capacidade local, encaminha entradas individuais do n8n para outro painel. O destino usa seus próprios números, template e conta VendeAI. Planilhas, bloqueio por lote e fora do horário não acionam transbordo.</p>
   <form onsubmit="salvarTransbordo(event)">
+    <div id="disparo-compartilhado-area" hidden><strong>Disparo compartilhado</strong><p><label><input type="checkbox" id="disparo-compartilhado"> Enviar também ao painel parceiro</label></p><p style="font-size:13px;color:#64748b">Após um envio confirmado aqui, encaminha o lead ao parceiro abaixo. Cada painel respeita seus limites e bloqueios. O parceiro não recebe o status do envio local.</p></div>
     <p><label><input type="checkbox" id="transbordo-habilitado"> Ativar transbordo quando faltar capacidade</label></p>
     <p><label>Nome do destino <input id="transbordo-nome" placeholder="Simplifica"></label></p>
     <p><label>Endereço do painel <input id="transbordo-url" type="url" placeholder="https://disparo.simplifica.sbs"></label></p>
@@ -963,6 +964,8 @@ async function salvarSms(ev) {
 
 async function carregarTransbordo() {
   const r=await fetch('/api/configuracao'); const c=await r.json();
+  document.getElementById('disparo-compartilhado-area').hidden=String(c.vendeai_account_id)!=='33393';
+  document.getElementById('disparo-compartilhado').checked=Boolean(c.disparo_compartilhado);
   document.getElementById('transbordo-habilitado').checked=Boolean(c.transbordo_habilitado);
   document.getElementById('transbordo-nome').value=c.transbordo_nome || '';
   document.getElementById('transbordo-url').value=c.transbordo_url || '';
@@ -974,6 +977,7 @@ async function salvarTransbordo(ev) {
   ev.preventDefault();
   try {
     const r=await fetch('/api/configuracao',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      disparo_compartilhado:document.getElementById('disparo-compartilhado').checked,
       transbordo_habilitado:document.getElementById('transbordo-habilitado').checked,
       transbordo_nome:document.getElementById('transbordo-nome').value,
       transbordo_url:document.getElementById('transbordo-url').value,

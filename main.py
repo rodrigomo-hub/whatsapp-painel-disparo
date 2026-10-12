@@ -777,7 +777,7 @@ def sincronizar_idioma_template(numero_id, numero_nome, idioma_atual, idioma_enc
     )
 
 
-def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro="", wamid="", canal="whatsapp", sms_uid=""):
+def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro="", wamid="", canal="whatsapp", sms_uid="", compartilhado=None):
     conn = get_db()
     numero=conn.execute('SELECT tipo_envio FROM numeros WHERE id=?',(numero_id,)).fetchone()
     tipo=numero['tipo_envio'] if numero and canal=='whatsapp' else ''
@@ -785,6 +785,9 @@ def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro="", wami
         "INSERT INTO disparos (numero_id, cpf, nome_lead, telefone_destino, status, erro, criado_em, wamid, canal, sms_uid, tipo_envio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (numero_id, cpf, nome_lead, telefone, status, erro, agora_iso(), wamid or None, canal, sms_uid or None,tipo),
     )
+    disparo_id = cursor.lastrowid
+    if status == "sucesso" and canal == "whatsapp":
+        transbordo.agendar_compartilhado(conn,disparo_id,compartilhado)
     conn.commit()
     disparo_id = cursor.lastrowid
     conn.close()
@@ -1209,6 +1212,15 @@ async def loop_oferta_interna():
         await asyncio.sleep(2)
 
 
+async def loop_compartilhados():
+    while True:
+        try:
+            fez=await asyncio.to_thread(transbordo.processar_compartilhado,get_db,carregar_configuracao())
+        except Exception:
+            fez=False
+        await asyncio.sleep(0.2 if fez else 2)
+
+
 async def loop_eventos_new():
     while True:
         try:
@@ -1230,6 +1242,8 @@ async def loop_etiquetas_disparo():
 @app.on_event("startup")
 async def startup():
     init_db()
+    transbordo.recuperar_compartilhados(get_db)
+    app.state.compartilhados_task=asyncio.create_task(loop_compartilhados())
     oferta_interna.recuperar(get_db)
     app.state.oferta_interna_task=asyncio.create_task(loop_oferta_interna())
     link_conversa.recuperar(get_db)
@@ -1573,6 +1587,8 @@ async def disparar(request: Request):
     body = await request.json()
     cfg = carregar_configuracao()
     preparado = vendeai_mailing.preparar_lead(body, cfg)
+    if request.headers.get("X-Transbordo-Hop") or body.get("_transbordo"):
+        preparado["_nao_compartilhar"]=True
     lead = preparado["mailing"]
     cpf = lead.get("cpf", "")
     nome_lead = lead.get("name", "")
@@ -1709,7 +1725,7 @@ def executar_disparo_preparado(preparado, cadastro, origem="individual", numeros
     sucesso, erro, wamid = enviar_por_numero(numero, telefone, variaveis, nome_lead)
     _ultimo_usado["id"] = numero["id"]
 
-    registrar_disparo(numero["id"], cpf, nome_lead, telefone, status_resultado(sucesso,erro), erro, wamid)
+    registrar_disparo(numero["id"], cpf, nome_lead, telefone, status_resultado(sucesso,erro), erro, wamid, compartilhado=preparado)
     verificar_qualidade_pos_envio(numero)
 
     if not sucesso and (conexoes_normais.normal(numero) or oficiais_vendeai.via(numero) or gupshup.via(numero)):
@@ -1854,7 +1870,7 @@ async def disparo_lote(request: Request):
             idx_rr += 1
             if disponivel_agora(candidato):
                 sucesso, erro, wamid = enviar_por_numero(candidato, telefone, preparado["variaveis_template"], lead.get("name", ""))
-                registrar_disparo(candidato["id"], lead.get("cpf", ""), lead.get("name", "Disparo em lote"), telefone, status_resultado(sucesso,erro), erro, wamid)
+                registrar_disparo(candidato["id"], lead.get("cpf", ""), lead.get("name", "Disparo em lote"), telefone, status_resultado(sucesso,erro), erro, wamid, compartilhado=preparado)
                 resultados.append({"telefone": telefone, "status": status_resultado(sucesso,erro), "numero_usado": candidato["nome"], "vendeai": cadastro, "erro": erro})
                 enviado = True
 
@@ -2313,6 +2329,11 @@ async def atualizar_configuracao(request: Request):
     if "fila_intervalo_segundos" in body and (type(body["fila_intervalo_segundos"]) is not int or not 60 <= body["fila_intervalo_segundos"] <= 3600):
         raise HTTPException(400, "fila_intervalo_segundos deve estar entre 60 e 3600")
     atual = carregar_configuracao()
+    if 'disparo_compartilhado' in body:
+        if type(body['disparo_compartilhado']) is not bool:
+            raise HTTPException(400,'Disparo compartilhado deve ser booleano')
+        if body['disparo_compartilhado'] and str(atual['vendeai_account_id'])!='33393':
+            raise HTTPException(400,'Disparo compartilhado disponível somente no painel principal')
     if 'transbordo_habilitado' in body and type(body['transbordo_habilitado']) is not bool:
         raise HTTPException(400,'transbordo_habilitado deve ser booleano')
     for campo in ('transbordo_url','transbordo_nome','transbordo_token'):
@@ -2329,7 +2350,7 @@ async def atualizar_configuracao(request: Request):
         if urlparse(body['transbordo_url']).hostname == request.url.hostname:
             raise HTTPException(400,'Destino nao pode ser este mesmo painel')
     prevista_transbordo={**atual,**body}
-    if prevista_transbordo['transbordo_habilitado'] and not (prevista_transbordo['transbordo_url'] and prevista_transbordo['transbordo_token']):
+    if (prevista_transbordo['transbordo_habilitado'] or prevista_transbordo.get('disparo_compartilhado')) and not (prevista_transbordo['transbordo_url'] and prevista_transbordo['transbordo_token']):
         raise HTTPException(400,'Informe URL e chave API do destino antes de ativar o transbordo')
     if 'transbordo_url' in body and body['transbordo_url'] != atual['transbordo_url']:
         with closing(get_db()) as c:
@@ -3119,6 +3140,7 @@ async def receber_transbordo(request: Request):
             if optout.bloqueado(get_db,preparado['mailing']['phone']):
                 return recusar('optout')
             transbordo.validar_lead(preparado['mailing'])
+            preparado['_nao_compartilhar']=True
             chave='transbordo:'+body['id']
             existente=obter_fila().existente(preparado,lead,cfg,chave)
             if existente:
