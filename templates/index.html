@@ -1189,7 +1189,7 @@ async function carregarNumeros() {
     <div style="background:#fff1f2;border-radius:8px;padding:5px 10px;" title="Números com novo banimento detectado hoje pelo painel, no horário de Brasília. Contagem iniciada com esta atualização."><span id="banidos-hoje" style="font-size:22px;font-weight:700;color:#b42318;">${banidosHojeCache}</span> <span style="font-size:13px;color:#b42318;font-weight:600;">banidos hoje</span></div>
     <div style="background:#f0fdf4;border-radius:8px;padding:5px 10px;" title="Números que melhoraram entre baixa, média e alta hoje, em Brasília. Cada número conta uma vez; se também piorou, aparece nos dois indicadores. Qualidade desconhecida não conta."><span id="qualidade-subiram-hoje" style="font-size:22px;font-weight:700;color:#15803d;">${qualidadeSubiramCache}</span> <span style="font-size:13px;color:#15803d;font-weight:600;">↑ qualidade subiu hoje</span></div>
     <div style="background:#fff7ed;border-radius:8px;padding:5px 10px;" title="Números que pioraram entre alta, média e baixa hoje, em Brasília. Cada número conta uma vez; se também melhorou, aparece nos dois indicadores. Qualidade desconhecida não conta."><span id="qualidade-baixaram-hoje" style="font-size:22px;font-weight:700;color:#c2410c;">${qualidadeBaixaramCache}</span> <span style="font-size:13px;color:#c2410c;font-weight:600;">↓ qualidade caiu hoje</span></div>
-    ${numerosCache.some(n=>n.tipo_envio==='meta'&&n.vendeai_conta==='33393'&&n.vendeai_inbox_id) ? `<div style="background:#fff1f2;padding:6px 10px;border-radius:8px;color:#b42318"><strong>${numerosCache.filter(n=>n.tipo_envio==='meta'&&n.vendeai_conta==='33393'&&n.vendeai_inbox_id&&(n.webhook_estado!=='OK'||Date.now()/1000-Number(n.webhook_verificado_em||0)>=1200)).length}</strong> conexões com webhook pendente ou incorreto</div>` : ''}
+    ${numerosCache.some(n=>n.tipo_envio==='meta'&&n.vendeai_conta==='33393'&&n.vendeai_inbox_id&&(n.webhook_estado!=='OK'||Date.now()/1000-Number(n.webhook_verificado_em||0)>=1200)) ? `<div style="background:#fff1f2;padding:6px 10px;border-radius:8px;color:#b42318"><strong>${numerosCache.filter(n=>n.tipo_envio==='meta'&&n.vendeai_conta==='33393'&&n.vendeai_inbox_id&&(n.webhook_estado!=='OK'||Date.now()/1000-Number(n.webhook_verificado_em||0)>=1200)).length}</strong> conexões com webhook pendente ou incorreto</div>` : ''}
     <div><span style="font-size:22px; font-weight:700; color:#1a1a2e;">${numerosCache.length}</span> <span style="font-size:13px; color:#888;">total cadastrados</span></div>
   `;
 
@@ -1288,6 +1288,7 @@ function grupoVisualNumero(n) {
 function avisoWebhook(n) {
   if(n.tipo_envio!=='meta'||n.vendeai_conta!=='33393'||!n.vendeai_inbox_id)return '';
   const ok=n.webhook_estado==='OK' && Date.now()/1000-Number(n.webhook_verificado_em||0)<1200;
+  if(ok)return '';
   const hora=n.webhook_verificado_em?new Date(n.webhook_verificado_em*1000).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'Ainda não verificado';
   return `<div style="margin-top:6px;padding:5px 8px;border-radius:6px;background:${ok?'#f0fdf4':'#fff1f2'};color:${ok?'#15803d':'#b42318'}"><strong>${ok?'✓ Webhook VendeAI correto':'⚠ Envio bloqueado · verificar webhook'}</strong><br><small>${escaparNumero(n.webhook_detalhe||'Aguardando diagnóstico')} · ${escaparNumero(hora)}</small></div>`;
 }
