@@ -26,6 +26,7 @@ import comissoes
 import custos_meta
 import ranking_wabas
 import gupshup
+import webhook_saude
 import qualidade_historico
 import optout
 import conexoes_normais
@@ -372,6 +373,7 @@ def init_db():
     ranking_wabas.migrar(conn)
     gupshup.migrar(conn)
     qualidade_historico.migrar(conn)
+    webhook_saude.migrar(conn)
     conn.commit()
     conn.close()
 
@@ -411,6 +413,7 @@ def permitido_no_rodizio(numero, cfg=None):
 
 def disponivel_agora(numero: sqlite3.Row) -> bool:
     if not permitido_no_rodizio(numero):return False
+    if not webhook_saude.permitido(numero):return False
     if gupshup.via(numero):
         return gupshup.elegivel(get_db,numero) and contagem_hoje(numero["id"]) < numero["limite_diario"] and contagem_ultima_hora(numero["id"]) < numero["limite_hora"]
     if conexoes_normais.normal(numero):
@@ -558,6 +561,8 @@ def enviar_whatsapp(numero, telefone_destino, variaveis_template):
         atual = conn.execute('SELECT qualidade,status_envio_meta,ativo FROM numeros WHERE id=?', (numero['id'],)).fetchone()
     if not atual or not atual['ativo'] or atual['status_envio_meta'] != 'AVAILABLE' or atual['qualidade'] not in ('GREEN', 'YELLOW'):
         return False, 'Envio bloqueado: numero inativo, qualidade ou status da Meta nao permitem envio.', ''
+    if not webhook_saude.consultar(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN):
+        return False,"Envio bloqueado: webhook VendeAI incorreto ou não confirmado.",""
     url = f"https://graph.facebook.com/v21.0/{numero['phone_number_id']}/messages"
     headers = {
         "Authorization": f"Bearer {numero['access_token']}",
@@ -1124,6 +1129,21 @@ def descobrir_conexoes_seguro():
         pass
 
 
+def conferir_webhooks():
+    cfg=carregar_configuracao()
+    if str(cfg.get('vendeai_account_id'))!='33393':return
+    with closing(get_db()) as c:
+        numeros=c.execute("SELECT * FROM numeros WHERE tipo_envio='meta' AND vendeai_conta='33393' AND vendeai_inbox_id!=''").fetchall()
+    for n in numeros:webhook_saude.consultar(get_db,n,cfg,VENDEAI_API_TOKEN)
+
+
+async def loop_webhook_saude():
+    while True:
+        try:await asyncio.to_thread(conferir_webhooks)
+        except Exception as e:registrar_evento(None,'erro_diagnostico_webhook',type(e).__name__)
+        await asyncio.sleep(300)
+
+
 async def loop_verificar_qualidade():
     while True:
         await asyncio.sleep(INTERVALO_CHECAGEM_QUALIDADE)
@@ -1254,6 +1274,7 @@ async def startup():
     app.state.eventos_task = asyncio.create_task(loop_eventos_new())
     app.state.etiquetas_task = asyncio.create_task(loop_etiquetas_disparo())
     asyncio.create_task(loop_verificar_qualidade())
+    app.state.webhook_saude_task=asyncio.create_task(loop_webhook_saude())
     app.state.fila_parar = False
     campanhas_sms.recuperar(get_db)
     app.state.sms_task=asyncio.create_task(loop_campanhas_sms())
@@ -1503,7 +1524,7 @@ def capacidade_lote(selecionados=None, descontar_fila=True):
         if gupshup.via(n): elegivel = gupshup.elegivel(get_db,n)
         if conexoes_normais.normal(n): elegivel = conexoes_normais.elegivel(get_db,n)
         elif oficiais_vendeai.via(n): elegivel = elegivel and oficiais_vendeai.elegivel(get_db,n)
-        elegivel = elegivel and permitido_no_rodizio(n)
+        elegivel = elegivel and permitido_no_rodizio(n) and webhook_saude.permitido(n)
         detalhes.append({'id': n['id'], 'nome': n['nome'], 'elegivel': elegivel,
                          'restante_dia': dia if elegivel else 0, 'restante_hora': hora if elegivel else 0,
                          'disponivel_agora': min(dia, hora) if elegivel else 0})
@@ -1896,6 +1917,7 @@ def atualizar_status_numero(numero_id: int):
     if n is None:
         raise HTTPException(404, "Numero nao encontrado")
 
+    webhook_saude.consultar(get_db,n,carregar_configuracao(),VENDEAI_API_TOKEN)
     qualidade = verificar_qualidade(n)
     categoria, status_template, idioma = verificar_template_info(n)
 
@@ -1917,6 +1939,7 @@ def atualizar_status_numero(numero_id: int):
 @app.post("/api/atualizar-todos")
 def atualizar_todos_status():
     descobrir_conexoes_seguro()
+    conferir_webhooks()
     conn = get_db()
     # Idem ao loop de 15min: confere todos, a pausa manual fica protegida pela
     # logica de _aplicar_pausa_ou_reativacao_qualidade.
@@ -3072,6 +3095,7 @@ async def loop_fila():
 @app.on_event("shutdown")
 async def parar_fila():
     app.state.fila_parar = True
+    if getattr(app.state,"webhook_saude_task",None):app.state.webhook_saude_task.cancel()
     if getattr(app.state,'sms_task',None):await app.state.sms_task
     if getattr(app.state,'lembretes_sms_task',None):await app.state.lembretes_sms_task
     if getattr(app.state,"etiquetas_task",None): app.state.etiquetas_task.cancel()

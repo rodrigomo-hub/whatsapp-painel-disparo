@@ -25,6 +25,7 @@ COPY resultados.py .
 COPY comissoes.py .
 COPY custos_meta.py .
 COPY qualidade_historico.py .
+COPY webhook_saude.py .
 COPY optout.py .
 COPY conexoes_normais.py .
 COPY oficiais_vendeai.py .

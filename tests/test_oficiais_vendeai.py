@@ -16,6 +16,7 @@ class OficiaisTests(unittest.TestCase):
         self.cfg=main.carregar_configuracao()
     def response(self,d,status=200):return Mock(status_code=status,json=Mock(return_value=d))
     def get_response(self,url,**kw):
+        if url.endswith('/inboxes/77/health'):return self.response({'expected_webhook_url':'https://crm.example/webhook','webhook_configuration':{'phone_number':'https://crm.example/webhook'}})
         if url.endswith('/inboxes'):return self.response({'payload':[copy.deepcopy(self.inbox)]})
         if url.endswith('/message_templates'):return self.response({'data':[copy.deepcopy(self.t)]})
         if url.endswith('/777'):return self.response({'status':'CONNECTED','quality_rating':'GREEN'})
@@ -32,6 +33,7 @@ class OficiaisTests(unittest.TestCase):
     def habilitar(self):
         self.vincular()
         with test_db() as c:c.execute("UPDATE numeros SET via_envio='vendeai',envio_base_url='https://painel.example'")
+        main.webhook_saude.consultar(main.get_db,self.numero(),self.cfg,'')
     def enviar(self,vars=None):
         return oficial.enviar(main.get_db,self.numero(),'5511987654321',vars if vars is not None else ['Maria'],self.cfg,'',main.atualizar_status_numero,lambda _:False)
     def sends(self):return [c for c in self.api.call_args_list if c.args[0].endswith('/send/')]
@@ -93,6 +95,12 @@ class OficiaisTests(unittest.TestCase):
         self.assertEqual(j['inbox_id'],'77')
         with test_db() as c:self.assertEqual(c.execute('SELECT message_id FROM etiquetas_disparo').fetchone()[0],'901')
         with test_db() as c:self.assertEqual(c.execute('SELECT etiqueta FROM etiquetas_disparo').fetchone()[0],'disparo')
+    def test_bad_webhook_blocks_capacity_and_send(self):
+        self.habilitar();original=self.get.side_effect
+        self.get.side_effect=lambda url,**kw:self.response({'expected_webhook_url':'https://crm.example/webhook','webhook_configuration':{'application':'https://wrong.example'}}) if url.endswith('/health') else original(url,**kw)
+        self.assertFalse(self.enviar()[0]);self.assertFalse(self.sends())
+        self.assertFalse(main.disponivel_agora(self.numero()))
+        self.assertEqual(self.numero()['webhook_estado'],'MISMATCH')
     def test_static_ignores_incoming_variables(self):
         self.habilitar();self.t['components'][0]['text']='Olá!'
         self.assertTrue(self.enviar(['ignored'])[0]);self.assertEqual(self.sends()[0].kwargs['json']['payload']['params'],{})

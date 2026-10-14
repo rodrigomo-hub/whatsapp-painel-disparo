@@ -7,6 +7,7 @@ from contextlib import closing
 from urllib.parse import urlparse
 
 import requests
+import webhook_saude
 from fastapi import HTTPException
 import conexoes_normais as normal
 
@@ -251,6 +252,8 @@ def enviar(get_db,numero,telefone,variaveis,cfg,token,verificar,suprimido):
     try:
         verificar(numero['id'])  # Consulta a Meta, inclusive saúde da WABA e template.
         with closing(get_db()) as c:n=dict(c.execute('SELECT * FROM numeros WHERE id=?',(numero['id'],)).fetchone())
+        if not webhook_saude.permitido(n):
+            return False,'Envio bloqueado: webhook VendeAI incorreto ou nao confirmado.',''
         if not via(n) or not n['ativo'] or n['qualidade'] not in ('GREEN','YELLOW') or n['status_envio_meta']!='AVAILABLE' or n['template_status']!='APPROVED' or n['pausado_por_template']:
             raise HTTPException(400,'Número, WABA ou template não estão liberados pela Meta.')
         t=validar_via(get_db,n,cfg,token,n['envio_base_url'])
