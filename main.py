@@ -666,13 +666,36 @@ def registrar_banimento_meta(conn,numero_id,estado):
                 (instante.date().isoformat(),instante.isoformat(),numero_id))
 
 
+def estado_saude_waba(health):
+    if not isinstance(health,dict):return 'UNKNOWN'
+    entities=[e for e in (health.get('entities') or []) if isinstance(e,dict)]
+    errors=[e for item in [health]+entities for e in (item.get('errors') or []) if isinstance(e,dict)]
+    codes={str(e.get('error_code',e.get('code',''))) for e in errors}
+    if '141014' in codes:return 'BANNED'
+    if codes & {'141006','131042'} or health.get('can_send_message')=='BLOCKED' or any(e.get('can_send_message')=='BLOCKED' for e in entities):return 'BLOCKED'
+    return 'AVAILABLE' if health.get('can_send_message')=='AVAILABLE' else 'UNKNOWN'
+
+
+def conferir_wabas_periodicamente():
+    with closing(get_db()) as c:
+        rows=c.execute("SELECT waba_id,access_token FROM numeros WHERE tipo_envio='meta' AND waba_id!='' AND access_token!='' ORDER BY ativo DESC,id").fetchall()
+    vistos=set()
+    for n in rows:
+        if n['waba_id'] in vistos:continue
+        vistos.add(n['waba_id'])
+        try:
+            r=requests.get('https://graph.facebook.com/v21.0/'+n['waba_id'],params={'fields':'health_status'},headers={'Authorization':'Bearer '+n['access_token']},timeout=15)
+            if r.status_code==200:bloquear_numeros_waba(n['waba_id'],r.json().get('health_status',{}))
+        except (requests.RequestException,ValueError,TypeError,AttributeError):
+            registrar_evento(None,'erro_consulta_waba','Falha ao consultar WABA '+n['waba_id'])
+
+
 def bloquear_numeros_waba(waba_id, health):
     if not waba_id or not isinstance(health, dict):
         return
-    entidades = health.get('entities', [])
-    banida = any(e.get('error_code') == 141014 for item in entidades for e in item.get('errors', []))
-    bloqueada = health.get('can_send_message') == 'BLOCKED' or any(
-        item.get('entity_type') == 'WABA' and item.get('can_send_message') == 'BLOCKED' for item in entidades)
+    estado=estado_saude_waba(health)
+    banida=estado=='BANNED'
+    bloqueada=estado=='BLOCKED'
     if banida or bloqueada:
         with closing(get_db()) as conn, conn:
             if banida:
@@ -703,9 +726,7 @@ def verificar_qualidade(numero) -> str:
                                  params={'fields': 'health_status'}, headers=headers, timeout=15)
                 health = w.json().get('health_status', {}) if w.status_code == 200 else {}
                 bloquear_numeros_waba(numero['waba_id'], health)
-                envio = health.get('can_send_message')
-                banido = any(e.get('error_code') == 141014 for entity in health.get('entities', []) for e in entity.get('errors', []))
-                estado = 'BANNED' if banido else ('AVAILABLE' if envio == 'AVAILABLE' else 'BLOCKED' if envio == 'BLOCKED' else 'UNKNOWN')
+                estado = estado_saude_waba(health)
             elif data.get('status'):
                 estado = 'DISCONNECTED'
     except (requests.RequestException, ValueError, TypeError, AttributeError):
@@ -1148,6 +1169,7 @@ async def loop_verificar_qualidade():
     while True:
         await asyncio.sleep(INTERVALO_CHECAGEM_QUALIDADE)
         try:
+            await asyncio.to_thread(conferir_wabas_periodicamente)
             await asyncio.to_thread(descobrir_conexoes_seguro)
             await asyncio.to_thread(verificar_presenca_meta)
             limpar_historico_antigo()

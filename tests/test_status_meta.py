@@ -75,3 +75,20 @@ class StatusMetaTests(unittest.TestCase):
         main.bloquear_numeros_waba('waba',{'can_send_message':'AVAILABLE'})
         with test_db() as c:
             self.assertEqual(c.execute("SELECT count(*) FROM numeros WHERE waba_id='waba' AND ativo=1").fetchone()[0],0)
+
+    def test_payment_code_overrides_available_and_preserves_pause(self):
+        health={'can_send_message':'AVAILABLE','entities':[{'entity_type':'BUSINESS','errors':[{'error_code':'141006'}]}]}
+        with patch.object(main.requests,'get',side_effect=[Mock(status_code=200,json=lambda:{'quality_rating':'GREEN','status':'CONNECTED'}),Mock(status_code=200,json=lambda:{'health_status':health})]):
+            main.verificar_qualidade(self.numero())
+        self.assertEqual(self.numero()['status_envio_meta'],'BLOCKED')
+        self.assertEqual(self.numero()['ativo'],0)
+        self.assertEqual(self.numero()['pausado_por_qualidade'],0)
+
+    def test_periodic_checks_waba_even_with_disconnected_phone(self):
+        with test_db() as c:
+            c.execute("UPDATE numeros SET status_envio_meta='DISCONNECTED'")
+            c.execute("INSERT INTO numeros(nome,phone_number_id,access_token,waba_id,ativo) VALUES('Mesmo','2','token','waba',1)")
+        with patch.object(main.requests,'get',return_value=Mock(status_code=200,json=lambda:{'health_status':{'errors':[{'error_code':141006}]}})) as req:
+            main.conferir_wabas_periodicamente()
+        req.assert_called_once()
+        with test_db() as c:self.assertEqual(c.execute("SELECT count(*) FROM numeros WHERE waba_id='waba' AND ativo=1").fetchone()[0],0)
