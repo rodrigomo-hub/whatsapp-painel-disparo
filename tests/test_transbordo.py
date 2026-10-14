@@ -253,3 +253,30 @@ class RecebidosTests(TransbordoTests):
         item=transbordo.listar_recebidos(main.get_db)[0]
         self.assertEqual(item['status'],'erro')
         self.assertEqual(item['motivo'],'nenhum_numero_disponivel')
+
+    def test_parceiro_direto_ignora_capacidade_e_transbordo_desligado(self):
+        with test_db() as c:c.execute('UPDATE configuracao SET transbordo_habilitado=0')
+        self.api.side_effect=self.aceita
+        a=self.entrada(parceiro_destino=' Amigo ').json()
+        b=self.entrada(parceiro_destino='amigo').json()
+        self.assertEqual(a['status'],'encaminhado');self.assertEqual(a['transbordo_id'],b['transbordo_id'])
+        self.api.assert_called_once();self.whatsapp.assert_not_called()
+        self.assertNotIn('parceiro_destino',self.api.call_args.kwargs['json']['lead'])
+        self.assertFalse(self.fila.resumo()['contagens'])
+
+    def test_parceiro_desconhecido_nao_envia_local(self):
+        self.assertEqual(self.entrada(parceiro_destino='Outro').status_code,400)
+        self.assertEqual(self.entrada(parceiro_destino='').status_code,400)
+        self.api.assert_not_called();self.whatsapp.assert_not_called()
+        self.assertFalse(self.fila.resumo()['contagens'])
+
+    def test_parceiro_direto_recusa_sem_fallback(self):
+        self.api.return_value=Mock(status_code=409)
+        self.assertEqual(self.entrada(parceiro_destino='Amigo').json()['status'],'recusado')
+        self.whatsapp.assert_not_called();self.assertFalse(self.fila.resumo()['contagens'])
+
+    def test_parceiro_direto_com_lote_local(self):
+        self.api.side_effect=self.aceita
+        with patch.object(main,'estado_lote',return_value={'lote':True,'pendentes':5}):
+            self.assertEqual(self.entrada(parceiro_destino='Amigo').json()['status'],'encaminhado')
+        self.whatsapp.assert_not_called()

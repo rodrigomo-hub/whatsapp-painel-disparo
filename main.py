@@ -1501,7 +1501,8 @@ def entrada_exclusiva(func):
             if not obtida:
                 return JSONResponse({"status": "erro", "aceito": False, "motivo_codigo": "entrada_em_andamento", "motivo": "Outra entrada esta em processamento. Nada foi enfileirado."}, status_code=409)
             estado = estado_lote()
-            if estado['lote'] or (func.__name__ == 'disparo_lote' and estado['pendentes']):
+            parceiro_direto = func.__name__ == 'disparar' and 'parceiro_destino' in await request.json()
+            if (estado['lote'] and not parceiro_direto) or (func.__name__ == 'disparo_lote' and estado['pendentes']):
                 return JSONResponse({"status": "erro", "aceito": False, "motivo_codigo": "fila_ocupada", "motivo": "Ha envios em andamento. Aguarde finalizar ou cancele os pendentes antes de iniciar outro lote."}, status_code=409)
             return await func(request)
     return protegida
@@ -1625,6 +1626,21 @@ async def disparar(request: Request):
     if optout.bloqueado(get_db,telefone):
         return {"status":"bloqueado","motivo_codigo":"optout","aceito":False}
     chave = request.headers.get("Idempotency-Key") or body.get("idempotency_key")
+    if 'parceiro_destino' in body:
+        parceiro=body['parceiro_destino']
+        if (str(cfg.get('vendeai_account_id'))!='33393' or not isinstance(parceiro,str)
+            or not parceiro.strip() or parceiro.strip().casefold()!=str(cfg.get('transbordo_nome','')).strip().casefold()):
+            raise HTTPException(400,'Parceiro de destino invalido. Use o nome cadastrado nas configuracoes.')
+        if request.headers.get('X-Transbordo-Hop') or body.get('_transbordo'):
+            raise HTTPException(400,'Nao e permitido reencaminhar um lead recebido de parceiro.')
+        if not cfg.get('transbordo_url') or not cfg.get('transbordo_token'):
+            raise HTTPException(400,'Parceiro sem URL ou chave configurada.')
+        destino=transbordo.validar_url(cfg['transbordo_url'])
+        if urlparse(destino).hostname==request.url.hostname:
+            raise HTTPException(400,'O parceiro nao pode ser o proprio painel.')
+        body['parceiro_destino']=parceiro.strip().casefold()
+        transbordo.validar_lead(lead)
+        return await asyncio.to_thread(transbordo.Transbordo(get_db).encaminhar,body,chave,cfg,lead)
     anterior = transbordo.Transbordo(get_db).buscar(body,chave)
     if anterior:
         return transbordo.Transbordo.publico(anterior)

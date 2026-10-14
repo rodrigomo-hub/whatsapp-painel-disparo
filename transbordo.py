@@ -111,7 +111,9 @@ def dados_lead(body):
 def identidade(body, chave):
     if chave is not None and (not isinstance(chave,str) or not 1 <= len(chave.strip()) <= 200):
         raise HTTPException(400, 'Idempotency-Key deve ter de 1 a 200 caracteres')
-    fp = hashlib.sha256(json.dumps(dados_lead(body),sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+    identidade_lead=dados_lead(body)
+    if 'parceiro_destino' in body:identidade_lead['parceiro_destino']=body['parceiro_destino']
+    fp = hashlib.sha256(json.dumps(identidade_lead,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     return ('exp:' + hashlib.sha256(chave.strip().encode()).hexdigest() if chave else 'auto:'+fp), fp
 
 
