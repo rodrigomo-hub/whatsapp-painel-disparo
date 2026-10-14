@@ -848,14 +848,14 @@ def _aplicar_pausa_ou_reativacao_qualidade(numero_id, numero_nome, ativo_atual, 
     if qualidade == "RED":
         if ativo_atual:
             conn = get_db()
-            conn.execute("UPDATE numeros SET ativo = 0, pausado_por_qualidade = 1 WHERE id = ?", (numero_id,))
+            conn.execute("UPDATE numeros SET ativo = 0, pausado_por_qualidade = 1 WHERE id = ? AND ativo=1", (numero_id,))
             conn.commit()
             conn.close()
             registrar_evento(numero_id, "pausado_qualidade", f"Numero '{numero_nome}' pausado automaticamente - qualidade RED")
     elif qualidade in ("GREEN", "YELLOW"):
         if not ativo_atual and pausado_por_qualidade_atual:
             conn = get_db()
-            conn.execute("UPDATE numeros SET ativo = 1, pausado_por_qualidade = 0 WHERE id = ? AND pausado_por_template=0", (numero_id,))
+            conn.execute("UPDATE numeros SET ativo = 1, pausado_por_qualidade = 0 WHERE id = ? AND pausado_por_template=0 AND ativo=0 AND pausado_por_qualidade=1", (numero_id,))
             conn.commit()
             conn.close()
             registrar_evento(numero_id, "reativado_qualidade", f"Numero '{numero_nome}' reativado automaticamente - qualidade voltou a {qualidade}")
@@ -2941,6 +2941,16 @@ async def adicionar_numero(request: Request):
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+
+@app.post("/api/numeros/pausar-todos")
+def pausar_todos_numeros():
+    with closing(get_db()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        quantidade=c.execute('SELECT count(*) FROM numeros WHERE ativo=1').fetchone()[0]
+        c.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0')
+    registrar_evento(None,'pausa_manual_todos',str(quantidade)+' numeros pausados pelo painel')
+    return {'status':'ok','pausados':quantidade}
 
 
 @app.patch("/api/numeros/{numero_id}")

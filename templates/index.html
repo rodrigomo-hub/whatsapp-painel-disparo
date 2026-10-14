@@ -184,6 +184,10 @@
   <a href="/conexoes" style="float:right;font-size:13px;color:#16754a;">Conexões normais</a>
   <a href="/oficiais-vendeai" style="float:right;font-size:13px;color:#16754a;margin-right:18px;">Importar oficiais da VendeAI</a>
   <h2>Números conectados <button class="btn-toggle" onclick="atualizarTodos()" style="font-size:12px;">🔄 Atualizar todos</button></h2>
+  <div style="display:flex;align-items:center;gap:12px;margin:12px 0;flex-wrap:wrap">
+    <button type="button" id="pausar-todos" class="btn-editar" style="color:#b42318;background:#fff1f2;border:1px solid #fecdd3" onclick="pausarTodosNumeros()">Pausar todos</button>
+    <span id="pausar-todos-aviso" role="status" style="font-size:13px;color:#64748b"></span>
+  </div>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0;">
     <label for="pesquisa-numero" style="font-size:13px;">Pesquisar número</label>
     <input id="pesquisa-numero" type="search" placeholder="Nome, telefone ou anotação" oninput="renderizarNumeros()" style="flex:1;min-width:220px;max-width:440px;margin:0;">
@@ -1409,6 +1413,18 @@ async function carregarHistorico() {
 
 function baixarCsv(tipo) {
   window.location.href = `/api/exportar-respostas?tipo=${tipo}`;
+}
+
+async function pausarTodosNumeros() {
+  const botao=document.getElementById('pausar-todos'),aviso=document.getElementById('pausar-todos-aviso');
+  botao.disabled=true;aviso.textContent='Pausando todos os números…';
+  try {
+    const r=await fetch('/api/numeros/pausar-todos',{method:'POST'});
+    if(!r.ok)throw new Error('Não foi possível pausar. Tente novamente.');
+    const d=await r.json();
+    aviso.textContent=`${d.pausados} número(s) pausado(s). Todos permanecem pausados até você ativar. Envios já em andamento podem concluir.`;
+    await carregarNumeros();
+  } catch(e){aviso.textContent=e.message;} finally {botao.disabled=false;}
 }
 
 async function toggleNumero(id, novoStatus) {

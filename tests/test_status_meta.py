@@ -92,3 +92,14 @@ class StatusMetaTests(unittest.TestCase):
             main.conferir_wabas_periodicamente()
         req.assert_called_once()
         with test_db() as c:self.assertEqual(c.execute("SELECT count(*) FROM numeros WHERE waba_id='waba' AND ativo=1").fetchone()[0],0)
+
+    def test_pause_all_includes_normals_and_prevents_stale_reactivation(self):
+        with test_db() as c:
+            c.execute("UPDATE numeros SET pausado_por_qualidade=1")
+            c.execute("INSERT INTO numeros(nome,phone_number_id,access_token,tipo_envio,ativo) VALUES('Normal','2','','vendeai_normal',1)")
+        r=self.client.post('/api/numeros/pausar-todos')
+        self.assertEqual(r.status_code,200);self.assertEqual(r.json()['pausados'],2)
+        main._aplicar_pausa_ou_reativacao_qualidade(1,'Numero',0,1,'GREEN')
+        with test_db() as c:
+            self.assertEqual(c.execute('SELECT count(*) FROM numeros WHERE ativo=1 OR pausado_por_qualidade=1').fetchone()[0],0)
+        self.assertEqual(self.client.post('/api/numeros/pausar-todos').json()['pausados'],0)
