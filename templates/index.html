@@ -172,6 +172,14 @@
   </div>
 </div>
 
+<div class="cartao" aria-label="Capacidade de envio">
+  <h2>Capacidade de envio</h2>
+  <div class="lote-resumo" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-bottom:0" aria-live="polite">
+    <div class="lote-metrica"><span>Disponíveis agora</span><strong id="lote-capacidade">—</strong><small>Respeitando os limites de envio</small></div>
+    <div class="lote-metrica"><span>Saldo diário</span><strong id="lote-saldo-dia">—</strong><small id="lote-saldo-hora">Consultando capacidade…</small></div>
+  </div>
+</div>
+
 <div class="cartao">
   <a href="/conexoes" style="float:right;font-size:13px;color:#16754a;">Conexões normais</a>
   <a href="/oficiais-vendeai" style="float:right;font-size:13px;color:#16754a;margin-right:18px;">Importar oficiais da VendeAI</a>
@@ -262,8 +270,6 @@
 
   <div class="lote-resumo" aria-live="polite">
     <div class="lote-metrica"><span>Leads na lista</span><strong id="lote-total">0</strong><small id="lote-lista-descricao">Importe um arquivo para começar</small></div>
-    <div class="lote-metrica"><span>Disponíveis agora</span><strong id="lote-capacidade">—</strong><small>Respeitando os limites de envio</small></div>
-    <div class="lote-metrica"><span>Saldo diário</span><strong id="lote-saldo-dia">—</strong><small id="lote-saldo-hora">Consultando capacidade…</small></div>
   </div>
   <p id="previa-planilha" style="white-space:pre-line;font-size:13px;color:#64748b;"></p>
   <p id="capacidade-planilha" class="lote-aviso" role="status"></p>
