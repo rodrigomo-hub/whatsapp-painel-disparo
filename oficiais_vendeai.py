@@ -250,6 +250,8 @@ def midia(get_db,token):
 
 def enviar(get_db,numero,telefone,variaveis,cfg,token,verificar,suprimido):
     try:
+        if not webhook_saude.consultar_pagamento(get_db,numero,cfg,token):
+            return False,'Envio bloqueado: pendência de pagamento ou consulta financeira VendeAI não confirmada.',''
         verificar(numero['id'])  # Consulta a Meta, inclusive saúde da WABA e template.
         with closing(get_db()) as c:n=dict(c.execute('SELECT * FROM numeros WHERE id=?',(numero['id'],)).fetchone())
         if not webhook_saude.permitido(n):

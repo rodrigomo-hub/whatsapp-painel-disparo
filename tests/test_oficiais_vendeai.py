@@ -16,6 +16,7 @@ class OficiaisTests(unittest.TestCase):
         self.cfg=main.carregar_configuracao()
     def response(self,d,status=200):return Mock(status_code=status,json=Mock(return_value=d))
     def get_response(self,url,**kw):
+        if url.endswith('/inboxes/77'):return self.response(dict(copy.deepcopy(self.inbox),meta_alert=None))
         if url.endswith('/inboxes/77/health'):return self.response({'expected_webhook_url':'https://crm.example/webhook','webhook_configuration':{'phone_number':'https://crm.example/webhook'}})
         if url.endswith('/inboxes'):return self.response({'payload':[copy.deepcopy(self.inbox)]})
         if url.endswith('/message_templates'):return self.response({'data':[copy.deepcopy(self.t)]})

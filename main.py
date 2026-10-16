@@ -557,6 +557,8 @@ def pausar_template(numero):
 def enviar_whatsapp(numero, telefone_destino, variaveis_template):
     if optout.bloqueado(get_db,telefone_destino):
         return False,"Bloqueado pela lista negra (opt-out)",""
+    if not webhook_saude.consultar_pagamento(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN):
+        return False,'Envio bloqueado: pendência de pagamento ou consulta financeira VendeAI não confirmada.',''
     with closing(get_db()) as conn:
         atual = conn.execute('SELECT qualidade,status_envio_meta,ativo FROM numeros WHERE id=?', (numero['id'],)).fetchone()
     if not atual or not atual['ativo'] or atual['status_envio_meta'] != 'AVAILABLE' or atual['qualidade'] not in ('GREEN', 'YELLOW'):
@@ -679,6 +681,10 @@ def estado_saude_waba(health):
 def conferir_wabas_periodicamente():
     with closing(get_db()) as c:
         rows=c.execute("SELECT waba_id,access_token FROM numeros WHERE tipo_envio='meta' AND waba_id!='' AND access_token!='' ORDER BY ativo DESC,id").fetchall()
+        conexoes=c.execute("SELECT * FROM numeros WHERE tipo_envio='meta' AND vendeai_inbox_id!=''").fetchall()
+    cfg=carregar_configuracao()
+    for n in conexoes:
+        webhook_saude.consultar_pagamento(get_db,n,cfg,VENDEAI_API_TOKEN)
     vistos=set()
     for n in rows:
         if n['waba_id'] in vistos:continue
@@ -731,6 +737,9 @@ def verificar_qualidade(numero) -> str:
                 estado = 'DISCONNECTED'
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         pass
+    webhook_saude.consultar_pagamento(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN)
+    if webhook_saude.pagamento_bloqueado(get_db,numero['waba_id']):
+        estado='BLOCKED' if estado!='BANNED' else estado
     with closing(get_db()) as conn, conn:
         registrar_banimento_meta(conn,numero['id'],estado)
         conn.execute('UPDATE numeros SET status_envio_meta=?,limite_meta=?,meta_consultado_em=? WHERE id=?', (estado, limite, agora_iso(), numero['id']))

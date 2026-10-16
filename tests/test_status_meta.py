@@ -10,6 +10,31 @@ class StatusMetaTests(unittest.TestCase):
         with test_db() as c:c.execute("UPDATE numeros SET waba_id='waba'")
     def numero(self):
         with test_db() as c:return c.execute('SELECT * FROM numeros LIMIT 1').fetchone()
+    def test_vendeai_payment_alert_overrides_meta_available_for_whole_waba(self):
+        with test_db() as c:
+            c.execute("UPDATE numeros SET vendeai_conta='33393',vendeai_inbox_id='123',ativo=1")
+            c.execute("INSERT INTO numeros(nome,phone_number_id,access_token,waba_id,ativo) VALUES('Mesmo','2','token','waba',1)")
+            c.execute("INSERT INTO numeros(nome,phone_number_id,access_token,waba_id,ativo) VALUES('Outra','3','token','outra',1)")
+        data={'id':123,'meta_alert':{'code':131042,'reason':'payment_issue'},'meta_health':{'waba_can_send_message':'AVAILABLE'}}
+        responses=[{'quality_rating':'GREEN','status':'CONNECTED'},{'health_status':{'can_send_message':'AVAILABLE'}},data]
+        with patch.object(main.requests,'get',side_effect=[Mock(status_code=200,json=lambda d=d:d) for d in responses]):
+            main.verificar_qualidade(self.numero())
+        with test_db() as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM numeros WHERE waba_id='waba' AND status_envio_meta='BLOCKED' AND ativo=0").fetchone()[0],2)
+            self.assertEqual(c.execute("SELECT ativo FROM numeros WHERE waba_id='outra'").fetchone()[0],1)
+        self.assertEqual(self.numero()['pagamento_vendeai_bloqueado'],1)
+        with patch.object(main.requests,'get',return_value=Mock(status_code=200,json=lambda:{'id':123,'meta_alert':None})):
+            self.assertTrue(main.webhook_saude.consultar_pagamento(main.get_db,self.numero(),main.carregar_configuracao(),''))
+        self.assertEqual(self.numero()['ativo'],0)
+
+    def test_vendeai_finance_failure_preserves_block_and_stops_send(self):
+        with test_db() as c:
+            c.execute("UPDATE numeros SET vendeai_conta='33393',vendeai_inbox_id='123',pagamento_vendeai_bloqueado=1")
+        self.whatsapp_patch.stop()
+        with patch.object(main.requests,'get',return_value=Mock(status_code=503)):
+            self.assertFalse(main.enviar_whatsapp(self.numero(),'5511999999999',[])[0])
+        self.api.assert_not_called()
+        self.assertEqual(self.numero()['pagamento_vendeai_bloqueado'],1)
     def test_banido_com_qualidade_alta(self):
         with patch.object(main.requests,'get',return_value=Mock(status_code=200,json=Mock(return_value={'quality_rating':'GREEN','status':'BANNED'}))):
             self.assertEqual(main.verificar_qualidade(self.numero()),'GREEN')
