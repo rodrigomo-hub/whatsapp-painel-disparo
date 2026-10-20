@@ -259,8 +259,46 @@
          sends[r['id']] = r
          fone = telefone(r['telefone_destino'])
          if fone:
+--- a/ranking_wabas.py
++++ b/ranking_wabas.py
+@@ -19,7 +19,7 @@
+         if not quantidade:continue
+         remetente=remetentes.get(n['numero_id'],{})
+         waba=remetente.get('waba_id','')
+-        if not waba or remetente.get('tipo_envio')=='vendeai_normal':
++        if not waba or waba.startswith('gupshup-vendeai:') or remetente.get('tipo_envio')=='vendeai_normal':
+             sem+=quantidade;continue
+         g=grupos.setdefault(waba,{'waba_id':waba,'nome':nomes.get(waba) or 'WABA '+waba,
+                                  'pagos':0,'valor_pago':0,'ia_pagos':0,'ia_valor':0,'equipe_pagos':0,'equipe_valor':0,'numeros':[]})
+@@ -28,7 +28,7 @@
+                             'pagos':quantidade,'valor_pago':round(n['valor_pago'],2),'origem':'IA'})
+     for e in equipe:
+         waba=e.get('waba_id')
+-        if not waba:continue
++        if not waba or waba.startswith('gupshup-vendeai:'):continue
+         g=grupos.setdefault(waba,{'waba_id':waba,'nome':nomes.get(waba) or 'WABA '+waba,
+                                  'pagos':0,'valor_pago':0,'ia_pagos':0,'ia_valor':0,'equipe_pagos':0,'equipe_valor':0,'numeros':[]})
+         v=e['valor_centavos']/100
 --- a/templates/index.html
 +++ b/templates/index.html
+@@ -1205,7 +1205,7 @@
+   const select=document.getElementById('filtro-waba');
+   const anterior=select.value;
+   select.replaceChildren(new Option('Todas as WABAs',''));
+-  const ids=[...new Set(numerosCache.map(n=>String(n.waba_id || '').trim()))].sort();
++  const ids=[...new Set(numerosCache.map(n=>n.tipo_envio==='gupshup_vendeai'?'':String(n.waba_id || '').trim()))].sort();
+   for(const id of ids) select.add(new Option(id ? (nomesWabas[id] ? nomesWabas[id]+' — '+id : id) : 'Sem WABA',id || '__sem_waba__'));
+   if([...select.options].some(o=>o.value===anterior))select.value=anterior;
+ }
+@@ -1215,7 +1215,7 @@
+   const digitos=termo.replace(/\D/g,'');
+   const telefone=digitos.length>0 && !/[a-z]/i.test(termo);
+   return numeros.filter(n=>{
+-    const conta=String(n.waba_id || '').trim();
++    const conta=n.tipo_envio==='gupshup_vendeai'?'':String(n.waba_id || '').trim();
+     if(waba && (waba==='__sem_waba__' ? !!conta : conta!==waba))return false;
+     if(!termo)return true;
+     const texto=normalizar(n.nome);
 @@ -1275,6 +1275,7 @@
    return `<div style="margin-top:7px;max-width:250px;font-size:12px;line-height:1.5;color:${cor}" title="Horário de Brasília em que o painel detectou a mudança; a Meta não informa o instante exato."><strong>${e.fonte==='backup'?'Recuperação do histórico: '+rotulo(e.atual).toLowerCase():recuperou?'Melhorou para '+rotulo(e.atual).toLowerCase():'Mudou para '+rotulo(e.atual).toLowerCase()}${hoje?' hoje':''}</strong><br>${e.fonte==='backup'?'Já estava assim em':'Detectado em'} ${escaparNumero(instante(e.detectado_em))}</div><details style="margin-top:5px;font-size:11px;color:#64748b"><summary style="cursor:pointer">Últimas mudanças</summary>${eventos.map(x=>`<div style="padding:4px 0">${rotulo(x.anterior)} → ${rotulo(x.atual)}<br>${x.fonte==='backup'?'Confirmado até ':''}${escaparNumero(instante(x.detectado_em))}${x.fonte==='backup'&&x.intervalo_inicio?'<br>Mudança após '+escaparNumero(instante(x.intervalo_inicio))+' (horário exato indisponível)':''}</div>`).join('')}</details>`;
  }

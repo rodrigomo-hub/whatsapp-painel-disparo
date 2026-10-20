@@ -19,7 +19,7 @@ def calcular(numeros,remetentes,nomes,equipe=()):
         if not quantidade:continue
         remetente=remetentes.get(n['numero_id'],{})
         waba=remetente.get('waba_id','')
-        if not waba or remetente.get('tipo_envio')=='vendeai_normal':
+        if not waba or waba.startswith('gupshup-vendeai:') or remetente.get('tipo_envio')=='vendeai_normal':
             sem+=quantidade;continue
         g=grupos.setdefault(waba,{'waba_id':waba,'nome':nomes.get(waba) or 'WABA '+waba,
                                  'pagos':0,'valor_pago':0,'ia_pagos':0,'ia_valor':0,'equipe_pagos':0,'equipe_valor':0,'numeros':[]})
@@ -28,7 +28,7 @@ def calcular(numeros,remetentes,nomes,equipe=()):
                             'pagos':quantidade,'valor_pago':round(n['valor_pago'],2),'origem':'IA'})
     for e in equipe:
         waba=e.get('waba_id')
-        if not waba:continue
+        if not waba or waba.startswith('gupshup-vendeai:'):continue
         g=grupos.setdefault(waba,{'waba_id':waba,'nome':nomes.get(waba) or 'WABA '+waba,
                                  'pagos':0,'valor_pago':0,'ia_pagos':0,'ia_valor':0,'equipe_pagos':0,'equipe_valor':0,'numeros':[]})
         v=e['valor_centavos']/100

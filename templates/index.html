@@ -1241,7 +1241,7 @@ function atualizarFiltroWabas() {
   const select=document.getElementById('filtro-waba');
   const anterior=select.value;
   select.replaceChildren(new Option('Todas as WABAs',''));
-  const ids=[...new Set(numerosCache.map(n=>String(n.waba_id || '').trim()))].sort();
+  const ids=[...new Set(numerosCache.map(n=>n.tipo_envio==='gupshup_vendeai'?'':String(n.waba_id || '').trim()))].sort();
   for(const id of ids) select.add(new Option(id ? (nomesWabas[id] ? nomesWabas[id]+' — '+id : id) : 'Sem WABA',id || '__sem_waba__'));
   if([...select.options].some(o=>o.value===anterior))select.value=anterior;
 }
@@ -1251,7 +1251,7 @@ function filtrarNumeros(numeros, pesquisa, waba='') {
   const digitos=termo.replace(/\D/g,'');
   const telefone=digitos.length>0 && !/[a-z]/i.test(termo);
   return numeros.filter(n=>{
-    const conta=String(n.waba_id || '').trim();
+    const conta=n.tipo_envio==='gupshup_vendeai'?'':String(n.waba_id || '').trim();
     if(waba && (waba==='__sem_waba__' ? !!conta : conta!==waba))return false;
     if(!termo)return true;
     const texto=normalizar(n.nome);
