@@ -1,3 +1,13 @@
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -7,6 +7,7 @@
+ 
+ COPY main.py .
+ COPY gupshup.py .
++COPY gupshup_vendeai.py .
+ COPY ranking_wabas.py .
+ COPY atribuicao_equipe.py .
+ COPY vendeai_mailing.py .
 --- a/main.py
 +++ b/main.py
 @@ -26,6 +26,7 @@
