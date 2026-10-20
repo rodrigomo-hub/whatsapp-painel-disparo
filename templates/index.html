@@ -555,9 +555,22 @@ let numerosCache = [];
 
 let templatesEncontrados = {};
 
+function statusTemplateTexto(status) {
+  return ({APPROVED:'Aprovado',PAUSED:'Pausado pela Meta',PENDING:'Em análise',REJECTED:'Rejeitado',DISABLED:'Desativado',IN_APPEAL:'Em recurso',PENDING_DELETION:'Em exclusão',DELETED:'Excluído'})[status] || 'Status desconhecido';
+}
+function mostrarStatusTemplate(selectId) {
+  const select=document.getElementById(selectId),opt=select.selectedOptions[0];
+  let aviso=document.getElementById(selectId+'-status');
+  if(!aviso){aviso=document.createElement('p');aviso.id=selectId+'-status';aviso.setAttribute('role','status');select.after(aviso);}
+  const status=opt?.dataset.status;aviso.hidden=!status;
+  aviso.style.cssText='font-size:13px;margin:0 0 12px;line-height:1.5;color:'+(status==='APPROVED'?'#166534':'#b45309');
+  aviso.textContent=status ? statusTemplateTexto(status)+(status==='APPROVED'?' na Meta.':'. Não disponível para envio; escolha um template aprovado.') : '';
+}
+
 async function popularSelectTemplates(selectId, accessToken, wabaId) {
   const select = document.getElementById(selectId);
   select.innerHTML = '<option value="">Buscando...</option>';
+  mostrarStatusTemplate(selectId);
 
   try {
     const res = await fetch('/api/buscar-templates', {
@@ -577,10 +590,11 @@ async function popularSelectTemplates(selectId, accessToken, wabaId) {
       const cat = {'MARKETING': '📢 Marketing', 'UTILITY': '🔧 Utilitário', 'AUTHENTICATION': '🔐 Autenticação'}[t.categoria] || t.categoria;
       const opt = document.createElement('option');
       opt.value = t.nome;
+      opt.dataset.status = t.status || "UNKNOWN";
       opt.dataset.semVariaveis = String(t.sem_variaveis);
       opt.dataset.header = t.header || "";
       opt.dataset.idioma = t.idioma || "pt_BR";
-      opt.textContent = `${t.nome} — ${t.idioma} — ${cat} — ${t.status}${t.header === "IMAGE" ? " — Imagem obrigatória" : ""}${t.sem_variaveis ? " — Sem variáveis" : ""}`;
+      opt.textContent = `${statusTemplateTexto(t.status)} · ${t.nome} — ${cat} — ${t.idioma}${t.header === "IMAGE" ? " — Imagem obrigatória" : ""}${t.sem_variaveis ? " — Sem variáveis" : ""}`;
       select.appendChild(opt);
       templatesEncontrados[t.nome] = t.texto;
     });
@@ -612,6 +626,7 @@ async function previewImagemTemplate(tipo) {
 }
 
 function mostrarPreview(selectId, previewId) {
+  mostrarStatusTemplate(selectId);
   const select = document.getElementById(selectId);
   const preview = document.getElementById(previewId);
   const tipo = selectId.startsWith('novo') ? 'novo' : 'editar';
@@ -650,7 +665,7 @@ function trocarWabaCadastro() {
   document.getElementById('novo-phone-id').replaceChildren(new Option('Selecione um número...',''));
   document.getElementById('novo-template').replaceChildren(new Option('Selecione um template...',''));
   document.getElementById('novo-nome').value='';
-  configurarImagemTemplate('novo');atualizarTokenSalvo();
+  mostrarStatusTemplate('novo-template');configurarImagemTemplate('novo');atualizarTokenSalvo();
 }
 
 async function buscarNumerosNovo() {
@@ -719,12 +734,13 @@ async function carregarFixosNumero(){
     fixosNumero={waba:n.waba_id,templates:d.templates,salvos:d.textos_fixos,rascunhos:{}};
     select.replaceChildren();let encontrado=false;
     for(const t of d.templates){
-      const corpo=(t.components||[]).find(c=>c.type==='BODY')?.text||'',opt=new Option(t.name+' · '+({UTILITY:'Utilidade',MARKETING:'Marketing',AUTHENTICATION:'Autenticação'}[t.category]||'Categoria não informada')+' · '+t.language+' · '+({APPROVED:'Aprovado',PENDING:'Em análise',PAUSED:'Pausado',REJECTED:'Rejeitado',DISABLED:'Desativado'}[t.status]||t.status),t.name);
+      const corpo=(t.components||[]).find(c=>c.type==='BODY')?.text||'',opt=new Option(statusTemplateTexto(t.status)+' · '+t.name+' · '+({UTILITY:'Utilidade',MARKETING:'Marketing',AUTHENTICATION:'Autenticação'}[t.category]||'Categoria não informada')+' · '+t.language,t.name);
+      opt.dataset.status=t.status||'UNKNOWN';
       opt.dataset.idioma=t.language;opt.dataset.semVariaveis=String(!/\{\{/.test(corpo));opt.dataset.header=(t.components||[]).find(c=>c.type==='HEADER')?.format||'';
       templatesEncontrados[t.name]=corpo;select.append(opt);
       if(t.name===nome&&t.language===idioma){opt.selected=true;encontrado=true;}
     }
-    if(!encontrado){const o=new Option(nome+' · '+idioma+' (não encontrado)',nome);o.dataset.idioma=idioma;select.prepend(o);o.selected=true;}
+    if(!encontrado){const o=new Option(nome+' · '+idioma+' (não encontrado)',nome);o.dataset.idioma=idioma;o.dataset.status='UNKNOWN';select.prepend(o);o.selected=true;}
     mostrarPreview('editar-template','preview-editar');renderFixosNumero();
   }catch(e){if(seq===fixosNumeroSeq)document.getElementById('editar-fixos-status').textContent=e.message;}
 }
