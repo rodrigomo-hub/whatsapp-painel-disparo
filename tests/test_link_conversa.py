@@ -20,6 +20,13 @@ class LinkTests(unittest.TestCase):
     def run_one(self):return link.processar_um(self.db,'33393','secret')
     def rows(self):return link.resumo(self.db,'33393')['envios']
 
+    def test_custom_text_preserves_activation_and_sends(self):
+        self.enable()
+        link.configurar(self.db,'33393',texto='Olá! 📅\nhttps://example.com')
+        self.assertTrue(link.resumo(self.db,'33393')['ativo'])
+        self.receive();self.run_one()
+        self.assertEqual(self.send.call_args.kwargs['json']['content'],'Olá! 📅\nhttps://example.com')
+
     def test_disabled_and_other_account_never_send(self):
         self.receive();self.assertFalse(self.run_one());self.enable()
         self.receive();self.assertFalse(self.run_one()) # evento antigo reentregue

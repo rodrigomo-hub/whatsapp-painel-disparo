@@ -13,7 +13,9 @@ TEXTO='*Você também pode consultar sua oferta e seguir a contratação pelo li
 
 def migrar(c):
     c.execute('CREATE TABLE IF NOT EXISTS link_conversa_config(id INTEGER PRIMARY KEY CHECK(id=1),ativo INTEGER NOT NULL DEFAULT 0)')
-    c.execute('INSERT OR IGNORE INTO link_conversa_config VALUES(1,0)')
+    if 'texto' not in {r[1] for r in c.execute('PRAGMA table_info(link_conversa_config)')}:
+        c.execute("ALTER TABLE link_conversa_config ADD COLUMN texto TEXT")
+    c.execute('INSERT OR IGNORE INTO link_conversa_config(id,ativo) VALUES(1,0)')
     c.execute('''CREATE TABLE IF NOT EXISTS link_conversa_envios(
         account_id TEXT NOT NULL,chat_id TEXT NOT NULL,telefone TEXT NOT NULL,
         evento_id INTEGER NOT NULL,criado_em REAL NOT NULL,estado TEXT NOT NULL DEFAULT 'PENDENTE',
@@ -46,12 +48,15 @@ def agendar(c,d,evento_id):
               (CONTA,ident,telefone,evento_id,time.time()))
 
 
-def configurar(get_db,conta,ativo):
+def configurar(get_db,conta,ativo=None,texto=None):
     if str(conta)!=CONTA:raise HTTPException(403,'Teste disponível somente no painel de origem.')
-    if type(ativo) is not bool:raise HTTPException(400,'Informe ativo como verdadeiro ou falso.')
+    if ativo is not None and type(ativo) is not bool:raise HTTPException(400,'Informe ativo como verdadeiro ou falso.')
+    if texto is not None and (not isinstance(texto,str) or not 1<=len(texto.strip())<=4096):
+        raise HTTPException(400,'Informe uma mensagem entre 1 e 4096 caracteres.')
     with closing(get_db()) as c,c:
-        c.execute('UPDATE link_conversa_config SET ativo=? WHERE id=1',(int(ativo),))
-        if not ativo:c.execute("UPDATE link_conversa_envios SET estado='CANCELADO',finalizado_em=? WHERE estado='PENDENTE'",(time.time(),))
+        if texto is not None:c.execute('UPDATE link_conversa_config SET texto=? WHERE id=1',(texto.strip(),))
+        if ativo is not None:c.execute('UPDATE link_conversa_config SET ativo=? WHERE id=1',(int(ativo),))
+        if ativo is False:c.execute("UPDATE link_conversa_envios SET estado='CANCELADO',finalizado_em=? WHERE estado='PENDENTE'",(time.time(),))
     return {'ativo':ativo}
 
 
@@ -59,7 +64,7 @@ def resumo(get_db,conta):
     if str(conta)!=CONTA:return {'disponivel':False}
     with closing(get_db()) as c:
         return {'disponivel':True,'ativo':bool(c.execute('SELECT ativo FROM link_conversa_config WHERE id=1').fetchone()[0]),
-                'texto':TEXTO,'envios':[dict(r) for r in c.execute('SELECT chat_id,estado,http_status,message_id,criado_em FROM link_conversa_envios ORDER BY criado_em DESC LIMIT 30')]}
+                'texto':c.execute('SELECT texto FROM link_conversa_config WHERE id=1').fetchone()[0] or TEXTO,'envios':[dict(r) for r in c.execute('SELECT chat_id,estado,http_status,message_id,criado_em FROM link_conversa_envios ORDER BY criado_em DESC LIMIT 30')]}
 
 
 def recuperar(get_db):
@@ -81,12 +86,13 @@ def processar_um(get_db,conta,token):
     # Reconfere a supressão imediatamente antes do único POST; não altera a IA.
     with closing(get_db()) as c:
         cancelar=impedido(c,r['chat_id'],r['telefone']) or not c.execute('SELECT ativo FROM link_conversa_config WHERE id=1').fetchone()[0]
+        texto=c.execute('SELECT texto FROM link_conversa_config WHERE id=1').fetchone()[0] or TEXTO
     status=None;message_id=None
     if cancelar:estado='CANCELADO'
     else:
         try:
             resp=requests.post('https://crm.vendeaitecnologia.com.br/api/v1/accounts/'+CONTA+'/conversations/'+r['chat_id']+'/messages',
-                headers={'api_access_token':token},json={'content':TEXTO,'message_type':'outgoing','private':False,'content_type':'text'},
+                headers={'api_access_token':token},json={'content':texto,'message_type':'outgoing','private':False,'content_type':'text'},
                 timeout=(2,5),allow_redirects=False)
             status=resp.status_code
             if 200<=status<300:

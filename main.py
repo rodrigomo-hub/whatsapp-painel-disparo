@@ -2042,7 +2042,7 @@ def resumo_link_conversa():
 
 @app.patch('/api/link-conversa')
 def configurar_link_conversa(body: dict):
-    return link_conversa.configurar(get_db,carregar_configuracao()['vendeai_account_id'],body.get('ativo'))
+    return link_conversa.configurar(get_db,carregar_configuracao()['vendeai_account_id'],body.get('ativo'),body.get('texto'))
 
 
 @app.get('/api/vendeai-eventos/config')
