@@ -19,12 +19,13 @@ def listar(get_db,waba):
                 for r in c.execute('SELECT * FROM textos_templates WHERE waba_id=?',(waba,))]
 
 
-def salvar(get_db,waba,body,consultar,estrutura):
+def salvar(get_db,waba,body,consultar,estrutura,conexao_validada=False):
     nome,idioma,ativo=body.get('nome'),body.get('idioma'),body.get('ativo')
     if not isinstance(nome,str) or not nome or len(nome)>512 or not isinstance(idioma,str) or not idioma or len(idioma)>32 or type(ativo) is not bool:
         raise HTTPException(400,'Informe o template, idioma e a opção de textos fixos.')
     with closing(get_db()) as c:
         w=c.execute('SELECT access_token FROM wabas_salvas WHERE waba_id=?',(waba,)).fetchone()
+    if conexao_validada:w={'access_token':''}
     if not w:raise HTTPException(404,'WABA não cadastrada.')
     botoes=body.get('botoes_optout')
     if 'botoes_optout' in body and (not isinstance(botoes,list) or len(botoes)>10 or any(not isinstance(v,str) or not v.strip() or len(v)>100 for v in botoes)):

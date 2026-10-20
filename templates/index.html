@@ -1311,6 +1311,7 @@ function historicoQualidade(n){
   return `<div style="margin-top:7px;max-width:250px;font-size:12px;line-height:1.5;color:${cor}" title="Horário de Brasília em que o painel detectou a mudança; a Meta não informa o instante exato."><strong>${e.fonte==='backup'?'Recuperação do histórico: '+rotulo(e.atual).toLowerCase():recuperou?'Melhorou para '+rotulo(e.atual).toLowerCase():'Mudou para '+rotulo(e.atual).toLowerCase()}${hoje?' hoje':''}</strong><br>${e.fonte==='backup'?'Já estava assim em':'Detectado em'} ${escaparNumero(instante(e.detectado_em))}</div><details style="margin-top:5px;font-size:11px;color:#64748b"><summary style="cursor:pointer">Últimas mudanças</summary>${eventos.map(x=>`<div style="padding:4px 0">${rotulo(x.anterior)} → ${rotulo(x.atual)}<br>${x.fonte==='backup'?'Confirmado até ':''}${escaparNumero(instante(x.detectado_em))}${x.fonte==='backup'&&x.intervalo_inicio?'<br>Mudança após '+escaparNumero(instante(x.intervalo_inicio))+' (horário exato indisponível)':''}</div>`).join('')}</details>`;
 }
 function grupoVisualNumero(n) {
+  if(n.tipo_envio==='gupshup_vendeai')return 7;
   if(n.tipo_envio==='gupshup')return 6;
   if(n.tipo_envio==='vendeai_normal')return 4;
   if(n.status_envio_meta==='BANNED')return 5;
@@ -1334,22 +1335,23 @@ function renderizarNumeros() {
   filtrados.forEach(n => {
     const grupo=grupoVisualNumero(n);
     if(grupo!==grupoAnterior){
-      const nomes=['Qualidade alta','Qualidade média','Qualidade baixa','Qualidade desconhecida','Conexões normais','Banidos pela Meta','Gupshup · conferência manual'];
-      const cores=['#15803d','#a16207','#b42318','#64748b','#7c3aed','#b42318','#4338ca'];
+      const nomes=['Qualidade alta','Qualidade média','Qualidade baixa','Qualidade desconhecida','Conexões normais','Banidos pela Meta','Gupshup · conferência manual','Gupshup · via VendeAI'];
+      const cores=['#15803d','#a16207','#b42318','#64748b','#7c3aed','#b42318','#4338ca','#4338ca'];
       const linha=document.createElement('tr'),celula=document.createElement('td');
       celula.colSpan=8;celula.textContent=nomes[grupo];celula.style.cssText='background:#f8fafc;font-weight:700;padding:12px;color:'+cores[grupo];
       linha.appendChild(celula);tbody.appendChild(linha);grupoAnterior=grupo;
     }
     const pct = Math.min(100, (n.enviados_hoje / n.limite_diario) * 100);
     const tr = document.createElement('tr');
-    if(n.tipo_envio === 'gupshup') {
+    if(['gupshup','gupshup_vendeai'].includes(n.tipo_envio)) {
+      const viaVendeai=n.tipo_envio==='gupshup_vendeai';
       tr.innerHTML=`<td>${escaparNumero(n.nome)}${observacaoVisivel(n)}</td>
-      <td>${escaparNumero(n.template_nome)}<br><small>Envio pela Gupshup</small></td>
+      <td>${escaparNumero(n.template_nome)}<br><small>${viaVendeai?'Gupshup · via VendeAI':'Envio pela Gupshup'}</small>${n.template_header==='IMAGE'?'<br><small>'+(n.template_imagem?'Imagem configurada':'Falta anexar imagem')+'</small>':''}</td>
       <td>${traduzirCategoria(n.template_categoria)}<br>${escaparNumero(({APPROVED:'Aprovado',PENDING:'Em análise',PAUSED:'Pausado',DISABLED:'Desativado',REJECTED:'Rejeitado',UNKNOWN:'Não confirmado'})[n.template_status]||n.template_status)}</td>
-      <td><small>Confira a qualidade do número e do template na Gupshup.</small></td>
+      <td><small>${viaVendeai?'Qualidade e pagamento não informados pela VendeAI.':'Confira a qualidade do número e do template na Gupshup.'}</small></td>
       <td>${n.enviados_hoje} / ${n.limite_diario}</td><td>${n.enviados_hora} / ${n.limite_hora}</td>
-      <td>${n.ativo?'Habilitado':'Pausado'}${n.template_status!=='APPROVED'?'<br><small>Template indisponível para envio</small>':''}</td>
-      <td><a href="/gupshup">Configurar</a><br><button class="btn-toggle" onclick="toggleNumero(${n.id},${n.ativo?0:1})">${n.ativo?'Pausar':'Ativar'}</button></td>`;
+      <td>${!n.ativo?'Pausado':viaVendeai&&!n.conexao_elegivel?'Fora do rodízio':'Habilitado'}${n.template_status!=='APPROVED'?'<br><small>Template indisponível para envio</small>':''}</td>
+      <td>${viaVendeai?'<small>'+ultimaConsultaMeta(n.meta_consultado_em)+'</small><br><button class="btn-editar" onclick="abrirModal('+n.id+')">Editar</button>':'<a href="/gupshup">Configurar</a>'}<br><button class="btn-toggle" onclick="toggleNumero(${n.id},${n.ativo?0:1})">${n.ativo?'Pausar':'Ativar'}</button></td>`;
       tbody.appendChild(tr);return;
     }
     if(n.tipo_envio === 'vendeai_normal') {
@@ -1467,8 +1469,8 @@ function abrirModal(id) {
   document.getElementById('preview-editar').style.display='none';
   document.getElementById('editar-id').value = n.id;
   const via=document.getElementById('editar-via');via.value=n.via_envio||'meta';
-  via.options[1].disabled=!n.vendeai_inbox_id;
-  document.getElementById('editar-vinculo').textContent=n.vendeai_inbox_id ? 'Conexão reconhecida na VendeAI. Qualidade e bloqueios conferidos na Meta.' : 'Use “Importar oficiais da VendeAI” e busque as conexões. O número será reconhecido automaticamente quando os IDs coincidirem.';
+  via.options[0].disabled=n.tipo_envio==='gupshup_vendeai';via.options[1].disabled=!n.vendeai_inbox_id;
+  document.getElementById('editar-vinculo').textContent=n.tipo_envio==='gupshup_vendeai' ? 'Gupshup · via VendeAI. Qualidade e pagamento não informados; confira na Gupshup.' : n.vendeai_inbox_id ? 'Conexão reconhecida na VendeAI. Qualidade e bloqueios conferidos na Meta.' : 'Use “Importar oficiais da VendeAI” e busque as conexões. O número será reconhecido automaticamente quando os IDs coincidirem.';
   const select = document.getElementById('editar-template');
   const atual = document.createElement('option');
   atual.value = n.template_nome; atual.textContent = n.template_nome;

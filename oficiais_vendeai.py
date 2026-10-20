@@ -20,10 +20,13 @@ def migrar(c):
         account_id TEXT NOT NULL,inbox_id TEXT NOT NULL,phone_id TEXT NOT NULL,waba_id TEXT NOT NULL,
         nome TEXT NOT NULL,telefone TEXT NOT NULL,templates TEXT NOT NULL,consultado_em REAL NOT NULL,
         PRIMARY KEY(account_id,inbox_id))''')
+    cols={r[1] for r in c.execute('PRAGMA table_info(oficiais_vendeai)')}
+    for name in ('provider','app_id'):
+        if name not in cols:c.execute(f"ALTER TABLE oficiais_vendeai ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
     c.execute('CREATE TABLE IF NOT EXISTS midias_vendeai(token TEXT PRIMARY KEY,imagem_id TEXT NOT NULL,expira REAL NOT NULL)')
 
 
-def via(n):return not normal.normal(n) and dict(n).get('via_envio')=='vendeai'
+def via(n):return dict(n).get('tipo_envio','meta')=='meta' and dict(n).get('via_envio')=='vendeai'
 
 
 def obter_json(url,token,params=None):
@@ -47,10 +50,11 @@ def listar_remoto(cfg,token):
         lookup={str(i['id']):i for i in mailing}
         result=[]
         for i in crm:
-            if i.get('provider')!='whatsapp_cloud':continue
+            if i.get('provider') not in ('whatsapp_cloud','gupshup'):continue
             p=i.get('provider_config') or {};m=lookup.get(str(i['id']),{})
             result.append({'account_id':account,'inbox_id':str(i['id']),'phone_id':str(p.get('phone_number_id') or ''),
                 'waba_id':str(p.get('business_account_id') or ''),'nome':str(i.get('name') or ''),'telefone':str(i.get('phone_number') or ''),
+                'provider':i.get('provider'),'app_id':str(p.get('app_id') or ''),
                 'templates':m.get('templates') or [],'_token':p.get('api_key') or '', '_reauthorization':i.get('reauthorization_required') is True})
         return result
     except (requests.RequestException,ValueError,TypeError,AttributeError,KeyError):
@@ -60,6 +64,8 @@ def listar_remoto(cfg,token):
 def nomes_waba(get_db,items):
     nomes={}
     for i in items:
+        if i.get('provider')=='gupshup':
+            i['nome_caixa']=i['nome'];continue
         waba=i['waba_id']
         if waba not in nomes:
             with closing(get_db()) as c:
@@ -97,8 +103,8 @@ def descobrir(get_db,cfg,token):
         c.execute('BEGIN IMMEDIATE')
         c.execute('DELETE FROM oficiais_vendeai WHERE account_id=?',(account,))
         for i in items:
-            c.execute('INSERT INTO oficiais_vendeai VALUES(?,?,?,?,?,?,?,?)',
-                (account,i['inbox_id'],i['phone_id'],i['waba_id'],i['nome'],i['telefone'],json.dumps(i['templates']),time.time()))
+            c.execute('INSERT INTO oficiais_vendeai(account_id,inbox_id,phone_id,waba_id,nome,telefone,templates,consultado_em,provider,app_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
+                (account,i['inbox_id'],i['phone_id'],i['waba_id'],i['nome'],i['telefone'],json.dumps(i['templates']),time.time(),i.get('provider','whatsapp_cloud'),i.get('app_id','')))
         for i in items:
             n,erro=correspondencia(c,i)
             if n and not erro and i['phone_id'].isdigit() and i['waba_id'].isdigit():
@@ -111,6 +117,11 @@ def descobrir(get_db,cfg,token):
 
 
 def correspondencia(c,i):
+    if i.get('provider')=='gupshup':
+        rows=c.execute("SELECT * FROM numeros WHERE tipo_envio='gupshup_vendeai' AND vendeai_conta=? AND vendeai_inbox_id=?",(i['account_id'],i['inbox_id'])).fetchall()
+        if len(rows)>1:return None,'Mais de um cadastro para esta conexão.'
+        if rows and rows[0]['phone_number_id']!='gupshup:'+i['app_id']:return None,'O aplicativo da conexão mudou. Revise o cadastro.'
+        return (rows[0] if rows else None),('' if i.get('app_id') else 'App ID não informado.')
     quantidade=c.execute('SELECT count(*) FROM oficiais_vendeai WHERE account_id=? AND phone_id=? AND waba_id=?',
                          (i['account_id'],i['phone_id'],i['waba_id'])).fetchone()[0]
     if quantidade>1:return None,'Mais de uma conexão VendeAI usa este ID Meta. Revise as conexões.'
@@ -135,7 +146,7 @@ def listar(get_db,cfg):
             i=dict(row);i['templates']=json.loads(i['templates']);n,erro=correspondencia(c,i)
             i['numero']=({'id':n['id'],'nome':n['nome'],'template_nome':n['template_nome'],'template_idioma':n['template_idioma'],
                           'vinculado':bool(n['vendeai_inbox_id']),'via_envio':n['via_envio']} if n else None)
-            i['divergencia']=erro or ('' if i['phone_id'].isdigit() and i['waba_id'].isdigit() else 'IDs Meta não confirmados.')
+            i['divergencia']=erro or ('' if i.get('provider')=='gupshup' and i.get('app_id') else '' if i['phone_id'].isdigit() and i['waba_id'].isdigit() else 'IDs Meta não confirmados.')
             result.append(i)
         return result
 
@@ -203,6 +214,9 @@ def validar_via(get_db,n,cfg,token,base_url):
 def vincular(get_db,cfg,token,body):
     inbox=str(body.get('inbox_id') or '')
     items=listar_remoto(cfg,token);i=next((i for i in items if i['inbox_id']==inbox),None)
+    if i and i.get('provider')=='gupshup':
+        import gupshup_vendeai
+        return gupshup_vendeai.importar(get_db,i,body)
     if not i or not i['phone_id'].isdigit() or not i['waba_id'].isdigit() or not i['_token']:raise HTTPException(400,'Credencial ou IDs da conexão não confirmados.')
     nomes_waba(get_db,[i])
     with closing(get_db()) as c,c:

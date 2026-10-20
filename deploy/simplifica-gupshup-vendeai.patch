@@ -1,0 +1,582 @@
+--- a/main.py
++++ b/main.py
+@@ -26,6 +26,7 @@
+ import custos_meta
+ import ranking_wabas
+ import gupshup
++import gupshup_vendeai
+ import qualidade_historico
+ import optout
+ import conexoes_normais
+@@ -371,6 +372,7 @@
+     transbordo.migrar(conn)
+     ranking_wabas.migrar(conn)
+     gupshup.migrar(conn)
++    gupshup_vendeai.migrar(conn)
+     qualidade_historico.migrar(conn)
+     conn.commit()
+     conn.close()
+@@ -411,6 +413,8 @@
+ 
+ def disponivel_agora(numero: sqlite3.Row) -> bool:
+     if not permitido_no_rodizio(numero):return False
++    if gupshup_vendeai.via(numero):
++        return gupshup_vendeai.elegivel(get_db,numero) and contagem_hoje(numero["id"]) < numero["limite_diario"] and contagem_ultima_hora(numero["id"]) < numero["limite_hora"]
+     if gupshup.via(numero):
+         return gupshup.elegivel(get_db,numero) and contagem_hoje(numero["id"]) < numero["limite_diario"] and contagem_ultima_hora(numero["id"]) < numero["limite_hora"]
+     if conexoes_normais.normal(numero):
+@@ -613,7 +617,7 @@
+     conn.close()
+     grupos = {}
+     for n in numeros:
+-        if conexoes_normais.normal(n) or gupshup.via(n): continue
++        if conexoes_normais.normal(n) or gupshup.via(n) or gupshup_vendeai.via(n): continue
+         grupos.setdefault((n['waba_id'], n['access_token']), []).append(n)
+     for (waba, token), grupo in grupos.items():
+         ids, cursores = set(), set()
+@@ -678,7 +682,7 @@
+ 
+ 
+ def verificar_qualidade(numero) -> str:
+-    if gupshup.via(numero): return "UNKNOWN"
++    if gupshup.via(numero) or gupshup_vendeai.via(numero): return "UNKNOWN"
+     if conexoes_normais.normal(numero):
+         conexoes_normais.consultar(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN)
+         return 'UNKNOWN'
+@@ -714,6 +718,9 @@
+ 
+ 
+ def verificar_template_info(numero) -> tuple:
++    if gupshup_vendeai.via(numero):
++        t=gupshup_vendeai.atualizar(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN) or {}
++        return t.get("category","UNKNOWN"),t.get("status","UNKNOWN"),t.get("language")
+     if gupshup.via(numero):
+         with closing(get_db()) as c:
+             a=c.execute('SELECT app_id FROM gup_apps WHERE numero_id=?',(numero['id'],)).fetchone()
+@@ -833,7 +840,7 @@
+ 
+ 
+ def verificar_qualidade_pos_envio(numero):
+-    if conexoes_normais.normal(numero) or gupshup.via(numero): return 'UNKNOWN'
++    if conexoes_normais.normal(numero) or gupshup.via(numero) or gupshup_vendeai.via(numero): return 'UNKNOWN'
+     """
+     Confere a qualidade do numero logo depois de um envio, e pausa na hora
+     se caiu pra RED - sem esperar o loop de fundo (que roda a cada
+@@ -1487,6 +1494,7 @@
+         hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
+         elegivel = n['status_envio_meta'] == 'AVAILABLE' and bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
+         if gupshup.via(n): elegivel = gupshup.elegivel(get_db,n)
++        if gupshup_vendeai.via(n): elegivel = gupshup_vendeai.elegivel(get_db,n)
+         if conexoes_normais.normal(n): elegivel = conexoes_normais.elegivel(get_db,n)
+         elif oficiais_vendeai.via(n): elegivel = elegivel and oficiais_vendeai.elegivel(get_db,n)
+         elegivel = elegivel and permitido_no_rodizio(n)
+@@ -1673,6 +1681,8 @@
+         return conexoes_normais.enviar(get_db,numero,telefone,nome,carregar_configuracao(),VENDEAI_API_TOKEN,lambda p: optout.bloqueado(get_db,p))
+     try:variaveis=textos_templates.resolver(get_db,numero,variaveis,nome)
+     except ValueError as exc:return False,str(exc),''
++    if gupshup_vendeai.via(numero):
++        return gupshup_vendeai.enviar(get_db,numero,telefone,variaveis,carregar_configuracao(),VENDEAI_API_TOKEN,lambda p: optout.bloqueado(get_db,p))
+     if gupshup.via(numero):
+         return gupshup.enviar(get_db,numero,telefone,variaveis,lambda p: optout.bloqueado(get_db,p))
+     if oficiais_vendeai.via(numero):
+@@ -1712,7 +1722,7 @@
+     registrar_disparo(numero["id"], cpf, nome_lead, telefone, status_resultado(sucesso,erro), erro, wamid)
+     verificar_qualidade_pos_envio(numero)
+ 
+-    if not sucesso and (conexoes_normais.normal(numero) or oficiais_vendeai.via(numero) or gupshup.via(numero)):
++    if not sucesso and (conexoes_normais.normal(numero) or oficiais_vendeai.via(numero) or gupshup.via(numero) or gupshup_vendeai.via(numero)):
+         return {"status":status_resultado(sucesso,erro),"numero_usado":numero["nome"],"canal":"whatsapp","erro":erro,"vendeai":cadastro}
+     if not sucesso:
+         resultado_sms = tentar_fallback_sms(cpf, nome_lead, telefone, variaveis) if origem != "lote" else None
+@@ -2213,7 +2223,7 @@
+     ).fetchone()
+     tipos=conn.execute("""SELECT
+         COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio)='vendeai_normal' THEN 1 ELSE 0 END),0) AS normais,
+-        COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio) IN ('meta','gupshup') THEN 1 ELSE 0 END),0) AS oficiais,
++        COALESCE(SUM(CASE WHEN d.canal='whatsapp' AND COALESCE(NULLIF(d.tipo_envio,''),n.tipo_envio) IN ('meta','gupshup','gupshup_vendeai') THEN 1 ELSE 0 END),0) AS oficiais,
+         COALESCE(SUM(CASE WHEN d.canal='sms' THEN 1 ELSE 0 END),0) AS sms
+         FROM disparos d LEFT JOIN numeros n ON n.id=d.numero_id
+         WHERE d.status='sucesso' AND d.criado_em>=?""",(inicio_dia,)).fetchone()
+@@ -2665,11 +2675,23 @@
+ 
+ @app.put('/api/wabas-painel/{waba_id}/textos-fixos')
+ def salvar_textos_template(waba_id: str, body: dict):
++    if waba_id.startswith('gupshup-vendeai:'):
++        items=templates_gup_vendeai(waba_id)
++        return textos_templates.salvar(get_db,waba_id,body,lambda *a:{'dados':items},oficiais_vendeai.estrutura,conexao_validada=True)
+     return textos_templates.salvar(get_db,waba_id,body,consultar_meta_waba,oficiais_vendeai.estrutura)
++
++
++def templates_gup_vendeai(waba_id):
++    with closing(get_db()) as c:
++        n=c.execute("SELECT * FROM numeros WHERE waba_id=? AND tipo_envio='gupshup_vendeai'",(waba_id,)).fetchone()
++    if not n:raise HTTPException(404,'Conexão não cadastrada.')
++    return gupshup_vendeai.remoto(dict(n),carregar_configuracao(),VENDEAI_API_TOKEN)['templates']
+ 
+ 
+ @app.get('/api/wabas-painel/{waba_id}/textos-fixos')
+ def consultar_textos_template(waba_id: str):
++    if waba_id.startswith('gupshup-vendeai:'):
++        return JSONResponse({'templates':templates_gup_vendeai(waba_id),'textos_fixos':textos_templates.listar(get_db,waba_id)},headers={'Cache-Control':'no-store'})
+     with closing(get_db()) as c:
+         w=c.execute('SELECT access_token FROM wabas_salvas WHERE waba_id=?',(waba_id,)).fetchone()
+     if not w:raise HTTPException(404,'WABA não cadastrada.')
+@@ -2789,7 +2811,7 @@
+             "access_token": n["access_token"][:10] + "..." if n["access_token"] else "",
+             "enviados_hoje": contagens.get(n['id'], {}).get('dia',0),
+             "enviados_hora": contagens.get(n['id'], {}).get('hora',0),
+-            "conexao_elegivel": conexoes_normais.elegivel(get_db,n) if conexoes_normais.normal(n) else None,
++            "conexao_elegivel": gupshup_vendeai.elegivel(get_db,n) if gupshup_vendeai.via(n) else conexoes_normais.elegivel(get_db,n) if conexoes_normais.normal(n) else None,
+         }
+         for n in numeros
+     ]
+@@ -2870,6 +2892,8 @@
+     with closing(get_db()) as consulta:
+         atual=consulta.execute('SELECT * FROM numeros WHERE id=?',(numero_id,)).fetchone()
+     if not atual: raise HTTPException(404,'Número não encontrado')
++    if gupshup_vendeai.via(atual):
++        return await asyncio.to_thread(gupshup_vendeai.editar,get_db,atual,body,carregar_configuracao(),VENDEAI_API_TOKEN,str(request.base_url).rstrip('/'))
+     if gupshup.via(atual):
+         if set(body) != {'ativo'} or type(body['ativo']) is not bool:
+             raise HTTPException(400,'Edite esta conexão na aba Gupshup.')
+--- a/oficiais_vendeai.py
++++ b/oficiais_vendeai.py
+@@ -19,10 +19,13 @@
+         account_id TEXT NOT NULL,inbox_id TEXT NOT NULL,phone_id TEXT NOT NULL,waba_id TEXT NOT NULL,
+         nome TEXT NOT NULL,telefone TEXT NOT NULL,templates TEXT NOT NULL,consultado_em REAL NOT NULL,
+         PRIMARY KEY(account_id,inbox_id))''')
++    cols={r[1] for r in c.execute('PRAGMA table_info(oficiais_vendeai)')}
++    for name in ('provider','app_id'):
++        if name not in cols:c.execute(f"ALTER TABLE oficiais_vendeai ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+     c.execute('CREATE TABLE IF NOT EXISTS midias_vendeai(token TEXT PRIMARY KEY,imagem_id TEXT NOT NULL,expira REAL NOT NULL)')
+ 
+ 
+-def via(n):return not normal.normal(n) and dict(n).get('via_envio')=='vendeai'
++def via(n):return dict(n).get('tipo_envio','meta')=='meta' and dict(n).get('via_envio')=='vendeai'
+ 
+ 
+ def obter_json(url,token,params=None):
+@@ -46,10 +49,11 @@
+         lookup={str(i['id']):i for i in mailing}
+         result=[]
+         for i in crm:
+-            if i.get('provider')!='whatsapp_cloud':continue
++            if i.get('provider') not in ('whatsapp_cloud','gupshup'):continue
+             p=i.get('provider_config') or {};m=lookup.get(str(i['id']),{})
+             result.append({'account_id':account,'inbox_id':str(i['id']),'phone_id':str(p.get('phone_number_id') or ''),
+                 'waba_id':str(p.get('business_account_id') or ''),'nome':str(i.get('name') or ''),'telefone':str(i.get('phone_number') or ''),
++                'provider':i.get('provider'),'app_id':str(p.get('app_id') or ''),
+                 'templates':m.get('templates') or [],'_token':p.get('api_key') or '', '_reauthorization':i.get('reauthorization_required') is True})
+         return result
+     except (requests.RequestException,ValueError,TypeError,AttributeError,KeyError):
+@@ -59,6 +63,8 @@
+ def nomes_waba(get_db,items):
+     nomes={}
+     for i in items:
++        if i.get('provider')=='gupshup':
++            i['nome_caixa']=i['nome'];continue
+         waba=i['waba_id']
+         if waba not in nomes:
+             with closing(get_db()) as c:
+@@ -96,8 +102,8 @@
+         c.execute('BEGIN IMMEDIATE')
+         c.execute('DELETE FROM oficiais_vendeai WHERE account_id=?',(account,))
+         for i in items:
+-            c.execute('INSERT INTO oficiais_vendeai VALUES(?,?,?,?,?,?,?,?)',
+-                (account,i['inbox_id'],i['phone_id'],i['waba_id'],i['nome'],i['telefone'],json.dumps(i['templates']),time.time()))
++            c.execute('INSERT INTO oficiais_vendeai(account_id,inbox_id,phone_id,waba_id,nome,telefone,templates,consultado_em,provider,app_id) VALUES(?,?,?,?,?,?,?,?,?,?)',
++                (account,i['inbox_id'],i['phone_id'],i['waba_id'],i['nome'],i['telefone'],json.dumps(i['templates']),time.time(),i.get('provider','whatsapp_cloud'),i.get('app_id','')))
+         for i in items:
+             n,erro=correspondencia(c,i)
+             if n and not erro and i['phone_id'].isdigit() and i['waba_id'].isdigit():
+@@ -110,6 +116,11 @@
+ 
+ 
+ def correspondencia(c,i):
++    if i.get('provider')=='gupshup':
++        rows=c.execute("SELECT * FROM numeros WHERE tipo_envio='gupshup_vendeai' AND vendeai_conta=? AND vendeai_inbox_id=?",(i['account_id'],i['inbox_id'])).fetchall()
++        if len(rows)>1:return None,'Mais de um cadastro para esta conexão.'
++        if rows and rows[0]['phone_number_id']!='gupshup:'+i['app_id']:return None,'O aplicativo da conexão mudou. Revise o cadastro.'
++        return (rows[0] if rows else None),('' if i.get('app_id') else 'App ID não informado.')
+     quantidade=c.execute('SELECT count(*) FROM oficiais_vendeai WHERE account_id=? AND phone_id=? AND waba_id=?',
+                          (i['account_id'],i['phone_id'],i['waba_id'])).fetchone()[0]
+     if quantidade>1:return None,'Mais de uma conexão VendeAI usa este ID Meta. Revise as conexões.'
+@@ -134,7 +145,7 @@
+             i=dict(row);i['templates']=json.loads(i['templates']);n,erro=correspondencia(c,i)
+             i['numero']=({'id':n['id'],'nome':n['nome'],'template_nome':n['template_nome'],'template_idioma':n['template_idioma'],
+                           'vinculado':bool(n['vendeai_inbox_id']),'via_envio':n['via_envio']} if n else None)
+-            i['divergencia']=erro or ('' if i['phone_id'].isdigit() and i['waba_id'].isdigit() else 'IDs Meta não confirmados.')
++            i['divergencia']=erro or ('' if i.get('provider')=='gupshup' and i.get('app_id') else '' if i['phone_id'].isdigit() and i['waba_id'].isdigit() else 'IDs Meta não confirmados.')
+             result.append(i)
+         return result
+ 
+@@ -202,6 +213,9 @@
+ def vincular(get_db,cfg,token,body):
+     inbox=str(body.get('inbox_id') or '')
+     items=listar_remoto(cfg,token);i=next((i for i in items if i['inbox_id']==inbox),None)
++    if i and i.get('provider')=='gupshup':
++        import gupshup_vendeai
++        return gupshup_vendeai.importar(get_db,i,body)
+     if not i or not i['phone_id'].isdigit() or not i['waba_id'].isdigit() or not i['_token']:raise HTTPException(400,'Credencial ou IDs da conexão não confirmados.')
+     nomes_waba(get_db,[i])
+     with closing(get_db()) as c,c:
+--- a/textos_templates.py
++++ b/textos_templates.py
+@@ -19,12 +19,13 @@
+                 for r in c.execute('SELECT * FROM textos_templates WHERE waba_id=?',(waba,))]
+ 
+ 
+-def salvar(get_db,waba,body,consultar,estrutura):
++def salvar(get_db,waba,body,consultar,estrutura,conexao_validada=False):
+     nome,idioma,ativo=body.get('nome'),body.get('idioma'),body.get('ativo')
+     if not isinstance(nome,str) or not nome or len(nome)>512 or not isinstance(idioma,str) or not idioma or len(idioma)>32 or type(ativo) is not bool:
+         raise HTTPException(400,'Informe o template, idioma e a opção de textos fixos.')
+     with closing(get_db()) as c:
+         w=c.execute('SELECT access_token FROM wabas_salvas WHERE waba_id=?',(waba,)).fetchone()
++    if conexao_validada:w={'access_token':''}
+     if not w:raise HTTPException(404,'WABA não cadastrada.')
+     botoes=body.get('botoes_optout')
+     if 'botoes_optout' in body and (not isinstance(botoes,list) or len(botoes)>10 or any(not isinstance(v,str) or not v.strip() or len(v)>100 for v in botoes)):
+--- a/custos_meta.py
++++ b/custos_meta.py
+@@ -18,7 +18,7 @@
+  total=Decimal(0);calculados=sem=aproximados=0;categorias={};currency=next(iter(taxas.values()))['moeda'] if taxas else 'BRL'
+  for row in rows:
+   r=dict(row)
+-  if r['tipo_calculo'] not in ('meta','gupshup'):continue
++  if r['tipo_calculo'] not in ('meta','gupshup','gupshup_vendeai'):continue
+   cat=r.get('categoria_referencia') or r.get('categoria_atual') or ''
+   if cat not in taxas or not re.fullmatch(r'55\d{10,11}',re.sub(r'\D','',r.get('telefone_destino') or '')):
+    sem+=1;continue
+--- a/resultados.py
++++ b/resultados.py
+@@ -239,7 +239,7 @@
+             if documento: equipe_por_cpf[documento][r['id']] = r
+             if telefone_equipe: equipe_por_fone[telefone_equipe][r['id']] = r
+         r['tipo'] = ('normais' if r['tipo_envio'] == 'vendeai_normal' else
+-                     'oficiais' if r['tipo_envio'] in ('meta','gupshup') else 'outros') if r['canal'] == 'whatsapp' else 'outros'
++                     'oficiais' if r['tipo_envio'] in ('meta','gupshup','gupshup_vendeai') else 'outros') if r['canal'] == 'whatsapp' else 'outros'
+         sends[r['id']] = r
+         fone = telefone(r['telefone_destino'])
+         if fone:
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -1275,6 +1275,7 @@
+   return `<div style="margin-top:7px;max-width:250px;font-size:12px;line-height:1.5;color:${cor}" title="Horário de Brasília em que o painel detectou a mudança; a Meta não informa o instante exato."><strong>${e.fonte==='backup'?'Recuperação do histórico: '+rotulo(e.atual).toLowerCase():recuperou?'Melhorou para '+rotulo(e.atual).toLowerCase():'Mudou para '+rotulo(e.atual).toLowerCase()}${hoje?' hoje':''}</strong><br>${e.fonte==='backup'?'Já estava assim em':'Detectado em'} ${escaparNumero(instante(e.detectado_em))}</div><details style="margin-top:5px;font-size:11px;color:#64748b"><summary style="cursor:pointer">Últimas mudanças</summary>${eventos.map(x=>`<div style="padding:4px 0">${rotulo(x.anterior)} → ${rotulo(x.atual)}<br>${x.fonte==='backup'?'Confirmado até ':''}${escaparNumero(instante(x.detectado_em))}${x.fonte==='backup'&&x.intervalo_inicio?'<br>Mudança após '+escaparNumero(instante(x.intervalo_inicio))+' (horário exato indisponível)':''}</div>`).join('')}</details>`;
+ }
+ function grupoVisualNumero(n) {
++  if(n.tipo_envio==='gupshup_vendeai')return 7;
+   if(n.tipo_envio==='gupshup')return 6;
+   if(n.tipo_envio==='vendeai_normal')return 4;
+   if(n.status_envio_meta==='BANNED')return 5;
+@@ -1290,22 +1291,23 @@
+   filtrados.forEach(n => {
+     const grupo=grupoVisualNumero(n);
+     if(grupo!==grupoAnterior){
+-      const nomes=['Qualidade alta','Qualidade média','Qualidade baixa','Qualidade desconhecida','Conexões normais','Banidos pela Meta','Gupshup · conferência manual'];
+-      const cores=['#15803d','#a16207','#b42318','#64748b','#7c3aed','#b42318','#4338ca'];
++      const nomes=['Qualidade alta','Qualidade média','Qualidade baixa','Qualidade desconhecida','Conexões normais','Banidos pela Meta','Gupshup · conferência manual','Gupshup · via VendeAI'];
++      const cores=['#15803d','#a16207','#b42318','#64748b','#7c3aed','#b42318','#4338ca','#4338ca'];
+       const linha=document.createElement('tr'),celula=document.createElement('td');
+       celula.colSpan=8;celula.textContent=nomes[grupo];celula.style.cssText='background:#f8fafc;font-weight:700;padding:12px;color:'+cores[grupo];
+       linha.appendChild(celula);tbody.appendChild(linha);grupoAnterior=grupo;
+     }
+     const pct = Math.min(100, (n.enviados_hoje / n.limite_diario) * 100);
+     const tr = document.createElement('tr');
+-    if(n.tipo_envio === 'gupshup') {
++    if(['gupshup','gupshup_vendeai'].includes(n.tipo_envio)) {
++      const viaVendeai=n.tipo_envio==='gupshup_vendeai';
+       tr.innerHTML=`<td>${escaparNumero(n.nome)}${observacaoVisivel(n)}</td>
+-      <td>${escaparNumero(n.template_nome)}<br><small>Envio pela Gupshup</small></td>
++      <td>${escaparNumero(n.template_nome)}<br><small>${viaVendeai?'Gupshup · via VendeAI':'Envio pela Gupshup'}</small>${n.template_header==='IMAGE'?'<br><small>'+(n.template_imagem?'Imagem configurada':'Falta anexar imagem')+'</small>':''}</td>
+       <td>${traduzirCategoria(n.template_categoria)}<br>${escaparNumero(({APPROVED:'Aprovado',PENDING:'Em análise',PAUSED:'Pausado',DISABLED:'Desativado',REJECTED:'Rejeitado',UNKNOWN:'Não confirmado'})[n.template_status]||n.template_status)}</td>
+-      <td><small>Confira a qualidade do número e do template na Gupshup.</small></td>
++      <td><small>${viaVendeai?'Qualidade e pagamento não informados pela VendeAI.':'Confira a qualidade do número e do template na Gupshup.'}</small></td>
+       <td>${n.enviados_hoje} / ${n.limite_diario}</td><td>${n.enviados_hora} / ${n.limite_hora}</td>
+-      <td>${n.ativo?'Habilitado':'Pausado'}${n.template_status!=='APPROVED'?'<br><small>Template indisponível para envio</small>':''}</td>
+-      <td><a href="/gupshup">Configurar</a><br><button class="btn-toggle" onclick="toggleNumero(${n.id},${n.ativo?0:1})">${n.ativo?'Pausar':'Ativar'}</button></td>`;
++      <td>${!n.ativo?'Pausado':viaVendeai&&!n.conexao_elegivel?'Fora do rodízio':'Habilitado'}${n.template_status!=='APPROVED'?'<br><small>Template indisponível para envio</small>':''}</td>
++      <td>${viaVendeai?'<small>'+ultimaConsultaMeta(n.meta_consultado_em)+'</small><br><button class="btn-editar" onclick="abrirModal('+n.id+')">Editar</button>':'<a href="/gupshup">Configurar</a>'}<br><button class="btn-toggle" onclick="toggleNumero(${n.id},${n.ativo?0:1})">${n.ativo?'Pausar':'Ativar'}</button></td>`;
+       tbody.appendChild(tr);return;
+     }
+     if(n.tipo_envio === 'vendeai_normal') {
+@@ -1411,8 +1413,8 @@
+   document.getElementById('preview-editar').style.display='none';
+   document.getElementById('editar-id').value = n.id;
+   const via=document.getElementById('editar-via');via.value=n.via_envio||'meta';
+-  via.options[1].disabled=!n.vendeai_inbox_id;
+-  document.getElementById('editar-vinculo').textContent=n.vendeai_inbox_id ? 'Conexão reconhecida na VendeAI. Qualidade e bloqueios conferidos na Meta.' : 'Use “Importar oficiais da VendeAI” e busque as conexões. O número será reconhecido automaticamente quando os IDs coincidirem.';
++  via.options[0].disabled=n.tipo_envio==='gupshup_vendeai';via.options[1].disabled=!n.vendeai_inbox_id;
++  document.getElementById('editar-vinculo').textContent=n.tipo_envio==='gupshup_vendeai' ? 'Gupshup · via VendeAI. Qualidade e pagamento não informados; confira na Gupshup.' : n.vendeai_inbox_id ? 'Conexão reconhecida na VendeAI. Qualidade e bloqueios conferidos na Meta.' : 'Use “Importar oficiais da VendeAI” e busque as conexões. O número será reconhecido automaticamente quando os IDs coincidirem.';
+   const select = document.getElementById('editar-template');
+   const atual = document.createElement('option');
+   atual.value = n.template_nome; atual.textContent = n.template_nome;
+--- a/templates/oficiais_vendeai.html
++++ b/templates/oficiais_vendeai.html
+@@ -6,7 +6,7 @@
+ </style></head><body><main>
+ <header><div><a href="/">← Voltar aos números</a><h1>Importar oficiais da VendeAI</h1><p>Os números já cadastrados são reconhecidos automaticamente. Adicione apenas os novos.</p></div><button id="atualizar">Buscar conexões oficiais</button></header>
+ <div id="aviso" role="status"></div><div class="cartao"><div class="linha"><h2>Conexões oficiais</h2><input id="pesquisa" type="search" placeholder="Pesquisar nome, telefone ou WABA" style="max-width:340px"></div><p>Os números existentes mantêm seus templates, limites e forma de envio. Use “Editar” somente quando quiser mudar alguma configuração.</p><div class="filtros" aria-label="Filtrar por situação no painel"><button id="filtro-todos" aria-pressed="true">Todos</button><button id="filtro-novos" class="filtro-novos" aria-pressed="false">Novos</button><button id="filtro-existentes" class="filtro-existentes" aria-pressed="false">Já no painel</button><button id="filtro-revisar" class="filtro-revisar" aria-pressed="false">Revisar</button></div><div id="contagem-lista" class="contagem-lista" role="status"></div><div id="lista"></div></div>
+-<dialog id="novo"><form id="form"><h2>Adicionar número oficial</h2><p id="nome"></p><input type="hidden" id="inbox"><label for="template">Template</label><select id="template" required></select><div class="grade"><div><label for="dia">Limite diário</label><input id="dia" type="number" required min="1" max="100000"></div><div><label for="hora">Limite por hora</label><input id="hora" type="number" required min="1" max="100000"></div></div><p>O número será adicionado pausado. Depois, revise a imagem e escolha o caminho de envio na configuração do número.</p><p id="erro" role="alert"></p><div class="acoes"><button type="button" id="cancelar">Cancelar</button><button class="primario">Adicionar e configurar</button></div></form></dialog>
++<dialog id="novo"><form id="form"><h2>Adicionar número oficial</h2><p id="nome"></p><input type="hidden" id="inbox"><label for="template">Template</label><select id="template" required></select><div class="grade"><div><label for="dia">Limite diário</label><input id="dia" type="number" required min="1" max="100000"></div><div><label for="hora">Limite por hora</label><input id="hora" type="number" required min="1" max="100000"></div></div><p>O número será adicionado pausado. Depois, revise a imagem e os limites na configuração do número. Conexões Gupshup enviam pela VendeAI.</p><p id="erro" role="alert"></p><div class="acoes"><button type="button" id="cancelar">Cancelar</button><button class="primario">Adicionar e configurar</button></div></form></dialog>
+ </main><script>
+ const $=id=>document.getElementById(id);let conexoes=[];let filtro="todos";
+ async function api(url,method='GET',body){const r=await fetch(url,{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});if(r.redirected)throw new Error('Entre novamente no painel.');const d=await r.json();if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'Não foi possível concluir.');return d;}
+@@ -23,7 +23,7 @@
+   const estado=situacao(i);const linha=document.createElement('div');linha.className='item linha '+(estado==='novos'?'novo-item':estado==='revisar'?'revisar-item':'');
+   const info=document.createElement('div');info.className='info-numero';
+   info.append(elemento('span',estado==='novos'?'NOVO · Ainda não está no painel':estado==='revisar'?'REVISAR · Identificação divergente':'✓ JÁ ESTÁ NO PAINEL','selo '+(estado==='novos'?'selo-novo':estado==='revisar'?'selo-revisar':'selo-existente')),
+-   elemento('div',i.nome+' · '+i.telefone,'nome'),elemento('small','WABA '+i.waba_id));
++   elemento('div',i.nome+' · '+i.telefone,'nome'),elemento('small',i.provider==='gupshup'?'Gupshup · via VendeAI':'Meta · WABA '+i.waba_id));
+   info.append(elemento('p',i.divergencia||(i.numero?'Template: '+i.numero.template_nome+' ('+i.numero.template_idioma+')':'Escolha o template e os limites para adicionar.')));linha.append(info);
+   if(!i.divergencia){const b=elemento('button',i.numero?'Editar':'+ Adicionar ao painel',i.numero?'':'adicionar');b.onclick=()=>{if(i.numero){location.href='/?editar='+i.numero.id;}else{abrir(i);}};linha.append(b);}
+   $('lista').append(linha);
+--- /dev/null
++++ b/gupshup_vendeai.py
+@@ -0,0 +1,159 @@
++"""Gupshup já conectada à VendeAI; sem credenciais Meta nem qualidade presumida."""
++import json
++import time
++import re
++from datetime import datetime,timezone
++from contextlib import closing
++from urllib.parse import urlparse
++import requests
++from fastapi import HTTPException
++import oficiais_vendeai as oficial
++import conexoes_normais as normal
++import imagens_template
++
++TIPO='gupshup_vendeai'
++
++
++def via(n):return dict(n).get('tipo_envio')==TIPO
++
++
++def chave(n):return 'gupshup-vendeai:'+str(n['vendeai_conta'])+':'+str(n['vendeai_inbox_id'])
++
++
++def migrar(c):
++    c.execute('''CREATE TABLE IF NOT EXISTS gup_vendeai_saude(
++        numero_id INTEGER PRIMARY KEY, consultado REAL NOT NULL DEFAULT 0,
++        disponivel INTEGER NOT NULL DEFAULT 0, detalhe TEXT NOT NULL DEFAULT '')''')
++
++
++def importar(db,i,body):
++    if not i.get('app_id') or not re.fullmatch(r'\+?\d{10,15}',i.get('telefone','')):
++        raise HTTPException(400,'App ID ou telefone da conexão não informado.')
++    for k in ('limite_diario','limite_hora'):
++        if type(body.get(k)) is not int or not 0<=body[k]<=100000:raise HTTPException(400,'Informe limites inteiros de 0 a 100000.')
++    t=next((t for t in i['templates'] if t.get('name')==body.get('template_nome') and t.get('language')==body.get('template_idioma')),None)
++    if not t or t.get('status')!='APPROVED':raise HTTPException(400,'Selecione um template aprovado.')
++    _,header,ids=oficial.estrutura(t)
++    with closing(db()) as c,c:
++        c.execute('BEGIN IMMEDIATE')
++        n,erro=oficial.correspondencia(c,i)
++        if erro:raise HTTPException(409,erro)
++        if n:return {'id':n['id'],'novo':False}
++        # Também evita importar o mesmo app pela segunda inbox ou pelo caminho direto.
++        if c.execute("SELECT 1 FROM numeros WHERE phone_number_id=?",('gupshup:'+i['app_id'],)).fetchone() or c.execute('SELECT 1 FROM gup_apps WHERE app_id=? AND numero_id IS NOT NULL',(i['app_id'],)).fetchone():
++            raise HTTPException(409,'Este aplicativo já está cadastrado no painel. Revise o cadastro existente.')
++        w='gupshup-vendeai:'+i['account_id']+':'+i['inbox_id']
++        ident=c.execute('''INSERT INTO numeros(nome,phone_number_id,access_token,waba_id,tipo_envio,via_envio,
++            vendeai_conta,vendeai_inbox_id,template_nome,template_idioma,template_header,template_sem_variaveis,
++            template_status,template_categoria,limite_diario,limite_hora,ativo,qualidade,status_envio_meta)
++            VALUES(?,?,'',?,?,'vendeai',?,?,?,?,?,?,?,?,?,?,0,'UNKNOWN','UNKNOWN')''',
++            ((i['nome']+' '+i['telefone']).strip(),'gupshup:'+i['app_id'],w,TIPO,i['account_id'],i['inbox_id'],
++             t['name'],t['language'],header,int(not ids),t['status'],t.get('category','UNKNOWN'),body['limite_diario'],body['limite_hora'])).lastrowid
++    return {'id':ident,'novo':True}
++
++
++def remoto(n,cfg,token):
++    account,_=normal.credenciais(cfg,token)
++    if str(n['vendeai_conta'])!=account:raise HTTPException(400,'Conexão de outra conta.')
++    i=next((i for i in oficial.listar_remoto(cfg,token) if i['inbox_id']==str(n['vendeai_inbox_id'])),None)
++    if not i or i.get('provider')!='gupshup' or 'gupshup:'+i.get('app_id','')!=n['phone_number_id']:
++        raise HTTPException(400,'Conexão Gupshup ausente ou aplicativo alterado na VendeAI.')
++    if i.get('_reauthorization'):raise HTTPException(400,'Conexão exige reautorização na VendeAI.')
++    return i
++
++
++def template(n,i):
++    t=next((t for t in i['templates'] if t.get('name')==n['template_nome'] and t.get('language')==n['template_idioma']),None)
++    if not t:raise HTTPException(400,'Template não encontrado na conexão VendeAI.')
++    return t
++
++
++def atualizar(db,n,cfg,token):
++    n=dict(n);t=None;ok=False;detalhe=''
++    try:
++        i=remoto(n,cfg,token);t=template(n,i);oficial.estrutura(t)
++        ok=t.get('status')=='APPROVED'
++        if not ok:detalhe='Template não aprovado: '+str(t.get('status','UNKNOWN'))
++    except HTTPException as e:detalhe=str(e.detail)
++    with closing(db()) as c,c:
++        # Não aplicar o resultado a uma edição concorrente.
++        atual=c.execute('SELECT * FROM numeros WHERE id=?',(n['id'],)).fetchone()
++        if not atual or any(atual[k]!=n[k] for k in ('phone_number_id','template_nome','template_idioma','vendeai_inbox_id','vendeai_conta')):return None
++        c.execute('INSERT INTO gup_vendeai_saude VALUES(?,?,?,?) ON CONFLICT(numero_id) DO UPDATE SET consultado=excluded.consultado,disponivel=excluded.disponivel,detalhe=excluded.detalhe',
++                  (n['id'],time.time(),int(ok),detalhe))
++        c.execute("UPDATE numeros SET qualidade='UNKNOWN',status_envio_meta='UNKNOWN',template_status=?,template_categoria=?,meta_consultado_em=? WHERE id=?",
++                  ((t or {}).get('status','UNKNOWN'),(t or {}).get('category','UNKNOWN'),datetime.now(timezone.utc).isoformat(),n['id']))
++        if t:
++            header=next((x.get('format','') for x in t.get('components',[]) if x.get('type')=='HEADER'),t.get('header_type') or '')
++            c.execute('UPDATE numeros SET template_header=? WHERE id=?',(header,n['id']))
++        if not ok:c.execute('UPDATE numeros SET ativo=0 WHERE id=?',(n['id'],))
++    return t
++
++
++def elegivel(db,n):
++    n=dict(n)
++    if not n.get('ativo') or n.get('template_status')!='APPROVED' or (n.get('template_header')=='IMAGE' and not n.get('template_imagem')):return False
++    with closing(db()) as c:
++        r=c.execute('SELECT * FROM gup_vendeai_saude WHERE numero_id=?',(n['id'],)).fetchone()
++        cfg=c.execute('SELECT vendeai_account_id FROM configuracao WHERE id=1').fetchone()
++    return bool(cfg and str(cfg[0])==n['vendeai_conta'] and r and r['disponivel'] and time.time()-r['consultado']<1200)
++
++
++def editar(db,n,body,cfg,token,base_url):
++    n=dict(n)
++    if body=={'ativo':False}:
++        with closing(db()) as c,c:c.execute('UPDATE numeros SET ativo=0 WHERE id=?',(n['id'],))
++        return {'status':'ok'}
++    allowed={'ativo','via_envio','template_nome','template_idioma','template_sem_variaveis','imagem_base64','limite_diario','limite_hora'}
++    if set(body)-allowed:raise HTTPException(400,'Configuração não suportada.')
++    if 'ativo' in body and type(body['ativo']) is not bool:raise HTTPException(400,'Informe ativo como booleano.')
++    if body.get('via_envio','vendeai')!='vendeai':raise HTTPException(400,'Esta conexão envia pela VendeAI.')
++    for k in ('limite_diario','limite_hora'):
++        if k in body and (type(body[k]) is not int or not 0<=body[k]<=100000):raise HTTPException(400,'Limite inválido.')
++    previsto={**n,**body};i=remoto(previsto,cfg,token);t=template(previsto,i)
++    if t.get('status')!='APPROVED':raise HTTPException(400,'Escolha um template aprovado.')
++    _,header,ids=oficial.estrutura(t)
++    imagem=n['template_imagem'] if all(previsto[k]==n[k] for k in ('template_nome','template_idioma')) else ''
++    if body.get('imagem_base64'):
++        if header!='IMAGE':raise HTTPException(400,'Este template não tem imagem.')
++        imagem=imagens_template.salvar(db,n,body['imagem_base64'],somente_local=True)
++    if header=='IMAGE' and not imagem:raise HTTPException(400,'Anexe a imagem do template.')
++    if header=='IMAGE' and urlparse(base_url).scheme!='https':raise HTTPException(400,'A imagem exige HTTPS.')
++    with closing(db()) as c,c:
++        c.execute('''UPDATE numeros SET template_nome=?,template_idioma=?,template_header=?,template_imagem=?,
++            template_sem_variaveis=?,template_status=?,template_categoria=?,envio_base_url=?,limite_diario=?,limite_hora=?,ativo=? WHERE id=?''',
++            (t['name'],t['language'],header,imagem if header=='IMAGE' else '',int(not ids),t['status'],t.get('category','UNKNOWN'),base_url,
++             previsto['limite_diario'],previsto['limite_hora'],int(previsto['ativo']),n['id']))
++        c.execute('INSERT INTO gup_vendeai_saude VALUES(?,?,1,\'\') ON CONFLICT(numero_id) DO UPDATE SET consultado=excluded.consultado,disponivel=1,detalhe=\'\'',(n['id'],time.time()))
++    return {'status':'ok'}
++
++
++def enviar(db,n,telefone,variaveis,cfg,token,suprimido):
++    n=dict(n)
++    try:
++        t=atualizar(db,n,cfg,token)
++        with closing(db()) as c:atual=c.execute('SELECT * FROM numeros WHERE id=?',(n['id'],)).fetchone()
++        keys=('ativo','template_nome','template_idioma','template_imagem','phone_number_id','vendeai_conta','vendeai_inbox_id')
++        if not atual or any(atual[k]!=n[k] for k in keys) or not elegivel(db,atual) or not t or suprimido(telefone):raise HTTPException(400,'Conexão ou template indisponível, configuração alterada ou cliente na lista negra.')
++        n=dict(atual);corpo,header,ids=oficial.estrutura(t)
++        if ids and (len(variaveis)!=len(ids) or any(not isinstance(v,str) or not v.strip() for v in variaveis)):raise HTTPException(400,'Preencha as variáveis do template.')
++        payload={'type':'whatsapp_oficial','message':corpo,'template_name':t['name'],'template_category':t['category'],'language':t['language'],'params':dict(zip(ids,variaveis)) if ids else {}}
++        if header=='IMAGE':
++            if urlparse(n['envio_base_url']).scheme!='https':raise HTTPException(400,'Imagem requer HTTPS.')
++            payload.update(header_url=oficial.imagem_url(db,n),header_media_type='image')
++    except HTTPException as e:return False,str(e.detail),''
++    # Última conferência após preparar a mídia; nunca repete um envio incerto.
++    with closing(db()) as c:atual=c.execute('SELECT * FROM numeros WHERE id=?',(n['id'],)).fetchone()
++    if not atual or any(atual[k]!=n[k] for k in keys) or suprimido(telefone):return False,'Envio cancelado: configuração alterada ou lista negra.',''
++    account,token=normal.credenciais(cfg,token)
++    try:
++        r=requests.post(normal.API+'send/',json={'account_id':account,'crm_api_access_token':token,'inbox_id':n['vendeai_inbox_id'],'customer_phone':'+'+telefone,'payload':payload},timeout=(5,30),allow_redirects=False)
++        if r.status_code==200:
++            d=r.json()
++            if d.get('status')=='success' and d.get('message_id'):
++                normal.agendar_etiqueta(db,account,str(d['message_id']),n['vendeai_inbox_id'],telefone,n['id'])
++                return True,'',str(d['message_id'])
++            return False,'ENVIO_INCERTO: VendeAI não confirmou o envio. Confira no CRM.',''
++        if r.status_code>=500 or 300<=r.status_code<400:return False,'ENVIO_INCERTO: resposta VendeAI HTTP '+str(r.status_code),''
++        return False,'VendeAI recusou o envio: HTTP '+str(r.status_code),''
++    except (requests.RequestException,ValueError,TypeError,AttributeError):return False,'ENVIO_INCERTO: conferir na VendeAI antes de repetir',''
+--- /dev/null
++++ b/tests/test_gupshup_vendeai.py
+@@ -0,0 +1,84 @@
++import copy,json,time,unittest
++from unittest.mock import Mock,patch
++import main,requests,oficiais_vendeai as oficial,gupshup_vendeai as g
++from test_mailing import MailingTests,test_db
++
++class GupVendeaiTests(unittest.TestCase):
++    resposta=staticmethod(MailingTests.resposta)
++    def setUp(self):
++        MailingTests.setUp(self)
++        self.t={'id':'t1','name':'oferta','language':'pt_BR','status':'APPROVED','category':'UTILITY','components':[{'type':'BODY','text':'Olá {{1}}'}]}
++        self.i={'id':77,'name':'Gup','phone_number':'+5511999999999','provider':'gupshup','provider_config':{'app_id':'app-123','app_name':'Teste'},'reauthorization_required':False}
++        self.get_patch=patch.object(requests,'get',side_effect=lambda *a,**k:self.response({'payload':[copy.deepcopy(self.i)]}));self.get=self.get_patch.start();self.addCleanup(self.get_patch.stop)
++        self.api.side_effect=self.post_response;self.cfg=main.carregar_configuracao()
++    def response(self,d,status=200):return Mock(status_code=status,json=Mock(return_value=d))
++    def post_response(self,url,**kw):
++        if url.endswith('/inboxes/'):return self.response({'inboxes':[{'id':'77','templates':[copy.deepcopy(self.t)]}]})
++        if url.endswith('/send/'):return self.response({'status':'success','message_id':'456'})
++        raise AssertionError(url)
++    def importar(self):
++        return oficial.vincular(main.get_db,self.cfg,'',{'inbox_id':'77','template_nome':'oferta','template_idioma':'pt_BR','limite_diario':300,'limite_hora':100})['id']
++    def numero(self,id):
++        with test_db() as c:return dict(c.execute('SELECT * FROM numeros WHERE id=?',(id,)).fetchone())
++    def ativar(self,id):return g.editar(main.get_db,self.numero(id),{'ativo':True},self.cfg,'','https://painel.example')
++    def test_discovery_and_import_paused_no_fake_quality(self):
++        oficial.descobrir(main.get_db,self.cfg,'');items=oficial.listar(main.get_db,self.cfg)
++        self.assertEqual(items[0]['provider'],'gupshup');self.assertFalse(items[0]['divergencia']);self.assertNotIn('_token',items[0])
++        id=self.importar();self.assertEqual(self.importar(),id);n=self.numero(id)
++        self.assertFalse(n['ativo']);self.assertEqual(n['qualidade'],'UNKNOWN');self.assertEqual(n['access_token'],'')
++        self.ativar(id);n=self.numero(id);self.assertTrue(main.disponivel_agora(n))
++        self.assertFalse(any('graph.facebook' in str(c) for c in self.get.call_args_list))
++    def test_variables_and_routing(self):
++        id=self.importar();self.ativar(id);n=self.numero(id)
++        ok,_,mid=main.enviar_por_numero(n,'5511987654321',['Ana'],'Ana')
++        self.assertTrue(ok);self.assertEqual(mid,'456')
++        sent=[c for c in self.api.call_args_list if c.args[0].endswith('/send/')]
++        self.assertEqual(sent[0].kwargs['json']['payload']['params'],{'1':'Ana'})
++        self.assertEqual(sent[0].kwargs['json']['inbox_id'],'77')
++        self.assertEqual(main.capacidade_lote([id])['numeros'][0]['disponivel_agora'],100)
++    def test_paused_or_reauth_or_stale_blocks(self):
++        id=self.importar();self.ativar(id);self.t['status']='PAUSED'
++        ok,_,_=g.enviar(main.get_db,self.numero(id),'5511987654321',['Ana'],self.cfg,'',lambda _:False)
++        self.assertFalse(ok);self.assertFalse(self.numero(id)['ativo'])
++        self.assertFalse(any(c.args[0].endswith('/send/') for c in self.api.call_args_list))
++        self.t['status']='APPROVED';self.i['reauthorization_required']=True
++        with self.assertRaises(main.HTTPException):self.ativar(id)
++        self.i['reauthorization_required']=False;self.ativar(id)
++        with test_db() as c:c.execute('UPDATE gup_vendeai_saude SET consultado=0')
++        self.assertFalse(main.disponivel_agora(self.numero(id)))
++    def test_image_required_and_optout(self):
++        self.t['components'].append({'type':'HEADER','format':'IMAGE'});id=self.importar()
++        with self.assertRaises(main.HTTPException):self.ativar(id)
++        self.t['components'].pop();self.ativar(id)
++        self.assertFalse(g.enviar(main.get_db,self.numero(id),'5511987654321',['Ana'],self.cfg,'',lambda _:True)[0])
++    def test_image_uses_panel_url_and_no_meta_upload(self):
++        self.t['components'].append({'type':'HEADER','format':'IMAGE'});id=self.importar()
++        import base64
++        data='data:image/png;base64,'+base64.b64encode(b'\x89PNG\r\n\x1a\nimage-test').decode()
++        g.editar(main.get_db,self.numero(id),{'imagem_base64':data,'ativo':True},self.cfg,'','https://painel.example')
++        ok,_,_=g.enviar(main.get_db,self.numero(id),'5511987654321',['Ana'],self.cfg,'',lambda _:False)
++        self.assertTrue(ok)
++        sent=[c for c in self.api.call_args_list if c.args[0].endswith('/send/')][0]
++        self.assertTrue(sent.kwargs['json']['payload']['header_url'].startswith('https://painel.example/midia-vendeai/'))
++        self.assertFalse(any('graph.facebook' in str(c) for c in self.api.call_args_list))
++    def test_changed_app_and_other_account_block(self):
++        id=self.importar();self.ativar(id);n=self.numero(id)
++        self.i['provider_config']['app_id']='replacement'
++        self.assertFalse(g.enviar(main.get_db,n,'5511987654321',['Ana'],self.cfg,'',lambda _:False)[0])
++        self.assertFalse(any(c.args[0].endswith('/send/') for c in self.api.call_args_list))
++        with self.assertRaises(main.HTTPException):g.remoto(n,{**self.cfg,'vendeai_account_id':'other'},'')
++
++    def test_fixed_values_endpoint_and_edit(self):
++        id=self.importar();n=self.numero(id);url='/api/wabas-painel/'+n['waba_id']+'/textos-fixos'
++        self.assertEqual(self.client.get(url).status_code,200)
++        r=self.client.put(url,json={'nome':'oferta','idioma':'pt_BR','ativo':True,'valores':['Texto fixo']})
++        self.assertEqual(r.status_code,200,r.text)
++        self.assertEqual(main.textos_templates.resolver(main.get_db,n,['API'],'Ana'),['Texto fixo'])
++        r=self.client.patch('/api/numeros/'+str(id),json={'via_envio':'vendeai','template_nome':'oferta','template_idioma':'pt_BR','limite_diario':300,'limite_hora':100})
++        self.assertEqual(r.status_code,200,r.text)
++    def test_uncertain_not_repeated(self):
++        id=self.importar();self.ativar(id);original=self.post_response
++        self.api.side_effect=lambda url,**kw:self.response({},503) if url.endswith('/send/') else original(url,**kw)
++        ok,msg,_=g.enviar(main.get_db,self.numero(id),'5511987654321',['Ana'],self.cfg,'',lambda _:False)
++        self.assertFalse(ok);self.assertIn('ENVIO_INCERTO',msg)
++        self.assertEqual(len([c for c in self.api.call_args_list if c.args[0].endswith('/send/')]),1)

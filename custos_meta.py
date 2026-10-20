@@ -18,7 +18,7 @@ def resumo(c,inicio,fim):
  total=Decimal(0);calculados=sem=aproximados=0;categorias={};currency=next(iter(taxas.values()))['moeda'] if taxas else 'BRL'
  for row in rows:
   r=dict(row)
-  if r['tipo_calculo'] not in ('meta','gupshup'):continue
+  if r['tipo_calculo'] not in ('meta','gupshup','gupshup_vendeai'):continue
   cat=r.get('categoria_referencia') or r.get('categoria_atual') or ''
   if cat not in taxas or not re.fullmatch(r'55\d{10,11}',re.sub(r'\D','',r.get('telefone_destino') or '')):
    sem+=1;continue

@@ -239,7 +239,7 @@ def calcular(get_db, inicio, fim, busca='', origem='', status='', pagina=1, agor
             if documento: equipe_por_cpf[documento][r['id']] = r
             if telefone_equipe: equipe_por_fone[telefone_equipe][r['id']] = r
         r['tipo'] = ('normais' if r['tipo_envio'] == 'vendeai_normal' else
-                     'oficiais' if r['tipo_envio'] in ('meta','gupshup') else 'outros') if r['canal'] == 'whatsapp' else 'outros'
+                     'oficiais' if r['tipo_envio'] in ('meta','gupshup','gupshup_vendeai') else 'outros') if r['canal'] == 'whatsapp' else 'outros'
         sends[r['id']] = r
         fone = telefone(r['telefone_destino'])
         if fone:
