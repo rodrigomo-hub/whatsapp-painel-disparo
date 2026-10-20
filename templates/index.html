@@ -558,12 +558,16 @@ let templatesEncontrados = {};
 function statusTemplateTexto(status) {
   return ({APPROVED:'Aprovado',PAUSED:'Pausado pela Meta',PENDING:'Em análise',REJECTED:'Rejeitado',DISABLED:'Desativado',IN_APPEAL:'Em recurso',PENDING_DELETION:'Em exclusão',DELETED:'Excluído'})[status] || 'Status desconhecido';
 }
+function rotuloStatusTemplate(t) {
+  return t.pausa_registrada ? 'Pausa registrada no envio' : statusTemplateTexto(t.status);
+}
 function mostrarStatusTemplate(selectId) {
   const select=document.getElementById(selectId),opt=select.selectedOptions[0];
   let aviso=document.getElementById(selectId+'-status');
   if(!aviso){aviso=document.createElement('p');aviso.id=selectId+'-status';aviso.setAttribute('role','status');select.after(aviso);}
-  const status=opt?.dataset.status;aviso.hidden=!status;
-  aviso.style.cssText='font-size:13px;margin:0 0 12px;line-height:1.5;color:'+(status==='APPROVED'?'#166534':'#b45309');
+  const status=opt?.dataset.status,pausado=opt?.dataset.pausaRegistrada==='true';aviso.hidden=!status;
+  aviso.style.cssText='font-size:13px;margin:0 0 12px;line-height:1.5;color:'+(status==='APPROVED'&&!pausado?'#166534':'#b45309');
+  if(pausado){aviso.textContent='Pausa registrada após erro de envio da Meta. Status retornado na consulta: '+statusTemplateTexto(status)+'. O painel mantém a pausa; escolha outro template para enviar.';return;}
   aviso.textContent=status ? statusTemplateTexto(status)+(status==='APPROVED'?' na Meta.':'. Não disponível para envio; escolha um template aprovado.') : '';
 }
 
@@ -591,10 +595,11 @@ async function popularSelectTemplates(selectId, accessToken, wabaId) {
       const opt = document.createElement('option');
       opt.value = t.nome;
       opt.dataset.status = t.status || "UNKNOWN";
+      opt.dataset.pausaRegistrada=String(!!t.pausa_registrada);
       opt.dataset.semVariaveis = String(t.sem_variaveis);
       opt.dataset.header = t.header || "";
       opt.dataset.idioma = t.idioma || "pt_BR";
-      opt.textContent = `${statusTemplateTexto(t.status)} · ${t.nome} — ${cat} — ${t.idioma}${t.header === "IMAGE" ? " — Imagem obrigatória" : ""}${t.sem_variaveis ? " — Sem variáveis" : ""}`;
+      opt.textContent = `${rotuloStatusTemplate(t)} · ${t.nome} — ${cat} — ${t.idioma}${t.header === "IMAGE" ? " — Imagem obrigatória" : ""}${t.sem_variaveis ? " — Sem variáveis" : ""}`;
       select.appendChild(opt);
       templatesEncontrados[t.nome] = t.texto;
     });
@@ -734,8 +739,8 @@ async function carregarFixosNumero(){
     fixosNumero={waba:n.waba_id,templates:d.templates,salvos:d.textos_fixos,rascunhos:{}};
     select.replaceChildren();let encontrado=false;
     for(const t of d.templates){
-      const corpo=(t.components||[]).find(c=>c.type==='BODY')?.text||'',opt=new Option(statusTemplateTexto(t.status)+' · '+t.name+' · '+({UTILITY:'Utilidade',MARKETING:'Marketing',AUTHENTICATION:'Autenticação'}[t.category]||'Categoria não informada')+' · '+t.language,t.name);
-      opt.dataset.status=t.status||'UNKNOWN';
+      const corpo=(t.components||[]).find(c=>c.type==='BODY')?.text||'',opt=new Option(rotuloStatusTemplate(t)+' · '+t.name+' · '+({UTILITY:'Utilidade',MARKETING:'Marketing',AUTHENTICATION:'Autenticação'}[t.category]||'Categoria não informada')+' · '+t.language,t.name);
+      opt.dataset.status=t.status||'UNKNOWN';opt.dataset.pausaRegistrada=String(!!t.pausa_registrada);
       opt.dataset.idioma=t.language;opt.dataset.semVariaveis=String(!/\{\{/.test(corpo));opt.dataset.header=(t.components||[]).find(c=>c.type==='HEADER')?.format||'';
       templatesEncontrados[t.name]=corpo;select.append(opt);
       if(t.name===nome&&t.language===idioma){opt.selected=true;encontrado=true;}

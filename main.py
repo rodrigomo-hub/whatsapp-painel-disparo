@@ -2759,6 +2759,12 @@ def salvar_textos_template(waba_id: str, body: dict):
     return textos_templates.salvar(get_db,waba_id,body,consultar_meta_waba,oficiais_vendeai.estrutura)
 
 
+def templates_com_pausa_registrada(waba_id):
+    with closing(get_db()) as c:
+        return {(r['template_nome'], r['template_idioma'] or 'pt_BR') for r in c.execute(
+            "SELECT template_nome,template_idioma FROM numeros WHERE waba_id=? AND pausado_por_template=1", (waba_id,))}
+
+
 @app.get('/api/wabas-painel/{waba_id}/textos-fixos')
 def consultar_textos_template(waba_id: str):
     with closing(get_db()) as c:
@@ -2766,6 +2772,9 @@ def consultar_textos_template(waba_id: str):
     if not w:raise HTTPException(404,'WABA não cadastrada.')
     resposta=consultar_meta_waba(waba_id,w['access_token'],'/message_templates','id,name,language,status,category,components,parameter_format')
     if resposta.get('erro'):raise HTTPException(502,'Não foi possível carregar os templates. Tente buscar novamente.')
+    pausados=templates_com_pausa_registrada(waba_id)
+    for t in resposta.get('dados',[]):
+        t['pausa_registrada']=(t.get('name'),t.get('language','pt_BR')) in pausados
     return JSONResponse({'templates':resposta.get('dados',[]),'textos_fixos':textos_templates.listar(get_db,waba_id)},headers={'Cache-Control':'no-store'})
 
 
@@ -2799,6 +2808,7 @@ async def buscar_templates(request: Request):
         )
         dados = r.json().get("data", [])
         templates = []
+        pausados = templates_com_pausa_registrada(waba_id)
         for t in dados:
             corpo = ""
             for comp in t.get("components", []):
@@ -2807,6 +2817,7 @@ async def buscar_templates(request: Request):
                     break
             templates.append({
                 "nome": t.get("name"),
+                "pausa_registrada": (t.get("name"),t.get("language","pt_BR")) in pausados,
                 "categoria": t.get("category"),
                 "status": t.get("status"),
                 "texto": corpo,
