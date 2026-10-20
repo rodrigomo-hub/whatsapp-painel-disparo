@@ -776,7 +776,8 @@ def verificar_template_info(numero) -> tuple:
             params={"name": numero["template_nome"]},
             headers=headers, timeout=15,
         )
-        dados = r2.json().get("data", [])
+        # A busca da Meta também retorna nomes parecidos (ex.: nome e nomeim).
+        dados = [t for t in r2.json().get("data", []) if t.get("name") == numero["template_nome"]]
         if not dados:
             return "UNKNOWN", "UNKNOWN", None
 
