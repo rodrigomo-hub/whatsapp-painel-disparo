@@ -3001,6 +3001,46 @@ def pausar_todos_numeros():
     return {'status':'ok','pausados':quantidade}
 
 
+def motivo_nao_ativar(n, c):
+    n=dict(n);n['ativo']=1
+    if n['limite_diario']<=0 or n['limite_hora']<=0:return 'Limite de envio zerado'
+    if conexoes_normais.normal(n):
+        conta=c.execute('SELECT vendeai_account_id FROM configuracao WHERE id=1').fetchone()[0]
+        if n['conexao_status']!='connected' or n['vendeai_conta']!=str(conta):return 'Conexão indisponível'
+        try:
+            idade=(datetime.now(TZ)-datetime.fromisoformat(n['meta_consultado_em'])).total_seconds()
+            if not 0<=idade<=1800:return 'Atualize o status da conexão'
+        except (ValueError,TypeError):return 'Atualize o status da conexão'
+        if not c.execute('SELECT 1 FROM modelos_normais WHERE id=? AND ativo=1',(n['modelo_normal_id'],)).fetchone():return 'Escolha um modelo ativo'
+        return ''
+    if n['template_status']!='APPROVED' or n['pausado_por_template']:return 'Template indisponível; atualize ou escolha outro'
+    if n['template_header']=='IMAGE' and not n['template_imagem']:return 'Falta a imagem do template'
+    if gupshup_vendeai.via(n):return '' if gupshup_vendeai.elegivel(get_db,n) else 'Atualize a conexão Gupshup na VendeAI'
+    if gupshup.via(n):return '' if gupshup.elegivel(get_db,n) else 'Confira a conexão Gupshup'
+    if n['status_envio_meta']!='AVAILABLE':return 'Envio bloqueado ou status não confirmado pela Meta'
+    if n['qualidade'] not in ('GREEN','YELLOW'):return 'Qualidade baixa ou desconhecida'
+    if 'webhook_saude' in globals() and not webhook_saude.permitido(n):return 'Confira a sincronização do webhook'
+    if oficiais_vendeai.via(n) and not oficiais_vendeai.elegivel(get_db,n):return 'Confira o vínculo com a VendeAI'
+    return ''
+
+
+@app.post('/api/numeros/ativar-todos')
+def ativar_todos_numeros():
+    ativados=0;bloqueados=[];ja_ativos=0
+    with closing(get_db()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        for n in c.execute('SELECT * FROM numeros ORDER BY id').fetchall():
+            if n['ativo']:
+                ja_ativos+=1;continue
+            motivo=motivo_nao_ativar(n,c)
+            if motivo:
+                bloqueados.append({'id':n['id'],'nome':n['nome'],'motivo':motivo});continue
+            c.execute('UPDATE numeros SET ativo=1,pausado_por_qualidade=0 WHERE id=?',(n['id'],))
+            ativados+=1
+    registrar_evento(None,'ativacao_manual_todos',str(ativados)+' números ativados; '+str(len(bloqueados))+' mantidos pausados')
+    return {'ativados':ativados,'ja_ativos':ja_ativos,'bloqueados':bloqueados}
+
+
 @app.patch("/api/numeros/{numero_id}")
 async def atualizar_numero(numero_id: int, request: Request):
     body = await request.json()

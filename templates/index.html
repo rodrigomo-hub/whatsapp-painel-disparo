@@ -185,7 +185,8 @@
   <a href="/oficiais-vendeai" style="float:right;font-size:13px;color:#16754a;margin-right:18px;">Importar oficiais da VendeAI</a>
   <h2>Números conectados <button class="btn-toggle" onclick="atualizarTodos()" style="font-size:12px;">🔄 Atualizar todos</button></h2>
   <div style="display:flex;align-items:center;gap:12px;margin:12px 0;flex-wrap:wrap">
-    <button type="button" id="pausar-todos" class="btn-editar" style="color:#b42318;background:#fff1f2;border:1px solid #fecdd3" onclick="pausarTodosNumeros()">Pausar todos</button>
+    <button type="button" id="ativar-todos" class="btn-editar" style="color:#166534;background:#f0fdf4;border:1px solid #bbf7d0" onclick="ativarTodosNumeros()">▶ Ativar todos</button>
+    <button type="button" id="pausar-todos" class="btn-editar" style="color:#b42318;background:#fff1f2;border:1px solid #fecdd3" onclick="pausarTodosNumeros()">Ⅱ Pausar todos</button>
     <span id="pausar-todos-aviso" role="status" style="font-size:13px;color:#64748b"></span>
   </div>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0;">
@@ -1438,16 +1439,29 @@ function baixarCsv(tipo) {
   window.location.href = `/api/exportar-respostas?tipo=${tipo}`;
 }
 
+async function ativarTodosNumeros() {
+  const botao=document.getElementById('ativar-todos'),pausar=document.getElementById('pausar-todos'),aviso=document.getElementById('pausar-todos-aviso');
+  botao.disabled=pausar.disabled=true;aviso.textContent='Ativando números aptos…';
+  try {
+    const r=await fetch('/api/numeros/ativar-todos',{method:'POST'});
+    if(!r.ok||r.redirected)throw new Error('Não foi possível ativar. Confira sua sessão e tente novamente.');
+    const d=await r.json();
+    aviso.replaceChildren(document.createTextNode(`${d.ativados} ativado(s) · ${d.ja_ativos} já ativo(s) · ${d.bloqueados.length} mantido(s) pausado(s). Limites e horários continuam valendo.`));
+    if(d.bloqueados.length){const details=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Ver motivos';details.append(summary);for(const n of d.bloqueados){const p=document.createElement('div');p.textContent=n.nome+': '+n.motivo;details.append(p);}aviso.append(details);}
+    await carregarNumeros();
+  } catch(e){aviso.textContent=e.message;} finally {botao.disabled=pausar.disabled=false;}
+}
+
 async function pausarTodosNumeros() {
   const botao=document.getElementById('pausar-todos'),aviso=document.getElementById('pausar-todos-aviso');
-  botao.disabled=true;aviso.textContent='Pausando todos os números…';
+  botao.disabled=document.getElementById('ativar-todos').disabled=true;aviso.textContent='Pausando todos os números…';
   try {
     const r=await fetch('/api/numeros/pausar-todos',{method:'POST'});
     if(!r.ok)throw new Error('Não foi possível pausar. Tente novamente.');
     const d=await r.json();
     aviso.textContent=`${d.pausados} número(s) pausado(s). Todos permanecem pausados até você ativar. Envios já em andamento podem concluir.`;
     await carregarNumeros();
-  } catch(e){aviso.textContent=e.message;} finally {botao.disabled=false;}
+  } catch(e){aviso.textContent=e.message;} finally {botao.disabled=document.getElementById('ativar-todos').disabled=false;}
 }
 
 async function toggleNumero(id, novoStatus) {
