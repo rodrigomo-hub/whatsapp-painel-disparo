@@ -69,13 +69,18 @@ def validar(body):
     tipos=[b['type'] for b in limpos]
     if any(t!='QUICK_REPLY' for t in tipos) and ('QUICK_REPLY' in tipos or len(tipos)>2 or len(set(tipos))!=len(tipos)):
         raise HTTPException(400,'Escolha respostas rápidas OU até dois botões de ação (um link e um telefone).')
+    header=body.get('header_text','')
+    if not isinstance(header,str) or len(header)>60 or '{{' in header:
+        raise HTTPException(400,'Cabeçalho: até 60 caracteres, sem variáveis.')
     imagem=body.get('image','')
+    if header and imagem:raise HTTPException(400,'Escolha cabeçalho de texto ou imagem.')
+    if body.get('image_required') and not imagem:raise HTTPException(400,'Anexe a imagem de exemplo deste modelo.')
     if imagem:
         decodificar(imagem)
     wabas=body.get('wabas')
     if not isinstance(wabas,list) or not 1<=len(wabas)<=100 or any(not isinstance(w,str) or not w.isdigit() for w in wabas):
         raise HTTPException(400,'Selecione de 1 a 100 WABAs.')
-    return {'name':nome,'body':texto,'language':idioma,'category':categoria,'examples':exemplos,'footer':footer,'buttons':limpos,'image':imagem,'wabas':list(dict.fromkeys(wabas))}
+    return {'name':nome,'body':texto,'language':idioma,'category':categoria,'examples':exemplos,'footer':footer,'buttons':limpos,'image':imagem,'header_text':header,'wabas':list(dict.fromkeys(wabas))}
 
 
 def decodificar(imagem):
@@ -94,6 +99,7 @@ def componentes(p,handle=None):
     c=[]
     if p['image']:
         c.append({'type':'HEADER','format':'IMAGE','example':{'header_handle':[handle]}})
+    if p.get('header_text'):c.append({'type':'HEADER','format':'TEXT','text':p['header_text']})
     corpo={'type':'BODY','text':p['body']}
     if p['examples']:corpo['example']={'body_text':[p['examples']]}
     c.append(corpo)
@@ -190,3 +196,52 @@ def executar(get_db,consultar,lote,waba,apenas_consultar=False):
         if not apenas_consultar:
             gravar(get_db,lote,waba,'INCERTO' if post_iniciado else 'ERRO','Resposta sem confirmação; use Consultar.' if post_iniciado else ('Falha antes da criação. '+(str(e) if isinstance(e,ValueError) else 'Confira conexão, arquivo e permissões.')).replace(token,'[credencial]'))
     return resumo(get_db,lote)
+
+
+def modelo_aprovado(t):
+    """Converte somente estruturas reproduzíveis, sem descartar componentes."""
+    if t.get('status')!='APPROVED':raise HTTPException(400,'Escolha um template aprovado.')
+    if t.get('parameter_format')=='NAMED':raise HTTPException(400,'Este modelo usa variáveis nomeadas, ainda não suportadas nesta tela.')
+    p={'name':t['name'],'language':t['language'],'category':t['category'],'body':'','footer':'','buttons':[],'examples':[],'image':'','header_text':'','image_required':False,'wabas':['1']}
+    seen=set()
+    for c in t.get('components',[]):
+        kind=c.get('type')
+        if kind in seen:raise HTTPException(400,'Modelo com componentes repetidos não suportado.')
+        seen.add(kind)
+        if kind=='BODY':
+            p['body']=c.get('text','')
+            examples=c.get('example',{}).get('body_text',[])
+            p['examples']=examples[0] if examples else ['Exemplo']*len(set(re.findall(r'\{\{([1-9][0-9]*)\}\}',p['body'])))
+        elif kind=='HEADER':
+            if c.get('format')=='IMAGE':p['image_required']=True
+            elif c.get('format')=='TEXT':p['header_text']=c.get('text','')
+            else:raise HTTPException(400,'Este tipo de cabeçalho ainda não pode ser copiado nesta tela.')
+        elif kind=='FOOTER':p['footer']=c.get('text','')
+        elif kind=='BUTTONS':p['buttons']=c.get('buttons',[])
+        else:raise HTTPException(400,'Este modelo contém componentes ainda não suportados nesta tela.')
+    validar(dict(p,image_required=False))
+    p.pop('wabas')
+    return p
+
+
+def modelos(get_db,consultar,waba):
+    with closing(get_db()) as c:
+        cred=c.execute('SELECT access_token FROM wabas_salvas WHERE waba_id=?',(waba,)).fetchone()
+        if not cred:raise HTTPException(404,'WABA não cadastrada.')
+        antigos=[json.loads(r['payload']) for r in c.execute('SELECT payload FROM template_lotes ORDER BY criado_em DESC')]
+    data=consultar(waba,cred['access_token'],'/message_templates','id,name,language,status,category,components,parameter_format')
+    if data.get('erro'):raise HTTPException(502,'Não foi possível consultar os modelos na Meta.')
+    out=[]
+    for t in data.get('dados',[]):
+        if t.get('status')!='APPROVED':continue
+        item={'id':t.get('id'),'name':t.get('name'),'language':t.get('language'),'category':t.get('category')}
+        try:
+            p=modelo_aprovado(t)
+            if p['image_required']:
+                for old in antigos:
+                    if waba in old.get('wabas',[]) and all(old.get(k)==p[k] for k in ('name','language','body')) and old.get('image'):
+                        decodificar(old['image']);p['image']=old['image'];break
+            item['modelo']=p
+        except HTTPException as e:item['motivo']=e.detail
+        out.append(item)
+    return out

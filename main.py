@@ -2656,6 +2656,11 @@ def pagina_criar_templates(request: Request):
     return templates.TemplateResponse(request, 'criar_templates.html', {})
 
 
+@app.get('/api/templates-modelos/{waba_id}')
+def listar_modelos_templates(waba_id: str):
+    return templates_lote.modelos(get_db, consultar_meta_waba, waba_id)
+
+
 @app.post('/api/templates-lotes')
 def criar_templates_lote(body: dict):
     return templates_lote.criar_lote(get_db, body)
