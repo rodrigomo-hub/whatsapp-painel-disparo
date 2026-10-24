@@ -319,7 +319,7 @@
     <div class="config-paineis">
 <section class="cartao config-conteudo" id="config-transbordo" hidden>
   <h2>Transbordo de leads</h2>
-  <p>Sem capacidade local, encaminha entradas individuais do n8n para outro painel. O destino usa seus próprios números, template e conta VendeAI. Planilhas, bloqueio por lote e fora do horário não acionam transbordo.</p>
+  <p>Sem capacidade local ou fora do horário, encaminha entradas individuais aos parceiros configurados. Cada destino usa seus próprios números, template e conta VendeAI. Planilhas e bloqueio por lote não acionam transbordo.</p>
   <form onsubmit="salvarTransbordo(event)">
     <div id="disparo-compartilhado-area" hidden><strong>Disparo compartilhado</strong><p><label><input type="checkbox" id="disparo-compartilhado"> Enviar também ao painel parceiro</label></p><p style="font-size:13px;color:#64748b">Após um envio confirmado aqui, encaminha o lead ao parceiro abaixo. Cada painel respeita seus limites e bloqueios. O parceiro não recebe o status do envio local.</p></div>
     <p><label><input type="checkbox" id="transbordo-habilitado"> Ativar transbordo quando faltar capacidade</label></p>
@@ -329,6 +329,12 @@
     <p id="transbordo-token-status" style="font-size:13px;"></p>
     <p><label><input type="checkbox" id="transbordo-remover-token"> Remover chave salva</label></p>
     <p style="font-size:13px;color:#64748b;">Os dados do lead serão compartilhados com esse destino. As variáveis recebidas seguem junto: o template do destino precisa ser compatível ou configurado sem variáveis. Sem capacidade nos dois painéis, a entrada é recusada. Nenhum retorno automático à origem.</p>
+    <details id="transbordo2-area" style="border:1px solid #dbe4ee;border-radius:10px;padding:16px;margin:16px 0"><summary style="font-weight:600;cursor:pointer">Segundo parceiro · recebe o mesmo lead no transbordo</summary>
+    <p><label><input type="checkbox" id="transbordo2-habilitado"> Encaminhar também ao segundo parceiro</label></p>
+    <p><label>Nome <input id="transbordo2-nome" placeholder="Milone"></label></p>
+    <p><label>Endereço do painel <input id="transbordo2-url" type="url" placeholder="https://disparador.milone.shop"></label></p>
+    <p><label>Chave API <input id="transbordo2-token" type="password" autocomplete="new-password" placeholder="Vazio mantém a chave atual"></label></p>
+    <p id="transbordo2-token-status"></p><small>Envio direto ao /disparar. Os dois recebem quando houver transbordo; não após um envio local. Cada parceiro respeita seus limites.</small></details>
     <button type="submit" class="btn-toggle">Salvar transbordo</button>
     <button type="button" class="btn-editar" onclick="testarTransbordo()">Testar conexão salva</button>
     <p id="transbordo-config-resultado" role="status"></p>
@@ -996,6 +1002,11 @@ async function salvarSms(ev) {
 
 async function carregarTransbordo() {
   const r=await fetch('/api/configuracao'); const c=await r.json();
+  document.getElementById('transbordo2-area').hidden=String(c.vendeai_account_id)!=='33393';
+  document.getElementById('transbordo2-habilitado').checked=Boolean(c.transbordo2_habilitado);
+  for(const k of ['nome','url'])document.getElementById('transbordo2-'+k).value=c['transbordo2_'+k]||'';
+  document.getElementById('transbordo2-token').value='';
+  document.getElementById('transbordo2-token-status').textContent=c.transbordo2_token_configurado?'Chave salva.':'Nenhuma chave salva.';
   document.getElementById('disparo-compartilhado-area').hidden=String(c.vendeai_account_id)!=='33393';
   document.getElementById('disparo-compartilhado').checked=Boolean(c.disparo_compartilhado);
   document.getElementById('transbordo-habilitado').checked=Boolean(c.transbordo_habilitado);
@@ -1010,6 +1021,10 @@ async function salvarTransbordo(ev) {
   try {
     const r=await fetch('/api/configuracao',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({
       disparo_compartilhado:document.getElementById('disparo-compartilhado').checked,
+      transbordo2_habilitado:document.getElementById('transbordo2-habilitado').checked,
+      transbordo2_nome:document.getElementById('transbordo2-nome').value,
+      transbordo2_url:document.getElementById('transbordo2-url').value,
+      transbordo2_token:document.getElementById('transbordo2-token').value,
       transbordo_habilitado:document.getElementById('transbordo-habilitado').checked,
       transbordo_nome:document.getElementById('transbordo-nome').value,
       transbordo_url:document.getElementById('transbordo-url').value,
@@ -1025,6 +1040,7 @@ async function testarTransbordo() {
   const el=document.getElementById('transbordo-config-resultado'); el.textContent='Testando conexão…';
   try {
     const r=await fetch('/api/transbordo/testar',{method:'POST'}); const d=await r.json();
+    if(d.destinos){el.textContent=d.destinos.map(x=>x.destino+': '+(x.disponivel?'disponível':x.conectado?'sem capacidade agora':'conexão não confirmada')).join(' · ');return;}
     el.textContent=d.conectado ? (d.disponivel ? 'Conectado. Destino disponível agora.' : 'Conectado, mas sem disponibilidade: '+d.motivo_codigo) : 'Não foi possível confirmar conexão: '+(d.motivo_codigo || d.detail || 'erro');
   } catch(e) { el.textContent='Falha de conexão.'; }
 }

@@ -1681,6 +1681,8 @@ async def disparar(request: Request):
         body['parceiro_destino']=parceiro.strip().casefold()
         transbordo.validar_lead(lead)
         return await asyncio.to_thread(transbordo.Transbordo(get_db).encaminhar,body,chave,cfg,lead)
+    grupo=transbordo.buscar_grupo(get_db,body,chave)
+    if grupo:return grupo
     anterior = transbordo.Transbordo(get_db).buscar(body,chave)
     if anterior:
         return transbordo.Transbordo.publico(anterior)
@@ -1694,7 +1696,7 @@ async def disparar(request: Request):
         if urlparse(cfg['transbordo_url']).hostname == request.url.hostname:
             return {'status':'erro','aceito':False,'motivo_codigo':'transbordo_destino_proprio'}
         transbordo.validar_lead(lead)
-        return await asyncio.to_thread(transbordo.Transbordo(get_db).encaminhar,body,chave,cfg,lead)
+        return await asyncio.to_thread(transbordo.encaminhar_todos,get_db,body,chave,cfg,lead)
 
     if variaveis_vazias_impedem(variaveis):
         indices_vazios = [i for i, v in enumerate(variaveis, start=1) if not str(v).strip()]
@@ -2392,6 +2394,7 @@ def pagina_estatisticas(request: Request):
 @app.get("/api/configuracao")
 def obter_configuracao():
     cfg = carregar_configuracao()
+    cfg["transbordo2_token_configurado"] = bool(cfg.pop("transbordo2_token", ""))
     cfg["transbordo_token_configurado"] = bool(cfg.pop("transbordo_token", ""))
     token_painel = cfg.pop("vendeai_mailing_token", "")
     cfg["vendeai_token_configurado"] = bool(token_painel or VENDEAI_API_TOKEN)
@@ -2415,6 +2418,20 @@ async def atualizar_configuracao(request: Request):
             raise HTTPException(400,'Disparo compartilhado deve ser booleano')
         if body['disparo_compartilhado'] and str(atual['vendeai_account_id'])!='33393':
             raise HTTPException(400,'Disparo compartilhado disponível somente no painel principal')
+    if 'transbordo2_habilitado' in body and type(body['transbordo2_habilitado']) is not bool:raise HTTPException(400,'Ativação do segundo parceiro inválida')
+    for campo in ('transbordo2_nome','transbordo2_url','transbordo2_token'):
+        if campo in body:
+            if not isinstance(body[campo],str):raise HTTPException(400,'Configuração do segundo parceiro inválida')
+            body[campo]=body[campo].strip()
+    if body.get('transbordo2_token')=='':body.pop('transbordo2_token')
+    if body.get('transbordo2_url'):
+        body['transbordo2_url']=transbordo.validar_url(body['transbordo2_url'])
+        if urlparse(body['transbordo2_url']).hostname==request.url.hostname:raise HTTPException(400,'Destino não pode ser este painel')
+    segundo={**atual,**body}
+    if segundo.get('transbordo2_habilitado'):
+        if str(atual['vendeai_account_id'])!='33393':raise HTTPException(400,'Segundo parceiro disponível no painel principal')
+        if not all(segundo.get(k) for k in ('transbordo2_nome','transbordo2_url','transbordo2_token')):raise HTTPException(400,'Preencha nome, URL e chave do segundo parceiro')
+        if segundo['transbordo2_url']==segundo['transbordo_url']:raise HTTPException(400,'Escolha parceiros diferentes')
     if 'transbordo_habilitado' in body and type(body['transbordo_habilitado']) is not bool:
         raise HTTPException(400,'transbordo_habilitado deve ser booleano')
     for campo in ('transbordo_url','transbordo_nome','transbordo_token'):
@@ -3347,10 +3364,12 @@ def listar_transbordos():
 
 @app.get('/api/transbordo/{id}')
 async def consultar_transbordo(id: str):
+    grupo=transbordo.consultar_grupo(get_db,id,carregar_configuracao())
+    if grupo:return grupo
     return await asyncio.to_thread(transbordo.Transbordo(get_db).consultar_destino,id,carregar_configuracao())
 
 
-def testar_destino_transbordo(cfg):
+def testar_destino_unico(cfg):
     if not cfg['transbordo_url'] or not cfg['transbordo_token']:
         return {'conectado':False,'disponivel':False,'motivo_codigo':'configuracao_incompleta'}
     try:
@@ -3362,6 +3381,23 @@ def testar_destino_transbordo(cfg):
         return {'conectado':False,'disponivel':False,'motivo_codigo':'destino_http_'+str(r.status_code)}
     except (requests.RequestException,ValueError,AttributeError):
         return {'conectado':False,'disponivel':False,'motivo_codigo':'falha_comunicacao'}
+
+
+def testar_destino_transbordo(cfg):
+    if not cfg.get('transbordo2_habilitado'):return testar_destino_unico(cfg)
+    def segundo():
+        try:
+            r=requests.get(cfg['transbordo2_url']+'/api/disponibilidade-consulta',headers={'X-API-Key':cfg['transbordo2_token']},timeout=(5,10),allow_redirects=False)
+            if r.status_code==200:
+                d=r.json()
+                if type(d.get('pode_disparar')) is bool:return {'conectado':True,'disponivel':d['pode_disparar'],'motivo_codigo':d.get('motivo_codigo')}
+        except (requests.RequestException,ValueError,AttributeError):pass
+        return {'conectado':False,'disponivel':False,'motivo_codigo':'disponibilidade_nao_confirmada'}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a=pool.submit(testar_destino_unico,cfg);b=pool.submit(segundo)
+        destinos=[{'destino':cfg['transbordo_nome'],**a.result()},{'destino':cfg['transbordo2_nome'],**b.result()}]
+    disponivel=any(d['disponivel'] for d in destinos)
+    return {'conectado':any(d['conectado'] for d in destinos),'disponivel':disponivel,'motivo_codigo':None if disponivel else 'parceiros_indisponiveis','destinos':destinos}
 
 
 @app.post('/api/transbordo/testar')
@@ -3384,7 +3420,7 @@ def disponibilidade_consulta():
         'consultar_nova_vida':permitido,
         'pode_disparar':permitido,
         'destino_provavel':('transbordo' if canal=='transbordo' else 'local') if permitido else None,
-        'nome_destino':(cfg['transbordo_nome'] or 'Painel de destino') if canal=='transbordo' else ('Seu painel' if permitido else None),
+        'nome_destino':(' / '.join([cfg['transbordo_nome'],cfg['transbordo2_nome']]) if cfg.get('transbordo2_habilitado') else cfg['transbordo_nome'] or 'Painel de destino') if canal=='transbordo' else ('Seu painel' if permitido else None),
         'canal_provavel':canal,
         'motivo_codigo':resultado.get('motivo_codigo'),
         'motivo':'Há capacidade neste momento; pode seguir com a consulta.' if permitido else motivos.get(resultado.get('motivo_codigo'),resultado.get('motivo')),

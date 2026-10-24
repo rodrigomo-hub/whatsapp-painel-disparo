@@ -13,6 +13,10 @@ import requests
 from fastapi import HTTPException
 
 CONFIG_COLUMNS = {
+    'transbordo2_habilitado': 'INTEGER NOT NULL DEFAULT 0',
+    'transbordo2_nome': "TEXT NOT NULL DEFAULT ''",
+    'transbordo2_url': "TEXT NOT NULL DEFAULT ''",
+    'transbordo2_token': "TEXT NOT NULL DEFAULT ''",
     'disparo_compartilhado': 'INTEGER NOT NULL DEFAULT 0',
     'transbordo_habilitado': 'INTEGER NOT NULL DEFAULT 0',
     'transbordo_url': "TEXT NOT NULL DEFAULT ''",
@@ -22,6 +26,7 @@ CONFIG_COLUMNS = {
 
 
 def migrar(c):
+    c.execute('CREATE TABLE IF NOT EXISTS transbordo_grupos(id TEXT PRIMARY KEY,chave TEXT UNIQUE NOT NULL,fingerprint TEXT NOT NULL,criado_em REAL NOT NULL,resultados TEXT NOT NULL)')
     colunas = {r['name'] for r in c.execute('PRAGMA table_info(configuracao)')}
     for k, v in CONFIG_COLUMNS.items():
         if k not in colunas:
@@ -237,3 +242,79 @@ def processar_compartilhado(get_db,cfg):
         c.execute('UPDATE disparos_compartilhados SET estado=?,resultado=? WHERE id=?',
                   ('incerto' if result['status']=='pendente' else result['status'],json.dumps(result,ensure_ascii=False),item['id']))
     return True
+
+
+def grupo_publico(row):
+    itens=json.loads(row['resultados'])
+    valores=[i.get('aceito') for i in itens]
+    aceito=True if True in valores else None if None in valores else False
+    status='parcial' if True in valores and any(v is not True for v in valores) else 'encaminhado' if aceito else 'pendente' if aceito is None else 'recusado'
+    return {'status':status,'aceito':aceito,'transbordo_id':row['id'],'destinos':itens,'consultar_em':'/api/transbordo/'+row['id']}
+
+
+def buscar_grupo(db,body,chave):
+    key,fp=identidade(body,chave)
+    with closing(db()) as c:r=c.execute('SELECT * FROM transbordo_grupos WHERE chave=?',(key,)).fetchone()
+    if not r:return None
+    if key.startswith('auto:') and time.time()-r['criado_em']>86400 and all(i.get('aceito') is not None for i in json.loads(r['resultados'])):return None
+    if r['fingerprint']!=fp:raise HTTPException(409,'Idempotency-Key já usada com dados diferentes')
+    return grupo_publico(r)
+
+
+def consultar_grupo(db,ident,cfg):
+    with closing(db()) as c:r=c.execute('SELECT * FROM transbordo_grupos WHERE id=?',(ident,)).fetchone()
+    if not r:return None
+    return grupo_publico(r)
+
+
+def enviar_direto(body,lead,cfg,recibo):
+    # Não reenvia POST em timeout: o parceiro pode ter aceitado.
+    payload={'cpf':lead.get('cpf',''),'nome':lead.get('name',''),'whatsapp':lead['phone'],
+             'nascimento':lead.get('birth_date',''),'produto':lead.get('product','clt'),
+             'campanha':lead.get('campaign',''),'variaveis_template':body.get('variaveis_template',[])}
+    if lead.get('email'):payload['email']=lead['email']
+    try:
+        r=requests.post(cfg['transbordo2_url']+'/disparar',json=payload,
+            headers={'X-API-Key':cfg['transbordo2_token'],'Idempotency-Key':recibo,'X-Transbordo-Hop':'1'},timeout=(5,20),allow_redirects=False)
+        if r.status_code in (400,401,403,409,422,429):return {'status':'recusado','aceito':False,'motivo_codigo':'destino_http_'+str(r.status_code)}
+        if r.status_code not in (200,202):return {'status':'incerto','aceito':None,'motivo_codigo':'envio_sem_confirmacao'}
+        d=r.json()
+        if isinstance(d,list) and len(d)==1:d=d[0]
+        if not isinstance(d,dict):raise ValueError()
+        status=d.get('status')
+        if d.get('aceito') is False or status in ('erro','recusado','bloqueado','cancelado'):
+            return {'status':'recusado','aceito':False,'motivo_codigo':'destino_recusou'}
+        if status in ('sucesso','enfileirado','encaminhado'):
+            return {'status':status,'aceito':True}
+    except (requests.RequestException,ValueError,TypeError):pass
+    return {'status':'incerto','aceito':None,'motivo_codigo':'envio_sem_confirmacao'}
+
+
+def encaminhar_todos(db,body,chave,cfg,lead):
+    if not cfg.get('transbordo2_habilitado'):return Transbordo(db).encaminhar(body,chave,cfg,lead)
+    if optout.bloqueado(db,lead.get('phone')):return {'status':'bloqueado','aceito':False,'motivo_codigo':'optout'}
+    key,fp=identidade(body,chave);ident=uuid.uuid4().hex
+    itens=[{'destino':cfg['transbordo_nome'],'status':'pendente','aceito':None},{'destino':cfg['transbordo2_nome'],'status':'pendente','aceito':None}]
+    with closing(db()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        old=c.execute('SELECT * FROM transbordo_grupos WHERE chave=?',(key,)).fetchone()
+        if old and key.startswith('auto:') and time.time()-old['criado_em']>86400 and all(i.get('aceito') is not None for i in json.loads(old['resultados'])):
+            c.execute('UPDATE transbordo_grupos SET chave=? WHERE id=?',('historico:'+old['id'],old['id']));old=None
+        if old:
+            if old['fingerprint']!=fp:raise HTTPException(409,'Idempotency-Key já usada com dados diferentes')
+            return grupo_publico(old)
+        c.execute('INSERT INTO transbordo_grupos VALUES(?,?,?,?,?)',(ident,key,fp,time.time(),json.dumps(itens)))
+    from concurrent.futures import ThreadPoolExecutor,as_completed
+    def enviar(i):
+        if optout.bloqueado(db,lead.get('phone')):return {'status':'bloqueado','aceito':False,'motivo_codigo':'optout'}
+        if i==0:return Transbordo(db).encaminhar(body,'grupo:'+ident+':0',cfg,lead)
+        return enviar_direto(body,lead,cfg,'grupo:'+ident+':1')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        jobs={pool.submit(enviar,i):i for i in range(2)}
+        for f in as_completed(jobs):
+            i=jobs[f]
+            try:r=f.result()
+            except Exception:r={'status':'incerto','aceito':None,'motivo_codigo':'envio_sem_confirmacao'}
+            itens[i]={**r,'destino':itens[i]['destino']}
+            with closing(db()) as c,c:c.execute('UPDATE transbordo_grupos SET resultados=? WHERE id=?',(json.dumps(itens),ident))
+    return consultar_grupo(db,ident,cfg)
