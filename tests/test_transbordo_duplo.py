@@ -41,3 +41,26 @@ class DuploTests(unittest.TestCase):
  def test_disponibilidade_independente(self):
   with patch.object(main,'testar_destino_unico',return_value={'conectado':True,'disponivel':False}),patch('main.requests.get',return_value=Mock(status_code=200,json=Mock(return_value={'pode_disparar':True}))):
    self.assertTrue(main.testar_destino_transbordo(main.carregar_configuracao())['disponivel'])
+ def test_todos_explicito_nao_envia_local_e_nao_duplica(self):
+  body={**self.lead,'parceiro_destino':' TODOS '}
+  with patch('transbordo.requests.post',side_effect=self.aceita) as post:
+   a=self.client.post('/disparar',json=body);self.assertEqual(a.status_code,200)
+   self.assertEqual(len(a.json()['destinos']),2)
+   self.client.post('/disparar',json=body);self.assertEqual(post.call_count,2)
+   self.assertFalse(self.fila.resumo()['contagens']);self.whatsapp.assert_not_called()
+ def test_milone_explicito_so_segundo(self):
+  with patch('transbordo.requests.post',side_effect=self.aceita) as post:
+   a=self.client.post('/disparar',json={**self.lead,'parceiro_destino':'Milone'})
+   self.assertEqual(a.status_code,200);self.assertEqual(len(a.json()['destinos']),1)
+   post.assert_called_once();self.assertEqual(post.call_args.args[0],'https://milone.example/disparar')
+   self.assertNotIn('parceiro_destino',post.call_args.kwargs['json']);self.whatsapp.assert_not_called()
+ def test_todos_loop_bloqueado(self):
+  with patch('transbordo.requests.post') as post:
+   r=self.client.post('/disparar',json={**self.lead,'parceiro_destino':'todos'},headers={'X-Transbordo-Hop':'1'})
+   self.assertEqual(r.status_code,400);post.assert_not_called()
+ def test_todos_recusa_um_nao_envia_local(self):
+  def envio(url,**kw):
+   return Mock(status_code=409) if url.endswith('/disparar') else self.aceita(url,**kw)
+  with patch('transbordo.requests.post',side_effect=envio) as post:
+   r=self.client.post('/disparar',json={**self.lead,'parceiro_destino':'todos'})
+   self.assertEqual(r.json()['status'],'parcial');self.assertEqual(post.call_count,2);self.whatsapp.assert_not_called()

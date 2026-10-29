@@ -290,11 +290,12 @@ def enviar_direto(body,lead,cfg,recibo):
     return {'status':'incerto','aceito':None,'motivo_codigo':'envio_sem_confirmacao'}
 
 
-def encaminhar_todos(db,body,chave,cfg,lead):
-    if not cfg.get('transbordo2_habilitado'):return Transbordo(db).encaminhar(body,chave,cfg,lead)
+def encaminhar_todos(db,body,chave,cfg,lead,destinos=None):
+    if destinos is None:destinos=(0,1) if cfg.get('transbordo2_habilitado') else (0,)
+    if destinos==(0,):return Transbordo(db).encaminhar(body,chave,cfg,lead)
     if optout.bloqueado(db,lead.get('phone')):return {'status':'bloqueado','aceito':False,'motivo_codigo':'optout'}
     key,fp=identidade(body,chave);ident=uuid.uuid4().hex
-    itens=[{'destino':cfg['transbordo_nome'],'status':'pendente','aceito':None},{'destino':cfg['transbordo2_nome'],'status':'pendente','aceito':None}]
+    itens=[{'destino':cfg['transbordo2_nome' if i else 'transbordo_nome'],'status':'pendente','aceito':None} for i in destinos]
     with closing(db()) as c,c:
         c.execute('BEGIN IMMEDIATE')
         old=c.execute('SELECT * FROM transbordo_grupos WHERE chave=?',(key,)).fetchone()
@@ -310,7 +311,7 @@ def encaminhar_todos(db,body,chave,cfg,lead):
         if i==0:return Transbordo(db).encaminhar(body,'grupo:'+ident+':0',cfg,lead)
         return enviar_direto(body,lead,cfg,'grupo:'+ident+':1')
     with ThreadPoolExecutor(max_workers=2) as pool:
-        jobs={pool.submit(enviar,i):i for i in range(2)}
+        jobs={pool.submit(enviar,destino):i for i,destino in enumerate(destinos)}
         for f in as_completed(jobs):
             i=jobs[f]
             try:r=f.result()

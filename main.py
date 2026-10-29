@@ -1668,19 +1668,29 @@ async def disparar(request: Request):
     chave = request.headers.get("Idempotency-Key") or body.get("idempotency_key")
     if 'parceiro_destino' in body:
         parceiro=body['parceiro_destino']
-        if (str(cfg.get('vendeai_account_id'))!='33393' or not isinstance(parceiro,str)
-            or not parceiro.strip() or parceiro.strip().casefold()!=str(cfg.get('transbordo_nome','')).strip().casefold()):
-            raise HTTPException(400,'Parceiro de destino invalido. Use o nome cadastrado nas configuracoes.')
+        if str(cfg.get('vendeai_account_id'))!='33393' or not isinstance(parceiro,str) or not parceiro.strip():
+            raise HTTPException(400,'Parceiro de destino invalido. Use o nome cadastrado ou todos.')
+        parceiro=parceiro.strip().casefold()
+        if parceiro=='todos':
+            destinos=(0,1) if cfg.get('transbordo2_habilitado') else (0,)
+        elif parceiro==str(cfg.get('transbordo_nome','')).strip().casefold():
+            destinos=(0,)
+        elif parceiro==str(cfg.get('transbordo2_nome','')).strip().casefold() and cfg.get('transbordo2_habilitado'):
+            destinos=(1,)
+        else:
+            raise HTTPException(400,'Parceiro de destino invalido. Use o nome cadastrado ou todos.')
         if request.headers.get('X-Transbordo-Hop') or body.get('_transbordo'):
             raise HTTPException(400,'Nao e permitido reencaminhar um lead recebido de parceiro.')
-        if not cfg.get('transbordo_url') or not cfg.get('transbordo_token'):
-            raise HTTPException(400,'Parceiro sem URL ou chave configurada.')
-        destino=transbordo.validar_url(cfg['transbordo_url'])
-        if urlparse(destino).hostname==request.url.hostname:
-            raise HTTPException(400,'O parceiro nao pode ser o proprio painel.')
-        body['parceiro_destino']=parceiro.strip().casefold()
+        for indice in destinos:
+            prefixo='transbordo2' if indice else 'transbordo'
+            if not cfg.get(prefixo+'_url') or not cfg.get(prefixo+'_token'):
+                raise HTTPException(400,'Parceiro sem URL ou chave configurada.')
+            destino=transbordo.validar_url(cfg[prefixo+'_url'])
+            if urlparse(destino).hostname==request.url.hostname:
+                raise HTTPException(400,'O parceiro nao pode ser o proprio painel.')
+        body['parceiro_destino']=parceiro
         transbordo.validar_lead(lead)
-        return await asyncio.to_thread(transbordo.Transbordo(get_db).encaminhar,body,chave,cfg,lead)
+        return await asyncio.to_thread(transbordo.encaminhar_todos,get_db,body,chave,cfg,lead,destinos)
     grupo=transbordo.buscar_grupo(get_db,body,chave)
     if grupo:return grupo
     anterior = transbordo.Transbordo(get_db).buscar(body,chave)
