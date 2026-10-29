@@ -64,3 +64,8 @@ class DuploTests(unittest.TestCase):
   with patch('transbordo.requests.post',side_effect=envio) as post:
    r=self.client.post('/disparar',json={**self.lead,'parceiro_destino':'todos'})
    self.assertEqual(r.json()['status'],'parcial');self.assertEqual(post.call_count,2);self.whatsapp.assert_not_called()
+ def test_todos_independe_transbordo_automatico(self):
+  with test_db() as c:c.execute('UPDATE configuracao SET transbordo_habilitado=0,transbordo2_habilitado=0')
+  with patch('transbordo.requests.post',side_effect=self.aceita) as post:
+   r=self.client.post('/disparar',json={**self.lead,'parceiro_destino':'todos'})
+   self.assertEqual(r.status_code,200);self.assertEqual(len(r.json()['destinos']),2);self.assertEqual(post.call_count,2);self.whatsapp.assert_not_called()

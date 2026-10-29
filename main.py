@@ -1672,10 +1672,10 @@ async def disparar(request: Request):
             raise HTTPException(400,'Parceiro de destino invalido. Use o nome cadastrado ou todos.')
         parceiro=parceiro.strip().casefold()
         if parceiro=='todos':
-            destinos=(0,1) if cfg.get('transbordo2_habilitado') else (0,)
+            destinos=(0,1) if cfg.get('transbordo2_nome') and cfg.get('transbordo2_url') and cfg.get('transbordo2_token') else (0,)
         elif parceiro==str(cfg.get('transbordo_nome','')).strip().casefold():
             destinos=(0,)
-        elif parceiro==str(cfg.get('transbordo2_nome','')).strip().casefold() and cfg.get('transbordo2_habilitado'):
+        elif parceiro==str(cfg.get('transbordo2_nome','')).strip().casefold():
             destinos=(1,)
         else:
             raise HTTPException(400,'Parceiro de destino invalido. Use o nome cadastrado ou todos.')
