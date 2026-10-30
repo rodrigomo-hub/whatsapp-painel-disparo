@@ -234,7 +234,7 @@ def processar_compartilhado(get_db,cfg):
     body=json.loads(item['payload'])
     try:
         validar_lead(body)
-        result=Transbordo(get_db).encaminhar(body,'compartilhado:'+item['id'],cfg,body)
+        result=encaminhar_todos(get_db,body,'compartilhado:'+item['id'],cfg,body)
     except Exception:
         # Sem repetir automaticamente um envio cujo resultado nao foi confirmado.
         result={'status':'incerto','motivo_codigo':'compartilhamento_sem_confirmacao'}

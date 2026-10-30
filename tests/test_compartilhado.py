@@ -53,3 +53,24 @@ class CompartilhadoTests(unittest.TestCase):
         a=self.client.post('/disparar',json={**self.lead,'idempotency_key':'same'}).json()
         b=self.client.post('/disparar',json={**self.lead,'idempotency_key':'same'},headers={'X-Transbordo-Hop':'1'}).json()
         self.assertEqual(a['fila_id'],b['fila_id'])
+
+    def test_shared_sends_to_both_enabled_partners_once(self):
+        with test_db() as c:
+            c.execute("UPDATE configuracao SET transbordo2_habilitado=1,transbordo2_nome='Milone',transbordo2_url='https://milone.example',transbordo2_token='secret2'")
+        def accepts(url,**kw):
+            if url.endswith('/disparar'):
+                self.assertNotIn('disparo_id',kw['json'])
+                self.assertNotIn('status',kw['json'])
+                return Mock(status_code=200,json=lambda:{'status':'sucesso'})
+            return Mock(status_code=202,json=lambda:{'recibo':kw['json']['id'],'status':'enfileirado'})
+        self.api.side_effect=accepts
+        p=self.prep()
+        main.registrar_disparo(1,'','Ana',p['mailing']['phone'],'sucesso',compartilhado=p)
+        transbordo.processar_compartilhado(main.get_db,main.carregar_configuracao())
+        self.assertEqual(self.api.call_count,2)
+        self.assertFalse(transbordo.processar_compartilhado(main.get_db,main.carregar_configuracao()))
+        self.assertEqual(self.api.call_count,2)
+        with test_db() as c:
+            import json
+            r=json.loads(c.execute('SELECT resultado FROM disparos_compartilhados').fetchone()[0])
+        self.assertEqual({d['destino'] for d in r['destinos']},{'Milone','Amigo'})
