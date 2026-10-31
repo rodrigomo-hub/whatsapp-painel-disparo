@@ -30,6 +30,17 @@ def migrar(c):
     '''
     for statement in schema.split(';'):
         if statement.strip():c.execute(statement)
+    cols={r[1] for r in c.execute('PRAGMA table_info(dossies_versoes)')}
+    for field in ('nome','cpf','telefone'):
+        if field not in cols:c.execute(f"ALTER TABLE dossies_versoes ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
+
+def cliente(conversa):
+    sender=(conversa.get('meta') or {}).get('sender') or {}
+    attrs=conversa.get('custom_attributes') or {};ca=sender.get('custom_attributes') or {}
+    cpf=re.sub(r'\D','',str(attrs.get('cpf_limpo') or attrs.get('cpf') or ca.get('cpf') or ''))
+    return {'nome':str(attrs.get('nome') or ca.get('nome') or sender.get('name') or ''),
+            'cpf':cpf.zfill(11) if 0<len(cpf)<=11 else '',
+            'telefone':str(sender.get('phone_number') or '')}
 
 def auditar(c,u,a,ref):
     c.execute('INSERT INTO dossies_auditoria(usuario,acao,referencia,criado) VALUES(?,?,?,?)',(u,a,ref,time.time()))
@@ -121,6 +132,9 @@ def pdf(conversa,msgs,interno=False):
         for i in range(0,len(str(s)) or 1,2000):story.append(Paragraph(escape(str(s)[i:i+2000]).replace('\n','<br/>'),styles[style]))
         story.append(Spacer(1,8))
     texto(('Registros internos' if interno else 'Conversa')+' #'+str(conversa.get('id','')),'Title')
+    pessoa=cliente(conversa)
+    texto(pessoa['nome'] or 'Nome não informado','Heading2')
+    texto('CPF: '+(pessoa['cpf'] or 'Não informado')+' | Telefone: '+(pessoa['telefone'] or 'Não informado'))
     texto('Datas em horário de Brasília. Originais e anexos no pacote. Remetentes conforme informados pelo CRM.')
     for m in msgs:
         private=bool(m.get('private')) or m.get('message_type') in (2,'activity')
@@ -184,7 +198,7 @@ def processar(db,cfg,token,storage):
         with closing(db()) as c:
             events=c.execute('SELECT payload_raw FROM vendeai_eventos WHERE account_id=? AND chat_id=? AND conta_confirmada=1 ORDER BY id',(job['conta'],job['chat'])).fetchall()
         for i,e in enumerate(events):files[f'raw/webhook-{i:05d}.json']=e[0].encode() if isinstance(e[0],str) else e[0]
-        fp=hashlib.sha256((fp+''.join(hashlib.sha256(v).hexdigest() for k,v in sorted(files.items()) if k.startswith('raw/webhook-'))).encode()).hexdigest()
+        fp=hashlib.sha256(('identificacao-v2:'+fp+''.join(hashlib.sha256(v).hexdigest() for k,v in sorted(files.items()) if k.startswith('raw/webhook-'))).encode()).hexdigest()
         with closing(db()) as c:
             old=c.execute('SELECT * FROM dossies_versoes WHERE conta=? AND chat=? ORDER BY versao DESC LIMIT 1',(job['conta'],job['chat'])).fetchone()
         if old and old['fingerprint']==fp:
@@ -198,7 +212,8 @@ def processar(db,cfg,token,storage):
                 for k,v in files.items():z.writestr(k,v)
             sha=storage.put(ident+'.zip',out.getvalue())
             with closing(db()) as c,c:
-                c.execute('INSERT INTO dossies_versoes VALUES(?,?,?,?,?,?,?,?,?,?)',(ident,job['conta'],job['chat'],version,fp,sha,time.time(),n,a,json.dumps(missing)))
+                pessoa=cliente(json.loads(files.get('raw/api-0000.json',b'{}')))
+                c.execute('INSERT INTO dossies_versoes(id,conta,chat,versao,fingerprint,sha256,criado,mensagens,anexos,pendencias,nome,cpf,telefone) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(ident,job['conta'],job['chat'],version,fp,sha,time.time(),n,a,json.dumps(missing),pessoa['nome'],pessoa['cpf'],pessoa['telefone']))
                 c.execute('INSERT INTO dossies_copias VALUES(?,?,?,?,?)',(ident,'local',ident+'.zip',sha,time.time()))
         with closing(db()) as c,c:
             c.execute("UPDATE dossies_jobs SET estado=?,versao_id=?,detalhe=? WHERE id=?",('com_pendencias' if missing else 'concluido',ident,str(len(missing))+' anexo(s) pendente(s)' if missing else '',job['id']))
@@ -243,7 +258,7 @@ def instalar(main):
     def lista(request:Request):
         u=usuario(request)
         with closing(db()) as c:
-            rows=c.execute('SELECT j.id,j.chat,j.estado,j.criado,j.detalhe,j.versao_id,v.versao,v.mensagens,v.anexos,v.sha256 FROM dossies_jobs j LEFT JOIN dossies_versoes v ON v.id=j.versao_id WHERE (?=\'admin\' OR (j.dono=? AND EXISTS(SELECT 1 FROM dossies_permissoes p WHERE p.usuario=? AND p.conta=j.conta AND p.chat=j.chat))) ORDER BY j.criado DESC LIMIT 100',(u,u,u)).fetchall()
+            rows=c.execute('SELECT j.id,j.chat,j.estado,j.criado,j.detalhe,j.versao_id,v.versao,v.mensagens,v.anexos,v.sha256,v.nome,v.cpf,v.telefone FROM dossies_jobs j LEFT JOIN dossies_versoes v ON v.id=j.versao_id WHERE (?=\'admin\' OR (j.dono=? AND EXISTS(SELECT 1 FROM dossies_permissoes p WHERE p.usuario=? AND p.conta=j.conta AND p.chat=j.chat))) ORDER BY j.criado DESC LIMIT 100',(u,u,u)).fetchall()
             auto=c.execute('SELECT automatico FROM dossies_config WHERE id=1').fetchone()[0]
             users=[dict(x) for x in c.execute('SELECT id,nome,ativo FROM dossies_usuarios')] if u=='admin' else []
         return {'admin':u=='admin','automatico':bool(auto),'itens':[dict(x) for x in rows],'usuarios':users}
@@ -302,4 +317,11 @@ def instalar(main):
     async def start():
         with closing(db()) as c,c:
             migrar(c);c.execute("UPDATE dossies_jobs SET estado='pendente' WHERE estado='coletando'")
+            # Preencher o catálogo a partir dos originais, sem alterar arquivos já arquivados.
+            for row in c.execute("SELECT id FROM dossies_versoes WHERE nome='' AND cpf='' AND telefone=''").fetchall():
+                try:
+                    with zipfile.ZipFile(storage.path(row['id']+'.zip')) as z:
+                        pessoa=cliente(json.loads(z.read('raw/api-0000.json')))
+                    c.execute('UPDATE dossies_versoes SET nome=?,cpf=?,telefone=? WHERE id=?',(pessoa['nome'],pessoa['cpf'],pessoa['telefone'],row['id']))
+                except (OSError,KeyError,ValueError,zipfile.BadZipFile):pass
         app.state.dossies_task=asyncio.create_task(worker())
