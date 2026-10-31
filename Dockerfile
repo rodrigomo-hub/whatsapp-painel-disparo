@@ -22,6 +22,7 @@ COPY oferta_interna.py .
 COPY campanhas_sms.py .
 COPY lembretes_sms.py .
 COPY vendeai_eventos.py .
+COPY dossies.py .
 COPY resultados.py .
 COPY comissoes.py .
 COPY custos_meta.py .

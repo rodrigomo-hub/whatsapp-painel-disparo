@@ -9,6 +9,7 @@ import logging
 import optout
 import link_conversa
 import oferta_interna
+import dossies
 from contextlib import closing
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -16,6 +17,7 @@ from fastapi import HTTPException
 
 
 def migrar(c):
+    dossies.migrar(c)
     optout.migrar(c)
     link_conversa.migrar(c)
     oferta_interna.migrar(c)
@@ -78,6 +80,7 @@ def receber(get_db,token,raw,conta):
             optout.receber(c,d,cursor.lastrowid)
             link_conversa.agendar(c,d,cursor.lastrowid)
             oferta_interna.agendar(c,d,cursor.lastrowid)
+            dossies.pagamento(c,d)
         if conta_confirmada and evento=='proposal_created' and produto=='clt' and banco=='facta' and proposta:
             c.execute("INSERT INTO vendeai_new_outbox(evento_id,account_id,proposta_id,criado_em,estado) VALUES(?,?,?,?,'PENDENTE') ON CONFLICT(account_id,proposta_id) DO UPDATE SET evento_id=excluded.evento_id,estado='PENDENTE' WHERE vendeai_new_outbox.estado='DADOS_INCOMPLETOS'",(cursor.lastrowid,account,proposta,agora))
     return {'ok':True}

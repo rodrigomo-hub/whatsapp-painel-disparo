@@ -21,6 +21,7 @@ import oferta_interna
 import campanhas_sms
 import lembretes_sms
 import vendeai_eventos
+import dossies
 import resultados
 import comissoes
 import custos_meta
@@ -130,6 +131,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.method == 'GET' and re.fullmatch(r'/midia-vendeai/[0-9a-f]{64}',request.url.path):
             return await call_next(request)
         caminhos_livres = ["/login", "/static", "/webhook"]
+        # O módulo tem autenticação própria e permissões por conversa.
+        if request.url.path == '/dossies' or request.url.path.startswith('/dossies/api/'):
+            return await call_next(request)
         if any(request.url.path.startswith(c) for c in caminhos_livres):
             return await call_next(request)
 
@@ -354,6 +358,7 @@ def init_db():
     if 'observacao' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN observacao TEXT NOT NULL DEFAULT ''")
     vendeai_eventos.migrar(conn)
+    dossies.migrar(conn)
     resultados.migrar(conn)
     custos_meta.migrar(conn)
     templates_lote.migrar(conn)
@@ -3574,3 +3579,7 @@ async def webhook_gupshup(app_id: str,request: Request):
         raw.extend(chunk)
         if len(raw)>1000000:raise HTTPException(413,'Evento acima de 1 MB.')
     return await asyncio.to_thread(gupshup.receber,get_db,app_id,request.query_params.get('chave',''),bytes(raw))
+
+# Registrar depois das rotas e do startup principal.
+import sys as _sys
+dossies.instalar(_sys.modules[__name__])
