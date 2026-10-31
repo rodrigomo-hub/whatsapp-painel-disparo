@@ -178,16 +178,19 @@ def processar(db,cfg,token,storage):
     try:
         if job['conta']!=str(cfg.get('vendeai_account_id')):raise RuntimeError('Conta do CRM mudou')
         if not token:raise RuntimeError('Token CRM não configurado')
+        import shutil
+        if shutil.disk_usage(storage.root.parent).free<2_000_000_000:raise RuntimeError('Espaço insuficiente para uma coleta segura')
         files,missing,n,a,fp,sources=coletar(cfg,token,job['chat'])
+        with closing(db()) as c:
+            events=c.execute('SELECT payload_raw FROM vendeai_eventos WHERE account_id=? AND chat_id=? AND conta_confirmada=1 ORDER BY id',(job['conta'],job['chat'])).fetchall()
+        for i,e in enumerate(events):files[f'raw/webhook-{i:05d}.json']=e[0].encode() if isinstance(e[0],str) else e[0]
+        fp=hashlib.sha256((fp+''.join(hashlib.sha256(v).hexdigest() for k,v in sorted(files.items()) if k.startswith('raw/webhook-'))).encode()).hexdigest()
         with closing(db()) as c:
             old=c.execute('SELECT * FROM dossies_versoes WHERE conta=? AND chat=? ORDER BY versao DESC LIMIT 1',(job['conta'],job['chat'])).fetchone()
         if old and old['fingerprint']==fp:
             ident=old['id']
         else:
             ident=secrets.token_hex(16);version=old['versao']+1 if old else 1
-            with closing(db()) as c:
-                events=c.execute('SELECT payload_raw FROM vendeai_eventos WHERE account_id=? AND chat_id=? AND conta_confirmada=1 ORDER BY id',(job['conta'],job['chat'])).fetchall()
-            for i,e in enumerate(events):files[f'raw/webhook-{i:05d}.json']=e[0].encode() if isinstance(e[0],str) else e[0]
             manifest={'versao_formato':1,'conta':job['conta'],'conversa':job['chat'],'versao':version,'coletado_em':datetime.now(timezone.utc).isoformat(),'origem':CRM,'pendencias':missing,'arquivos':{k:{'sha256':hashlib.sha256(v).hexdigest(),'bytes':len(v),**sources.get(k,{})} for k,v in files.items()}}
             files['manifesto.json']=json.dumps(manifest,ensure_ascii=False,indent=2).encode()
             out=io.BytesIO()
