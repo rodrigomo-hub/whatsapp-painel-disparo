@@ -10,6 +10,7 @@ import optout
 import link_conversa
 import oferta_interna
 import dossies
+import transbordo
 from contextlib import closing
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -77,6 +78,7 @@ def receber(get_db,token,raw,conta):
         cursor=c.execute('INSERT INTO vendeai_eventos(recebido_em,evento,account_id,chat_id,produto,banco,proposta_id,payload_raw,fingerprint,repetido_de,conta_confirmada) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                          (agora,evento,account,str(chat.get('chat_id') or ''),produto,banco,proposta,raw,fingerprint,anterior['id'] if anterior else None,int(conta_confirmada)))
         if conta_confirmada:
+            transbordo.resposta_vendeai(c,d)
             optout.receber(c,d,cursor.lastrowid)
             link_conversa.agendar(c,d,cursor.lastrowid)
             oferta_interna.agendar(c,d,cursor.lastrowid)

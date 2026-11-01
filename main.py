@@ -2308,6 +2308,8 @@ async def receber_webhook(request: Request):
                 # Lead respondeu a mensagem - so registramos o evento por enquanto,
                 # o painel nao tem fluxo de conversa/resposta.
                 remetente = msg.get("from", "")
+                with closing(get_db()) as c,c:
+                    transbordo.registrar_resposta(c,remetente)
                 tipo_msg = msg.get("type", "")
                 registrar_evento(None, "mensagem_recebida", f"De {remetente} ({tipo_msg})")
 

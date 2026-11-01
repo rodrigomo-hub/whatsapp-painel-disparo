@@ -23,9 +23,30 @@ CONFIG_COLUMNS = {
     'transbordo_nome': "TEXT NOT NULL DEFAULT ''",
     'transbordo_token': "TEXT NOT NULL DEFAULT ''",
 }
+ESPERA_COMPARTILHADO=30*60
+
+def fone_resposta(value):
+    s=re.sub(r'\D','',str(value or ''))
+    if len(s) in (10,11):s='55'+s
+    if s.startswith('55') and len(s)==13 and s[4]=='9':s=s[:4]+s[5:]
+    return s if len(s)>=12 else ''
+
+def registrar_resposta(c,phone):
+    f=fone_resposta(phone)
+    if f:c.execute('INSERT INTO compartilhado_respostas VALUES(?,?) ON CONFLICT(telefone) DO UPDATE SET recebido_em=excluded.recebido_em',(f,time.time()))
+
+def resposta_vendeai(c,d):
+    chat=d.get('chat_summary') or {};ct=(chat.get('details') or {}).get('contact') or {}
+    if d.get('event')=='conversation_created' and d.get('first_message'):
+        registrar_resposta(c,ct.get('phone'))
+    elif d.get('event')=='message_created':
+        m=d.get('message') or d
+        if m.get('message_type') in (0,'incoming') and not m.get('private'):
+            registrar_resposta(c,ct.get('phone') or (m.get('sender') or {}).get('phone_number'))
 
 
 def migrar(c):
+    c.execute('CREATE TABLE IF NOT EXISTS compartilhado_respostas(telefone TEXT PRIMARY KEY,recebido_em REAL NOT NULL)')
     c.execute('CREATE TABLE IF NOT EXISTS transbordo_grupos(id TEXT PRIMARY KEY,chave TEXT UNIQUE NOT NULL,fingerprint TEXT NOT NULL,criado_em REAL NOT NULL,resultados TEXT NOT NULL)')
     colunas = {r['name'] for r in c.execute('PRAGMA table_info(configuracao)')}
     for k, v in CONFIG_COLUMNS.items():
@@ -225,16 +246,22 @@ def recuperar_compartilhados(get_db):
 def processar_compartilhado(get_db,cfg):
     with closing(get_db()) as c,c:
         c.execute('BEGIN IMMEDIATE')
-        r=c.execute("SELECT * FROM disparos_compartilhados WHERE estado='pendente' ORDER BY criado_em LIMIT 1").fetchone()
+        r=c.execute("SELECT * FROM disparos_compartilhados WHERE estado='pendente' AND criado_em<=? ORDER BY criado_em LIMIT 1",(time.time()-ESPERA_COMPARTILHADO,)).fetchone()
         if not r:return False
         item=dict(r)
-        permitido=(str(cfg.get('vendeai_account_id'))=='33393' and cfg.get('disparo_compartilhado') and cfg.get('transbordo_token') and cfg.get('transbordo_url')==item['destino'] and time.time()-item['criado_em']<=300)
+        permitido=(str(cfg.get('vendeai_account_id'))=='33393' and cfg.get('disparo_compartilhado') and cfg.get('transbordo_token') and cfg.get('transbordo_url')==item['destino'] and time.time()-item['criado_em']<=ESPERA_COMPARTILHADO+300)
         c.execute('UPDATE disparos_compartilhados SET estado=? WHERE id=?',('enviando' if permitido else 'cancelado',item['id']))
     if not permitido:return True
     body=json.loads(item['payload'])
     try:
         validar_lead(body)
-        result=encaminhar_todos(get_db,body,'compartilhado:'+item['id'],cfg,body)
+        with closing(get_db()) as c:
+            respondeu=c.execute('SELECT 1 FROM compartilhado_respostas WHERE telefone=? AND recebido_em>=?',(fone_resposta(body.get('phone')),item['criado_em'])).fetchone()
+            classificada=c.execute('SELECT resposta_lead FROM disparos WHERE id=?',(item['disparo_id'],)).fetchone()
+        if respondeu or (classificada and classificada[0]):
+            result={'status':'cancelado','aceito':False,'motivo_codigo':'cliente_respondeu'}
+        else:
+            result=encaminhar_todos(get_db,body,'compartilhado:'+item['id'],cfg,body)
     except Exception:
         # Sem repetir automaticamente um envio cujo resultado nao foi confirmado.
         result={'status':'incerto','motivo_codigo':'compartilhamento_sem_confirmacao'}

@@ -8,6 +8,7 @@ class CompartilhadoTests(unittest.TestCase):
     resposta=staticmethod(test_transbordo.TransbordoTests.resposta)
     def setUp(self):
         test_transbordo.TransbordoTests.setUp(self)
+        wait=patch.object(transbordo,'ESPERA_COMPARTILHADO',0);wait.start();self.addCleanup(wait.stop)
         with test_db() as c:c.execute("UPDATE configuracao SET disparo_compartilhado=1,vendeai_account_id='33393'")
     def prep(self):return vendeai_mailing.preparar_lead(self.lead,main.carregar_configuracao())
     def count(self):
@@ -74,3 +75,25 @@ class CompartilhadoTests(unittest.TestCase):
             import json
             r=json.loads(c.execute('SELECT resultado FROM disparos_compartilhados').fetchone()[0])
         self.assertEqual({d['destino'] for d in r['destinos']},{'Milone','Amigo'})
+
+    def test_waits_30_minutes(self):
+        p=self.prep();main.registrar_disparo(1,'','Ana',p['mailing']['phone'],'sucesso',compartilhado=p)
+        with patch.object(transbordo,'ESPERA_COMPARTILHADO',1800):
+            self.assertFalse(transbordo.processar_compartilhado(main.get_db,main.carregar_configuracao()))
+            self.api.assert_not_called()
+            with test_db() as c:c.execute('UPDATE disparos_compartilhados SET criado_em=criado_em-1801')
+            self.api.side_effect=lambda *a,**kw:Mock(status_code=202,json=lambda:{'recibo':kw['json']['id'],'status':'enfileirado'})
+            self.assertTrue(transbordo.processar_compartilhado(main.get_db,main.carregar_configuracao()))
+            self.api.assert_called_once()
+
+    def test_any_response_cancels(self):
+        p=self.prep();main.registrar_disparo(1,'','Ana',p['mailing']['phone'],'sucesso',compartilhado=p)
+        with test_db() as c:transbordo.resposta_vendeai(c,{'event':'conversation_created','first_message':'Não quero mensagens','chat_summary':{'details':{'contact':{'phone':p['mailing']['phone']}}}})
+        transbordo.processar_compartilhado(main.get_db,main.carregar_configuracao())
+        self.api.assert_not_called()
+        with test_db() as c:self.assertEqual(c.execute('SELECT estado FROM disparos_compartilhados').fetchone()[0],'cancelado')
+
+    def test_outgoing_does_not_count_as_response(self):
+        with test_db() as c:
+            transbordo.resposta_vendeai(c,{'event':'message_created','message_type':1,'sender':{'phone_number':'5511999999999'}})
+            self.assertEqual(c.execute('SELECT count(*) FROM compartilhado_respostas').fetchone()[0],0)

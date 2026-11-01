@@ -322,7 +322,7 @@
   <h2>Transbordo de leads</h2>
   <p>Sem capacidade local ou fora do horário, encaminha entradas individuais aos parceiros configurados. Cada destino usa seus próprios números, template e conta VendeAI. Planilhas e bloqueio por lote não acionam transbordo.</p>
   <form onsubmit="salvarTransbordo(event)">
-    <div id="disparo-compartilhado-area" hidden><strong>Disparo compartilhado</strong><p><label><input type="checkbox" id="disparo-compartilhado"> Enviar também ao painel parceiro</label></p><p style="font-size:13px;color:#64748b">Após um envio confirmado aqui, encaminha o lead ao parceiro abaixo. Cada painel respeita seus limites e bloqueios. O parceiro não recebe o status do envio local.</p></div>
+    <div id="disparo-compartilhado-area" hidden><strong>Disparo compartilhado</strong><p><label><input type="checkbox" id="disparo-compartilhado"> Enviar aos parceiros após 30 minutos, se não houver resposta</label></p><p style="font-size:13px;color:#64748b">Após o envio aqui, aguarda 30 minutos. Se houver resposta registrada ou bloqueio na lista negra, não encaminha. Sem resposta, envia aos parceiros ativados. Respostas dependem dos avisos recebidos do CRM/Meta.</p></div>
     <p><label><input type="checkbox" id="transbordo-habilitado"> Ativar transbordo quando faltar capacidade</label></p>
     <p><label>Nome do destino <input id="transbordo-nome" placeholder="Simplifica"></label></p>
     <p><label>Endereço do painel <input id="transbordo-url" type="url" placeholder="https://disparo.simplifica.sbs"></label></p>
