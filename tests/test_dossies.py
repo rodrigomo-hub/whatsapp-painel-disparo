@@ -92,3 +92,6 @@ class DossiesTests(unittest.TestCase):
   s=dossies.LocalStorage(Path(self.tmp.name)/'files');key='a'*32+'.zip';s.put(key,b'a')
   with self.assertRaises(FileExistsError):s.put(key,b'b')
   with self.assertRaises(ValueError):s.path('../secret')
+ def test_download_name_uses_client_name_safely(self):
+  self.assertEqual(dossies.nome_download('João da Silva!','28844',2,'.zip'),'Joao-da-Silva-conversa-28844-v2.zip')
+  self.assertEqual(dossies.nome_download('','9',1,'.zip.ots'),'cliente-nao-identificado-conversa-9-v1.zip.ots')

@@ -1,5 +1,5 @@
 """Arquivo versionado de conversas. Armazenamento local não é backup externo."""
-import asyncio, hashlib, hmac, io, json, os, re, secrets, subprocess, time, zipfile
+import asyncio, hashlib, hmac, io, json, os, re, secrets, subprocess, time, unicodedata, zipfile
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +45,11 @@ def cliente(conversa):
     return {'nome':str(attrs.get('nome') or ca.get('nome') or sender.get('name') or ''),
             'cpf':cpf.zfill(11) if 0<len(cpf)<=11 else '',
             'telefone':str(sender.get('phone_number') or '')}
+
+def nome_download(nome,chat,versao,sufixo):
+    base=unicodedata.normalize('NFKD',str(nome or '')).encode('ascii','ignore').decode()
+    base=re.sub(r'[^A-Za-z0-9]+','-',base).strip('-')[:80] or 'cliente-nao-identificado'
+    return f'{base}-conversa-{chat}-v{versao}{sufixo}'
 
 def auditar(c,u,a,ref):
     c.execute('INSERT INTO dossies_auditoria(usuario,acao,referencia,criado) VALUES(?,?,?,?)',(u,a,ref,time.time()))
@@ -399,10 +404,12 @@ def instalar(main):
             if not j or (u!='admin' and j['dono']!=u) or not permitido(c,u,j['conta'],j['chat']):raise HTTPException(404,'Dossiê não encontrado')
             if not j['versao_id']:raise HTTPException(409,'Dossiê ainda não está pronto')
             v=c.execute('SELECT * FROM dossies_versoes WHERE id=?',(j['versao_id'],)).fetchone();p=storage.path(v['id']+'.zip')
+            t=c.execute('SELECT estado FROM dossies_carimbos WHERE versao_id=?',(v['id'],)).fetchone()
+            if not t or t['estado']!='confirmado':raise HTTPException(409,'Download liberado somente após a confirmação do carimbo de tempo.')
             if not p.exists():raise HTTPException(503,'Arquivo indisponível')
             if hashlib.sha256(p.read_bytes()).hexdigest()!=v['sha256']:raise HTTPException(503,'Verificação de integridade falhou')
             auditar(c,u,'download',jid)
-        return FileResponse(p,media_type='application/zip',filename=f"conversa-{j['chat']}-v{v['versao']}.zip",headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+        return FileResponse(p,media_type='application/zip',filename=nome_download(v['nome'],j['chat'],v['versao'],'.zip'),headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
     @app.get('/dossies/api/carimbo/{jid}')
     def baixar_carimbo(jid:str,request:Request):
         u=usuario(request)
@@ -412,10 +419,11 @@ def instalar(main):
             if not j['versao_id']:raise HTTPException(409,'Dossiê ainda não está pronto')
             t=c.execute('SELECT * FROM dossies_carimbos WHERE versao_id=?',(j['versao_id'],)).fetchone()
             if not t:raise HTTPException(404,'Carimbo ainda não solicitado')
+            if t['estado']!='confirmado':raise HTTPException(409,'Recibo liberado somente após a confirmação do carimbo de tempo.')
             p=storage.ots_path(j['versao_id'])
             if not p.exists():raise HTTPException(409,'Recibo do carimbo ainda não disponível')
             auditar(c,u,'baixar_carimbo',jid)
-        return FileResponse(p,media_type='application/octet-stream',filename=f"conversa-{j['chat']}-v{v['versao']}.zip.ots",headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+        return FileResponse(p,media_type='application/octet-stream',filename=nome_download(v['nome'],j['chat'],v['versao'],'.zip.ots'),headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
     async def worker():
         while True:
             fez=carimbou=False
