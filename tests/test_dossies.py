@@ -47,6 +47,12 @@ class DossiesTests(unittest.TestCase):
   with patch.object(dossies.requests,'get') as get:
    with self.assertRaises(RuntimeError):dossies.baixar('http://127.0.0.1/file')
    get.assert_not_called()
+ def test_private_messages_are_removed_from_raw_and_pdf_input(self):
+  raw={'raw/api-0000.json':json.dumps({'payload':[{'id':1,'content':'pública','message_type':0},{'id':2,'content':'nota secreta','private':True}]}).encode()}
+  dossies.limpar_raw_privadas(raw)
+  data=json.loads(raw['raw/api-0000.json'])
+  self.assertEqual([x['id'] for x in data['payload']],[1])
+  self.assertIs(dossies.sem_mensagens_privadas({'message_type':2,'content':'interna'}),dossies._REMOVIDO)
  def test_version_and_local_copy_only(self):
   storage=dossies.LocalStorage(Path(self.tmp.name)/'files')
   with patch.object(dossies,'coletar',return_value=({'raw/test.json':b'{}'},[],2,0,'same',{})):

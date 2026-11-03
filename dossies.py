@@ -185,7 +185,33 @@ def baixar(url):
             return bytes(b)
     raise RuntimeError('Redirecionamentos em excesso')
 
-def pdf(conversa,msgs,interno=False):
+_REMOVIDO=object()
+def mensagem_privada(valor):
+    """Chatwoot usa private e message_type=2 para observações internas."""
+    return isinstance(valor,dict) and (bool(valor.get('private')) or valor.get('message_type') in (2,'activity'))
+
+def sem_mensagens_privadas(valor):
+    """Remove notas internas inclusive de respostas brutas guardadas no ZIP."""
+    if mensagem_privada(valor):return _REMOVIDO
+    if isinstance(valor,list):
+        return [item for item in (sem_mensagens_privadas(x) for x in valor) if item is not _REMOVIDO]
+    if isinstance(valor,dict):
+        limpo={}
+        for k,v in valor.items():
+            item=sem_mensagens_privadas(v)
+            if item is not _REMOVIDO:limpo[k]=item
+        return limpo
+    return valor
+
+def limpar_raw_privadas(raw):
+    for key,data in list(raw.items()):
+        if not key.endswith('.json') or key.endswith('.origem.json'):continue
+        try:
+            valor=sem_mensagens_privadas(json.loads(data))
+            raw[key]=json.dumps({} if valor is _REMOVIDO else valor,ensure_ascii=False,separators=(',',':')).encode()
+        except (UnicodeDecodeError,json.JSONDecodeError):pass
+
+def pdf(conversa,msgs):
     from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.pagesizes import A4
@@ -194,14 +220,12 @@ def pdf(conversa,msgs,interno=False):
         # Quebra parágrafos extensos para preservar todas as mensagens no PDF.
         for i in range(0,len(str(s)) or 1,2000):story.append(Paragraph(escape(str(s)[i:i+2000]).replace('\n','<br/>'),styles[style]))
         story.append(Spacer(1,8))
-    texto(('Registros internos' if interno else 'Conversa')+' #'+str(conversa.get('id','')),'Title')
+    texto('Conversa #'+str(conversa.get('id','')),'Title')
     pessoa=cliente(conversa)
     texto(pessoa['nome'] or 'Nome não informado','Heading2')
     texto('CPF: '+(pessoa['cpf'] or 'Não informado')+' | Telefone: '+(pessoa['telefone'] or 'Não informado'))
     texto('Datas em horário de Brasília. Originais e anexos no pacote. Remetentes conforme informados pelo CRM.')
     for m in msgs:
-        private=bool(m.get('private')) or m.get('message_type') in (2,'activity')
-        if private!=interno:continue
         stamp=m.get('created_at');dt=datetime.fromtimestamp(stamp,TZ).strftime('%d/%m/%Y %H:%M:%S') if isinstance(stamp,(int,float)) else str(stamp or '')
         sender=m.get('sender') or {};name=sender.get('name') or ('Cliente' if m.get('message_type') in (0,'incoming') else 'Remetente não informado')
         texto(f"{dt} | {name} | Mensagem {m.get('id')}",'Heading3')
@@ -229,7 +253,7 @@ def coletar(cfg,token,chat):
     if inbox:ler_api(base,token,'/inboxes/'+str(inbox),raw)
     sender=(conv.get('meta') or {}).get('sender') or {}
     if sender.get('id'):ler_api(base,token,'/contacts/'+str(sender['id']),raw)
-    ordered=sorted(msgs.values(),key=lambda m:int(m['id']));files=dict(raw);missing=[];count=0;size=sum(map(len,files.values()))
+    ordered=sorted((m for m in msgs.values() if not mensagem_privada(m)),key=lambda m:int(m['id']));limpar_raw_privadas(raw);files=dict(raw);missing=[];count=0;size=sum(map(len,files.values()))
     for m in ordered:
         for a in m.get('attachments') or []:
             suffix=Path(urlparse(a.get('data_url') or '').path).suffix.lower()
@@ -242,7 +266,6 @@ def coletar(cfg,token,chat):
                 files[key]=data;sources[key]={'mensagem':m['id'],'anexo':a.get('id')};count+=1
             except Exception as e:missing.append({'mensagem':m['id'],'anexo':a.get('id'),'erro':str(e) if isinstance(e,RuntimeError) else 'Falha ao baixar arquivo'})
     files['conversa.pdf']=pdf(conv,ordered)
-    files['anexo_interno.pdf']=pdf(conv,ordered,True)
     fingerprint=hashlib.sha256(json.dumps({'conversa':conv,'mensagens':ordered,'anexos':{k:hashlib.sha256(v).hexdigest() for k,v in files.items() if k.startswith('arquivos/')},'pendencias':missing},sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     return files,missing,len(ordered),count,fingerprint,sources
 
@@ -260,7 +283,12 @@ def processar(db,cfg,token,storage):
         files,missing,n,a,fp,sources=coletar(cfg,token,job['chat'])
         with closing(db()) as c:
             events=c.execute('SELECT payload_raw FROM vendeai_eventos WHERE account_id=? AND chat_id=? AND conta_confirmada=1 ORDER BY id',(job['conta'],job['chat'])).fetchall()
-        for i,e in enumerate(events):files[f'raw/webhook-{i:05d}.json']=e[0].encode() if isinstance(e[0],str) else e[0]
+        for i,e in enumerate(events):
+            bruto=e[0].encode() if isinstance(e[0],str) else e[0]
+            try:
+                limpo=sem_mensagens_privadas(json.loads(bruto));bruto=json.dumps({} if limpo is _REMOVIDO else limpo,ensure_ascii=False,separators=(',',':')).encode()
+            except (UnicodeDecodeError,json.JSONDecodeError):pass
+            files[f'raw/webhook-{i:05d}.json']=bruto
         fp=hashlib.sha256(('identificacao-v2:'+fp+''.join(hashlib.sha256(v).hexdigest() for k,v in sorted(files.items()) if k.startswith('raw/webhook-'))).encode()).hexdigest()
         with closing(db()) as c:
             old=c.execute('SELECT * FROM dossies_versoes WHERE conta=? AND chat=? ORDER BY versao DESC LIMIT 1',(job['conta'],job['chat'])).fetchone()
