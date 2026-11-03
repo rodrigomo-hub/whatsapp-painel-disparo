@@ -1,5 +1,5 @@
 """Arquivo versionado de conversas. Armazenamento local não é backup externo."""
-import asyncio, hashlib, hmac, io, json, os, re, secrets, time, zipfile
+import asyncio, hashlib, hmac, io, json, os, re, secrets, subprocess, time, zipfile
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +21,7 @@ def migrar(c):
     CREATE TABLE IF NOT EXISTS dossies_jobs(id TEXT PRIMARY KEY,conta TEXT NOT NULL,chat TEXT NOT NULL,dono TEXT NOT NULL,estado TEXT NOT NULL,criado REAL NOT NULL,detalhe TEXT NOT NULL DEFAULT '',versao_id TEXT,tentativas INTEGER NOT NULL DEFAULT 0,tentar_em REAL NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS dossies_versoes(id TEXT PRIMARY KEY,conta TEXT NOT NULL,chat TEXT NOT NULL,versao INTEGER NOT NULL,fingerprint TEXT NOT NULL,sha256 TEXT NOT NULL,criado REAL NOT NULL,mensagens INTEGER NOT NULL,anexos INTEGER NOT NULL,pendencias TEXT NOT NULL,UNIQUE(conta,chat,versao));
     CREATE TABLE IF NOT EXISTS dossies_copias(versao_id TEXT NOT NULL,provedor TEXT NOT NULL,chave TEXT NOT NULL,sha256 TEXT NOT NULL,verificado_em REAL,PRIMARY KEY(versao_id,provedor));
+    CREATE TABLE IF NOT EXISTS dossies_carimbos(versao_id TEXT PRIMARY KEY,sha256 TEXT NOT NULL,chave TEXT NOT NULL,estado TEXT NOT NULL,criado REAL NOT NULL,atualizado REAL NOT NULL,tentar_em REAL NOT NULL DEFAULT 0,tentativas INTEGER NOT NULL DEFAULT 0,confirmado_em REAL,detalhe TEXT NOT NULL DEFAULT '');
     CREATE TABLE IF NOT EXISTS dossies_usuarios(id TEXT PRIMARY KEY,nome TEXT NOT NULL UNIQUE,senha TEXT NOT NULL,ativo INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS dossies_permissoes(usuario TEXT NOT NULL,conta TEXT NOT NULL,chat TEXT NOT NULL,PRIMARY KEY(usuario,conta,chat));
     CREATE TABLE IF NOT EXISTS dossies_sessoes(hash TEXT PRIMARY KEY,usuario TEXT NOT NULL,expira REAL NOT NULL);
@@ -33,6 +34,9 @@ def migrar(c):
     cols={r[1] for r in c.execute('PRAGMA table_info(dossies_versoes)')}
     for field in ('nome','cpf','telefone'):
         if field not in cols:c.execute(f"ALTER TABLE dossies_versoes ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
+    # Dossiês já arquivados também entram na fila, sem alterar seus ZIPs.
+    c.execute('''INSERT OR IGNORE INTO dossies_carimbos(versao_id,sha256,chave,estado,criado,atualizado)
+                 SELECT id,sha256,id||'.zip.ots','pendente',?,? FROM dossies_versoes''',(time.time(),time.time()))
 
 def cliente(conversa):
     sender=(conversa.get('meta') or {}).get('sender') or {}
@@ -85,6 +89,9 @@ class LocalStorage:
     def path(self,key):
         if not re.fullmatch(r'[a-f0-9]{32}\.zip',key):raise ValueError('Chave inválida')
         return self.root/key
+    def ots_path(self,ident):
+        if not re.fullmatch(r'[a-f0-9]{32}',ident):raise ValueError('Chave inválida')
+        return self.root/(ident+'.zip.ots')
     def put(self,key,data):
         self.root.mkdir(parents=True,exist_ok=True)
         p=self.path(key)
@@ -93,6 +100,62 @@ class LocalStorage:
         digest=hashlib.sha256(data).hexdigest()
         if hashlib.sha256(p.read_bytes()).hexdigest()!=digest:raise ValueError('Integridade')
         return digest
+
+def _ots_saida(result):
+    """Não gravar a saída completa do cliente externo no banco ou em logs."""
+    texto=((result.stdout or b'')+(result.stderr or b'')).decode('utf-8','replace')
+    return re.sub(r'\s+',' ',texto).strip()[:180]
+
+def _ots_comando(*args):
+    # Sem shell: os únicos caminhos são gerados internamente pelo LocalStorage.
+    return subprocess.run(['ots','--no-cache',*map(str,args)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                          timeout=45,check=False)
+
+def _atualizar_carimbo(db,ident,estado,detalhe='',espera=0,confirmado=False):
+    with closing(db()) as c,c:
+        c.execute('''UPDATE dossies_carimbos SET estado=?,detalhe=?,atualizado=?,tentar_em=?,
+                   tentativas=tentativas+1,confirmado_em=CASE WHEN ? THEN ? ELSE confirmado_em END WHERE versao_id=?''',
+                  (estado,detalhe[:180],time.time(),time.time()+espera,int(confirmado),time.time(),ident))
+
+def processar_carimbo(db,storage):
+    """Cria e depois atualiza o recibo OTS. O conteúdo nunca sai da VPS, só seu hash."""
+    with closing(db()) as c,c:
+        row=c.execute('''SELECT t.*,v.sha256 FROM dossies_carimbos t JOIN dossies_versoes v ON v.id=t.versao_id
+                         WHERE t.estado IN ('pendente','aguardando_confirmacao') AND t.tentar_em<=?
+                         ORDER BY t.criado LIMIT 1''',(time.time(),)).fetchone()
+        if not row:return False
+        item=dict(row)
+        c.execute('UPDATE dossies_carimbos SET tentar_em=? WHERE versao_id=?',(time.time()+3600,item['versao_id']))
+    pacote=storage.path(item['versao_id']+'.zip');recibo=storage.ots_path(item['versao_id'])
+    try:
+        if not pacote.exists() or hashlib.sha256(pacote.read_bytes()).hexdigest()!=item['sha256']:
+            raise RuntimeError('Pacote não disponível ou com integridade inválida')
+        if item['estado']=='pendente':
+            if recibo.exists():
+                # Uma tentativa anterior pode ter concluído antes de a VPS reiniciar.
+                _atualizar_carimbo(db,item['versao_id'],'aguardando_confirmacao','Recibo OTS criado; aguardando confirmação Bitcoin.',6*3600)
+                return True
+            resultado=_ots_comando('stamp','--timeout','8','-m','1',pacote)
+            if resultado.returncode or not recibo.exists():
+                raise RuntimeError(_ots_saida(resultado) or 'OpenTimestamps não confirmou o recebimento do hash')
+            os.chmod(recibo,0o600)
+            _atualizar_carimbo(db,item['versao_id'],'aguardando_confirmacao','Recibo OTS criado; aguardando confirmação Bitcoin.',6*3600)
+            return True
+        # O upgrade pode demorar até o calendário ancorar no Bitcoin. Não é erro enquanto estiver pendente.
+        anterior=recibo.with_name(recibo.name+'.bak')
+        if anterior.exists():
+            anterior.rename(recibo.with_name(recibo.name+'.bak.'+str(int(time.time()))))
+        resultado=_ots_comando('upgrade','--timeout','8',recibo)
+        saida=_ots_saida(resultado)
+        if resultado.returncode==0:
+            os.chmod(recibo,0o600)
+            _atualizar_carimbo(db,item['versao_id'],'confirmado',saida or 'Carimbo confirmado pelo OpenTimestamps.',24*3600,True)
+        else:
+            _atualizar_carimbo(db,item['versao_id'],'aguardando_confirmacao','Aguardando confirmação Bitcoin.',6*3600)
+    except (OSError,subprocess.SubprocessError,RuntimeError) as e:
+        # A coleta permanece válida: o carimbo será retomado, sem recriar o pacote.
+        _atualizar_carimbo(db,item['versao_id'],'pendente','Falha temporária no carimbo; nova tentativa automática.',15*60)
+    return True
 
 def ler_api(base,token,path,raw):
     r=requests.get(base+path,headers={'api_access_token':token},timeout=(5,30),allow_redirects=False)
@@ -215,6 +278,7 @@ def processar(db,cfg,token,storage):
                 pessoa=cliente(json.loads(files.get('raw/api-0000.json',b'{}')))
                 c.execute('INSERT INTO dossies_versoes(id,conta,chat,versao,fingerprint,sha256,criado,mensagens,anexos,pendencias,nome,cpf,telefone) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',(ident,job['conta'],job['chat'],version,fp,sha,time.time(),n,a,json.dumps(missing),pessoa['nome'],pessoa['cpf'],pessoa['telefone']))
                 c.execute('INSERT INTO dossies_copias VALUES(?,?,?,?,?)',(ident,'local',ident+'.zip',sha,time.time()))
+                c.execute('INSERT INTO dossies_carimbos(versao_id,sha256,chave,estado,criado,atualizado) VALUES(?,?,?,?,?,?)',(ident,sha,ident+'.zip.ots','pendente',time.time(),time.time()))
         with closing(db()) as c,c:
             c.execute("UPDATE dossies_jobs SET estado=?,versao_id=?,detalhe=? WHERE id=?",('com_pendencias' if missing else 'concluido',ident,str(len(missing))+' anexo(s) pendente(s)' if missing else '',job['id']))
     except Exception as e:
@@ -258,7 +322,12 @@ def instalar(main):
     def lista(request:Request):
         u=usuario(request)
         with closing(db()) as c:
-            rows=c.execute('SELECT j.id,j.chat,j.estado,j.criado,j.detalhe,j.versao_id,v.versao,v.mensagens,v.anexos,v.sha256,v.nome,v.cpf,v.telefone FROM dossies_jobs j LEFT JOIN dossies_versoes v ON v.id=j.versao_id WHERE (?=\'admin\' OR (j.dono=? AND EXISTS(SELECT 1 FROM dossies_permissoes p WHERE p.usuario=? AND p.conta=j.conta AND p.chat=j.chat))) ORDER BY j.criado DESC LIMIT 100',(u,u,u)).fetchall()
+            rows=c.execute('''SELECT j.id,j.chat,j.estado,j.criado,j.detalhe,j.versao_id,v.versao,v.mensagens,v.anexos,v.sha256,v.nome,v.cpf,v.telefone,
+                              t.estado AS carimbo_estado,t.detalhe AS carimbo_detalhe,t.confirmado_em
+                              FROM dossies_jobs j LEFT JOIN dossies_versoes v ON v.id=j.versao_id
+                              LEFT JOIN dossies_carimbos t ON t.versao_id=v.id
+                              WHERE (?='admin' OR (j.dono=? AND EXISTS(SELECT 1 FROM dossies_permissoes p WHERE p.usuario=? AND p.conta=j.conta AND p.chat=j.chat)))
+                              ORDER BY j.criado DESC LIMIT 100''',(u,u,u)).fetchall()
             auto=c.execute('SELECT automatico FROM dossies_config WHERE id=1').fetchone()[0]
             users=[dict(x) for x in c.execute('SELECT id,nome,ativo FROM dossies_usuarios')] if u=='admin' else []
         return {'admin':u=='admin','automatico':bool(auto),'itens':[dict(x) for x in rows],'usuarios':users}
@@ -306,13 +375,28 @@ def instalar(main):
             if hashlib.sha256(p.read_bytes()).hexdigest()!=v['sha256']:raise HTTPException(503,'Verificação de integridade falhou')
             auditar(c,u,'download',jid)
         return FileResponse(p,media_type='application/zip',filename=f"conversa-{j['chat']}-v{v['versao']}.zip",headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+    @app.get('/dossies/api/carimbo/{jid}')
+    def baixar_carimbo(jid:str,request:Request):
+        u=usuario(request)
+        with closing(db()) as c,c:
+            j=c.execute('SELECT * FROM dossies_jobs WHERE id=?',(jid,)).fetchone()
+            if not j or (u!='admin' and j['dono']!=u) or not permitido(c,u,j['conta'],j['chat']):raise HTTPException(404,'Dossiê não encontrado')
+            if not j['versao_id']:raise HTTPException(409,'Dossiê ainda não está pronto')
+            t=c.execute('SELECT * FROM dossies_carimbos WHERE versao_id=?',(j['versao_id'],)).fetchone()
+            if not t:raise HTTPException(404,'Carimbo ainda não solicitado')
+            p=storage.ots_path(j['versao_id'])
+            if not p.exists():raise HTTPException(409,'Recibo do carimbo ainda não disponível')
+            auditar(c,u,'baixar_carimbo',jid)
+        return FileResponse(p,media_type='application/octet-stream',filename=f"conversa-{j['chat']}-v{v['versao']}.zip.ots",headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
     async def worker():
         while True:
+            fez=carimbou=False
             try:
                 cfg=main.carregar_configuracao();token=cfg.get('vendeai_mailing_token') or main.VENDEAI_API_TOKEN
                 fez=await asyncio.to_thread(processar,db,cfg,token,storage)
+                carimbou=await asyncio.to_thread(processar_carimbo,db,storage)
             except Exception:fez=False
-            await asyncio.sleep(2 if fez else 10)
+            await asyncio.sleep(2 if (fez or carimbou) else 10)
     @app.on_event('startup')
     async def start():
         with closing(db()) as c,c:

@@ -60,6 +60,23 @@ class DossiesTests(unittest.TestCase):
    with self.db() as c:dossies.agendar(c,'33393','123','admin')
    dossies.processar(self.db,{'vendeai_account_id':'33393'},'secret',storage)
   with self.db() as c:self.assertEqual(c.execute('SELECT max(versao) FROM dossies_versoes').fetchone()[0],2)
+ def test_timestamp_receipt_is_sidecar_and_upgrades(self):
+  storage=dossies.LocalStorage(Path(self.tmp.name)/'files')
+  with self.db() as c:dossies.agendar(c,'33393','123','admin')
+  with patch.object(dossies,'coletar',return_value=({'raw/test.json':b'{}'},[],1,0,'stamp',{})):
+   dossies.processar(self.db,{'vendeai_account_id':'33393'},'secret',storage)
+  with self.db() as c:ident=c.execute('SELECT id FROM dossies_versoes').fetchone()[0]
+  def stamp(*args):
+   Path(str(args[-1])+'.ots').write_bytes(b'ots-receipt')
+   return Mock(returncode=0,stdout=b'',stderr=b'')
+  with patch.object(dossies,'_ots_comando',side_effect=stamp):
+   self.assertTrue(dossies.processar_carimbo(self.db,storage))
+  self.assertTrue(storage.ots_path(ident).exists())
+  with self.db() as c:
+   c.execute("UPDATE dossies_carimbos SET tentar_em=0 WHERE versao_id=?",(ident,))
+  with patch.object(dossies,'_ots_comando',return_value=Mock(returncode=0,stdout=b'Success',stderr=b'')):
+   self.assertTrue(dossies.processar_carimbo(self.db,storage))
+  with self.db() as c:self.assertEqual(c.execute('SELECT estado FROM dossies_carimbos WHERE versao_id=?',(ident,)).fetchone()[0],'confirmado')
  def test_media_failure_not_complete(self):
   with self.db() as c:dossies.agendar(c,'33393','123','admin')
   with patch.object(dossies,'coletar',return_value=({'raw/test.json':b'{}'},[{'erro':'indisponivel'}],1,0,'partial',{})):
