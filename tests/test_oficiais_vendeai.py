@@ -210,6 +210,8 @@ class OficiaisTests(unittest.TestCase):
         self.assertEqual(self.patch_request.call_args.kwargs['json']['inbox_id'],'91')
 
     def test_create_is_idempotent_when_crm_already_has_number(self):
+        p=oficial.pendentes(main.get_db,self.cfg,'')
+        self.assertEqual(p,[{'id':1,'nome':'Teste','phone_number_id':'777','waba_id':'888','ja_existe':True,'vinculo_antigo':False}])
         r=oficial.criar(main.get_db,self.cfg,'',{'numero_id':1})
         self.assertEqual(r,{'id':1,'inbox_id':'77','novo':False})
         self.assertFalse(any(x.args[0].endswith('/inboxes') for x in self.api.call_args_list))

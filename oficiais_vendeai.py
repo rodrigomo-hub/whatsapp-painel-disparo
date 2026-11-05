@@ -167,7 +167,7 @@ def listar(get_db,cfg):
 def pendentes(get_db,cfg,token):
     """Números Meta locais que ainda não possuem uma inbox oficial no CRM."""
     itens=listar_remoto(cfg,token)
-    remotos={(i['phone_id'],i['waba_id']) for i in itens
+    remotos={(i['phone_id'],i['waba_id']):i for i in itens
              if i.get('provider')=='whatsapp_cloud'}
     account,_=normal.credenciais(cfg,token)
     with closing(get_db()) as c:
@@ -179,10 +179,12 @@ def pendentes(get_db,cfg,token):
         n=dict(row);chave=(str(n['phone_number_id']),str(n['waba_id']))
         if not n['phone_number_id'].isdigit() or not n['waba_id'].isdigit():
             continue
-        if chave in remotos:
+        remoto=remotos.get(chave)
+        if remoto and n['vendeai_conta']==account and n['vendeai_inbox_id']==remoto['inbox_id']:
             continue
         result.append({'id':n['id'],'nome':n['nome'],'phone_number_id':n['phone_number_id'],
                        'waba_id':n['waba_id'],
+                       'ja_existe':bool(remoto),
                        'vinculo_antigo':bool(n['vendeai_inbox_id'] and n['vendeai_conta']!=account)})
     return result
 
