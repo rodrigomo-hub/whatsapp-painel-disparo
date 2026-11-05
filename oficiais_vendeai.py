@@ -233,9 +233,14 @@ def _criar_inbox_crm(account,crm_token,nome,telefone,access_token,phone_id,waba_
     try:
         r=requests.post(normal.CRM+account+'/inboxes',headers={'api_access_token':crm_token},
             json=payload,timeout=(5,35),allow_redirects=False)
-        d=r.json() if r.status_code in (200,201) else {}
+        try:d=r.json()
+        except (ValueError,TypeError,AttributeError):d={}
         inbox=str(d.get('id') or '')
-        if not inbox.isdigit(): raise ValueError()
+        if r.status_code not in (200,201) or not inbox.isdigit():
+            detalhe=str(d.get('detail') or d.get('message') or d.get('error') or '').strip().replace('\n',' ')[:220]
+            raise HTTPException(400,'A VendeAI recusou a criação da conexão (HTTP '+str(r.status_code)+')'+(': '+detalhe if detalhe else '.'))
+    except HTTPException:
+        raise
     except (requests.RequestException,ValueError,TypeError,AttributeError):
         raise HTTPException(502,'A VendeAI não confirmou a criação da conexão. Nenhum envio foi alterado.')
     membros=MEMBROS_PADRAO.get(str(account),())
@@ -274,9 +279,7 @@ def criar(get_db,cfg,token,body):
                           (account,existente['inbox_id'],numero_id))
             return {'id':numero_id,'inbox_id':existente['inbox_id'],'novo':False}
 
-        telefone,nome_verificado,status_meta=_numero_meta(n)
-        if status_meta and status_meta!='CONNECTED':
-            raise HTTPException(400,'Este número ainda não está conectado na Meta ('+status_meta+'). Aguarde a ativação antes de criar a conexão VendeAI.')
+        telefone,nome_verificado,_=_numero_meta(n)
         nome=(nome_verificado or n['nome']).strip()
         if telefone not in nome:
             nome=(nome+' '+telefone).strip()
@@ -316,9 +319,7 @@ def conectar_da_waba(get_db,cfg,token,waba_id,phone_id):
         account,crm_token=normal.credenciais(cfg,token)
         remoto=next((i for i in listar_remoto(cfg,token) if i.get('provider')=='whatsapp_cloud' and i['phone_id']==str(phone_id) and i['waba_id']==str(waba_id)),None)
         if remoto:return {'inbox_id':remoto['inbox_id'],'novo':False}
-        telefone,nome_verificado,status_meta=_numero_meta({'phone_number_id':str(phone_id),'access_token':row['access_token']})
-        if status_meta and status_meta!='CONNECTED':
-            raise HTTPException(400,'Este número está em análise na Meta. Aguarde ficar Conectado antes de vincular à VendeAI.')
+        telefone,nome_verificado,_=_numero_meta({'phone_number_id':str(phone_id),'access_token':row['access_token']})
         nome=(nome_verificado or row['nome'] or ('WABA '+str(waba_id))).strip()
         if telefone not in nome:nome=(nome+' '+telefone).strip()
         inbox,aviso=_criar_inbox_crm(account,crm_token,nome,telefone,row['access_token'],str(phone_id),str(waba_id))
