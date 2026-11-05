@@ -369,8 +369,12 @@ def instalar(main):
         escrita(request);u=usuario(request);b=await request.json();conta=str(main.carregar_configuracao()['vendeai_account_id']);chat=referencia(b.get('conversa',''),conta)
         with closing(db()) as c,c:
             c.execute('BEGIN IMMEDIATE')
-            if not permitido(c,u,conta,chat):raise HTTPException(403,'Conversa não autorizada. Peça acesso ao administrador.')
             if c.execute("SELECT count(*) FROM dossies_jobs WHERE estado IN ('pendente','coletando')").fetchone()[0]>=100:raise HTTPException(429,'Fila cheia; aguarde as coletas.')
+            # Um usuário restrito só passa a ver a conversa que ele próprio solicitou.
+            # O login não recebe acesso ao painel, às automações ou a conversas alheias.
+            if u!='admin':
+                c.execute('INSERT OR IGNORE INTO dossies_permissoes VALUES(?,?,?)',(u,conta,chat))
+                auditar(c,u,'autorizar_propria_solicitacao',chat)
             ident=agendar(c,conta,chat,u)
         return {'id':ident}
     @app.post('/dossies/api/config')
