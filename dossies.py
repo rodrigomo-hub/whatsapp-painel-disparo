@@ -390,7 +390,7 @@ def instalar(main):
             c.execute('INSERT INTO dossies_usuarios VALUES(?,?,?,1) ON CONFLICT(nome) DO UPDATE SET senha=excluded.senha,ativo=1',(uid,name,senha_hash(pw)))
             c.execute('DELETE FROM dossies_sessoes WHERE usuario=?',(uid,));c.execute('DELETE FROM dossies_permissoes WHERE usuario=?',(uid,))
             c.executemany('INSERT INTO dossies_permissoes VALUES(?,?,?)',[(uid,conta,x) for x in chats]);auditar(c,'admin','configurar_usuario',uid)
-        return {'ok':True}
+        return {'ok':True,'autorizadas':len(chats)}
     @app.post('/dossies/api/revogar/{uid}')
     def revoke(uid:str,request:Request):
         escrita(request);admin(request)
