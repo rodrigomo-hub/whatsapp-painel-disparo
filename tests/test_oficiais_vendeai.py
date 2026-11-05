@@ -228,6 +228,14 @@ class OficiaisTests(unittest.TestCase):
         self.assertEqual(r,{'inbox_id':'92','novo':True})
         self.assertEqual(self.numero()['vendeai_inbox_id'],'')
         self.assertTrue(self.patch_request.called)
+
+    def test_waba_sync_adds_unconfigured_number_paused(self):
+        with test_db() as c:c.execute("INSERT OR REPLACE INTO wabas_salvas(waba_id,access_token,nome) VALUES('999','waba-token','WABA de teste')")
+        with test_db() as c:row=c.execute("SELECT * FROM wabas_salvas WHERE waba_id='999'").fetchone()
+        main.sincronizar_numeros_meta_waba('999',row,[{'id':'9991','display_phone_number':'+55 11 98888-7777','verified_name':'Novo número','quality_rating':'GREEN','status':'CONNECTED'}])
+        with test_db() as c:n=c.execute("SELECT * FROM numeros WHERE phone_number_id='9991'").fetchone()
+        self.assertEqual((n['ativo'],n['limite_diario'],n['limite_hora'],n['nao_configurado']),(0,0,0,1))
+        self.assertEqual(n['template_nome'],'Não configurado')
     def test_ambiguous_remote_connections_not_auto_linked(self):
         original=oficial.listar_remoto(self.cfg,'');outro=copy.deepcopy(original[0]);outro['inbox_id']='78'
         with patch.object(oficial,'listar_remoto',return_value=original+[outro]):oficial.descobrir(main.get_db,self.cfg,'')

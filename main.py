@@ -284,6 +284,10 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN template_status TEXT NOT NULL DEFAULT 'UNKNOWN'")
     if "waba_id" not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN waba_id TEXT NOT NULL DEFAULT ''")
+    if "nao_configurado" not in colunas_existentes:
+        # Número descoberto na WABA, ainda sem template/limites escolhidos.
+        # Fica visível no painel, porém jamais entra no rodízio por padrão.
+        conn.execute("ALTER TABLE numeros ADD COLUMN nao_configurado INTEGER NOT NULL DEFAULT 0")
     if "pausado_por_qualidade" not in colunas_existentes:
         # Marca numeros pausados AUTOMATICAMENTE por qualidade RED (distinto de pausa manual).
         # Sem essa distincao, o loop de checagem (que so olha ativo=1) nunca mais
@@ -2803,11 +2807,36 @@ def detalhes_waba_painel(waba_id: str):
     # cadastrados como números de disparo aparecem com a situação VendeAI.
     numeros_meta=resultados[2].get('dados')
     if isinstance(numeros_meta,list):
+        sincronizar_numeros_meta_waba(waba_id,row,numeros_meta)
         situacoes=oficiais_vendeai.situacao_numeros_waba(carregar_configuracao(),VENDEAI_API_TOKEN,waba_id,numeros_meta)
         for numero,situacao in zip(numeros_meta,situacoes):numero['vendeai']=situacao
     return JSONResponse({'id': waba_id, 'nome': row['nome'], 'consultado_em': agora_iso(),
                          'textos_fixos':textos_templates.listar(get_db,waba_id),
                          **dict(zip(['conta', 'saude', 'numeros', 'templates'], resultados))}, headers={'Cache-Control': 'no-store'})
+
+
+def sincronizar_numeros_meta_waba(waba_id,row,numeros_meta):
+    """Torna visível no painel todo número que a Meta devolveu para a WABA.
+
+    Os itens criados aqui ficam pausados, com limites zero e sem template: são
+    apenas inventário até alguém configurar o número de propósito.
+    """
+    with closing(get_db()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        existentes={str(r['phone_number_id']) for r in c.execute('SELECT phone_number_id FROM numeros WHERE waba_id=?',(waba_id,))}
+        for meta in numeros_meta:
+            phone_id=str(meta.get('id') or '')
+            if not phone_id.isdigit() or phone_id in existentes:continue
+            exibicao=str(meta.get('display_phone_number') or '').strip()
+            verificado=str(meta.get('verified_name') or '').strip()
+            nome=' '.join(x for x in (verificado,exibicao) if x) or ('Número Meta '+phone_id)
+            qualidade=str(meta.get('quality_rating') or 'UNKNOWN')
+            status=str(meta.get('status') or '')
+            estado='BANNED' if status=='BANNED' else 'AVAILABLE' if status=='CONNECTED' else 'DISCONNECTED' if status else 'UNKNOWN'
+            c.execute('''INSERT INTO numeros(nome,phone_number_id,access_token,waba_id,template_nome,
+                template_idioma,limite_diario,limite_hora,ativo,qualidade,status_envio_meta,nao_configurado)
+                VALUES(?,?,?,?,?,?,0,0,0,?,?,1)''',
+                (nome[:250],phone_id,row['access_token'],waba_id,'Não configurado','pt_BR',qualidade,estado))
 
 
 @app.post('/api/wabas-painel/{waba_id}/conectar-vendeai')
@@ -3141,6 +3170,7 @@ async def atualizar_numero(numero_id: int, request: Request):
         conn.execute("UPDATE numeros SET template_sem_variaveis = 0 WHERE id = ? AND template_nome != ?", (numero_id, body["template_nome"]))
     if "template_nome" in body:
         conn.execute("UPDATE numeros SET template_nome = ? WHERE id = ?", (body["template_nome"], numero_id))
+        conn.execute("UPDATE numeros SET nao_configurado=0 WHERE id=?",(numero_id,))
     if "template_sem_variaveis" in body:
         conn.execute("UPDATE numeros SET template_sem_variaveis = ? WHERE id = ?", (int(body["template_sem_variaveis"]), numero_id))
     if "template_idioma" in body:
