@@ -37,6 +37,9 @@ def migrar(c):
     # conexão no CRM. A reserva expira caso o processo seja interrompido.
     c.execute('''CREATE TABLE IF NOT EXISTS oficiais_vendeai_criando (
         numero_id INTEGER PRIMARY KEY,criado_em REAL NOT NULL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS oficiais_vendeai_criando_meta (
+        waba_id TEXT NOT NULL,phone_id TEXT NOT NULL,criado_em REAL NOT NULL,
+        PRIMARY KEY(waba_id,phone_id))''')
 
 
 def via(n):return dict(n).get('tipo_envio','meta')=='meta' and dict(n).get('via_envio')=='vendeai'
@@ -222,6 +225,30 @@ def _liberar_reserva(get_db,numero_id):
         c.execute('DELETE FROM oficiais_vendeai_criando WHERE numero_id=?',(numero_id,))
 
 
+def _criar_inbox_crm(account,crm_token,nome,telefone,access_token,phone_id,waba_id):
+    payload={'name':nome[:250],'channel':{'type':'whatsapp','phone_number':telefone,
+             'provider':'whatsapp_cloud','provider_config':{
+                 'api_key':access_token,'phone_number_id':phone_id,
+                 'business_account_id':waba_id}}}
+    try:
+        r=requests.post(normal.CRM+account+'/inboxes',headers={'api_access_token':crm_token},
+            json=payload,timeout=(5,35),allow_redirects=False)
+        d=r.json() if r.status_code in (200,201) else {}
+        inbox=str(d.get('id') or '')
+        if not inbox.isdigit(): raise ValueError()
+    except (requests.RequestException,ValueError,TypeError,AttributeError):
+        raise HTTPException(502,'A VendeAI não confirmou a criação da conexão. Nenhum envio foi alterado.')
+    membros=MEMBROS_PADRAO.get(str(account),())
+    if membros:
+        try:
+            r=requests.patch(normal.CRM+account+'/inbox_members',headers={'api_access_token':crm_token},
+                json={'inbox_id':inbox,'user_ids':list(membros)},timeout=(5,25),allow_redirects=False)
+            if r.status_code not in (200,201,204): raise ValueError()
+        except (requests.RequestException,ValueError,TypeError,AttributeError):
+            return inbox,'Conexão criada, mas a equipe não foi confirmada pela VendeAI. Revise os membros da inbox no CRM.'
+    return inbox,''
+
+
 def criar(get_db,cfg,token,body):
     """Cria no CRM a inbox oficial de um número já cadastrado no painel."""
     try: numero_id=int(body.get('numero_id'))
@@ -251,39 +278,50 @@ def criar(get_db,cfg,token,body):
         nome=(nome_verificado or n['nome']).strip()
         if telefone not in nome:
             nome=(nome+' '+telefone).strip()
-        payload={'name':nome[:250],'channel':{'type':'whatsapp','phone_number':telefone,
-                 'provider':'whatsapp_cloud','provider_config':{
-                     'api_key':n['access_token'],'phone_number_id':n['phone_number_id'],
-                     'business_account_id':n['waba_id']}}}
-        try:
-            r=requests.post(normal.CRM+account+'/inboxes',headers={'api_access_token':crm_token},
-                json=payload,timeout=(5,35),allow_redirects=False)
-            d=r.json() if r.status_code in (200,201) else {}
-            inbox=str(d.get('id') or '')
-            if not inbox.isdigit(): raise ValueError()
-        except (requests.RequestException,ValueError,TypeError,AttributeError):
-            raise HTTPException(502,'A VendeAI não confirmou a criação da conexão. Nenhum envio foi alterado.')
-
-        membros=MEMBROS_PADRAO.get(str(account),())
-        if membros:
-            try:
-                # Este é o mesmo passo feito pela interface ao salvar a inbox.
-                r=requests.patch(normal.CRM+account+'/inbox_members',headers={'api_access_token':crm_token},
-                    json={'inbox_id':inbox,'user_ids':list(membros)},timeout=(5,25),allow_redirects=False)
-                if r.status_code not in (200,201,204):
-                    raise ValueError()
-            except (requests.RequestException,ValueError,TypeError,AttributeError):
-                # A inbox já foi criada. Mantemos o vínculo para não haver uma
-                # segunda criação; a mensagem alerta o operador a revisar equipe.
-                with closing(get_db()) as c,c:
-                    c.execute('UPDATE numeros SET vendeai_conta=?,vendeai_inbox_id=? WHERE id=?',(account,inbox,numero_id))
-                return {'id':numero_id,'inbox_id':inbox,'novo':True,
-                        'aviso':'Conexão criada, mas a equipe não foi confirmada pela VendeAI. Revise os membros da inbox no CRM.'}
+        inbox,aviso=_criar_inbox_crm(account,crm_token,nome,telefone,n['access_token'],n['phone_number_id'],n['waba_id'])
         with closing(get_db()) as c,c:
             c.execute('UPDATE numeros SET vendeai_conta=?,vendeai_inbox_id=? WHERE id=?',(account,inbox,numero_id))
-        return {'id':numero_id,'inbox_id':inbox,'novo':True}
+        return {'id':numero_id,'inbox_id':inbox,'novo':True,**({'aviso':aviso} if aviso else {})}
     finally:
         _liberar_reserva(get_db,numero_id)
+
+
+def situacao_numeros_waba(cfg,token,waba_id,numeros):
+    """Anota a lista Meta com a situação real da inbox na VendeAI."""
+    try:
+        remotos={(i['phone_id'],i['waba_id']):i for i in listar_remoto(cfg,token)
+                 if i.get('provider')=='whatsapp_cloud'}
+    except HTTPException:
+        return [{'estado_vendeai':'indisponivel'} for _ in numeros]
+    return [{'estado_vendeai':'conectado','inbox_id':remotos[(str(n.get('id') or ''),str(waba_id))]['inbox_id']}
+            if (str(n.get('id') or ''),str(waba_id)) in remotos else {'estado_vendeai':'nao_conectado'}
+            for n in numeros]
+
+
+def conectar_da_waba(get_db,cfg,token,waba_id,phone_id):
+    """Cria inbox de um telefone Meta visível na WABA, sem cadastrá-lo no painel."""
+    if not str(waba_id).isdigit() or not str(phone_id).isdigit():
+        raise HTTPException(400,'WABA ou número inválido.')
+    agora=time.time()
+    with closing(get_db()) as c,c:
+        c.execute('BEGIN IMMEDIATE')
+        c.execute('DELETE FROM oficiais_vendeai_criando_meta WHERE criado_em<?',(agora-300,))
+        try:c.execute('INSERT INTO oficiais_vendeai_criando_meta VALUES(?,?,?)',(str(waba_id),str(phone_id),agora))
+        except Exception:raise HTTPException(409,'Este número já está sendo conectado à VendeAI. Aguarde alguns segundos.')
+        row=c.execute('SELECT access_token,nome FROM wabas_salvas WHERE waba_id=?',(str(waba_id),)).fetchone()
+    try:
+        if not row:raise HTTPException(404,'WABA não cadastrada no painel.')
+        account,crm_token=normal.credenciais(cfg,token)
+        remoto=next((i for i in listar_remoto(cfg,token) if i.get('provider')=='whatsapp_cloud' and i['phone_id']==str(phone_id) and i['waba_id']==str(waba_id)),None)
+        if remoto:return {'inbox_id':remoto['inbox_id'],'novo':False}
+        telefone,nome_verificado=_numero_meta({'phone_number_id':str(phone_id),'access_token':row['access_token']})
+        nome=(nome_verificado or row['nome'] or ('WABA '+str(waba_id))).strip()
+        if telefone not in nome:nome=(nome+' '+telefone).strip()
+        inbox,aviso=_criar_inbox_crm(account,crm_token,nome,telefone,row['access_token'],str(phone_id),str(waba_id))
+        return {'inbox_id':inbox,'novo':True,**({'aviso':aviso} if aviso else {})}
+    finally:
+        with closing(get_db()) as c,c:
+            c.execute('DELETE FROM oficiais_vendeai_criando_meta WHERE waba_id=? AND phone_id=?',(str(waba_id),str(phone_id)))
 
 
 def meta_template(n):

@@ -216,6 +216,18 @@ class OficiaisTests(unittest.TestCase):
         self.assertEqual(r,{'id':1,'inbox_id':'77','novo':False})
         self.assertFalse(any(x.args[0].endswith('/inboxes') for x in self.api.call_args_list))
         self.assertEqual(self.numero()['vendeai_inbox_id'],'77')
+
+    def test_waba_number_can_connect_before_it_is_added_to_panel(self):
+        self.inbox['provider_config']['phone_number_id']='778'
+        with test_db() as c:c.execute("INSERT OR REPLACE INTO wabas_salvas(waba_id,access_token,nome) VALUES('888','fake-token','Empresa WABA')")
+        anterior_get=self.get.side_effect
+        self.get.side_effect=lambda url,**kw:self.response({'id':'777','display_phone_number':'+55 11 99999-9999','verified_name':'Empresa WABA'}) if url.endswith('/777') and kw.get('params',{}).get('fields')=='id,display_phone_number,verified_name' else anterior_get(url,**kw)
+        original=self.api.side_effect
+        self.api.side_effect=lambda url,**kw:self.response({'id':92}) if url.endswith('/inboxes') else original(url,**kw)
+        r=oficial.conectar_da_waba(main.get_db,self.cfg,'','888','777')
+        self.assertEqual(r,{'inbox_id':'92','novo':True})
+        self.assertEqual(self.numero()['vendeai_inbox_id'],'')
+        self.assertTrue(self.patch_request.called)
     def test_ambiguous_remote_connections_not_auto_linked(self):
         original=oficial.listar_remoto(self.cfg,'');outro=copy.deepcopy(original[0]);outro['inbox_id']='78'
         with patch.object(oficial,'listar_remoto',return_value=original+[outro]):oficial.descobrir(main.get_db,self.cfg,'')

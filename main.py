@@ -2799,9 +2799,22 @@ def detalhes_waba_painel(waba_id: str):
     with ThreadPoolExecutor(max_workers=4) as pool:
         resultados = list(pool.map(lambda tarefa: consultar_meta_waba(waba_id, row['access_token'], *tarefa), tarefas))
     bloquear_numeros_waba(waba_id, resultados[1].get('dados', {}).get('health_status', {}))
+    # A WABA é a fonte de verdade: mesmo telefones que ainda não foram
+    # cadastrados como números de disparo aparecem com a situação VendeAI.
+    numeros_meta=resultados[2].get('dados')
+    if isinstance(numeros_meta,list):
+        situacoes=oficiais_vendeai.situacao_numeros_waba(carregar_configuracao(),VENDEAI_API_TOKEN,waba_id,numeros_meta)
+        for numero,situacao in zip(numeros_meta,situacoes):numero['vendeai']=situacao
     return JSONResponse({'id': waba_id, 'nome': row['nome'], 'consultado_em': agora_iso(),
                          'textos_fixos':textos_templates.listar(get_db,waba_id),
                          **dict(zip(['conta', 'saude', 'numeros', 'templates'], resultados))}, headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/api/wabas-painel/{waba_id}/conectar-vendeai')
+async def conectar_numero_waba_vendeai(waba_id: str, request: Request):
+    body=await request.json()
+    if not isinstance(body,dict):raise HTTPException(400,'Envie um objeto.')
+    return await asyncio.to_thread(oficiais_vendeai.conectar_da_waba,get_db,carregar_configuracao(),VENDEAI_API_TOKEN,waba_id,str(body.get('phone_number_id') or ''))
 
 
 @app.put('/api/wabas-painel/{waba_id}/textos-fixos')
