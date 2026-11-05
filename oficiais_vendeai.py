@@ -196,7 +196,7 @@ def _numero_meta(n):
     try:
         r=requests.get('https://graph.facebook.com/v21.0/'+n['phone_number_id'],
             headers={'Authorization':'Bearer '+n['access_token']},
-            params={'fields':'id,display_phone_number,verified_name'},timeout=(5,20),allow_redirects=False)
+            params={'fields':'id,display_phone_number,verified_name,status'},timeout=(5,20),allow_redirects=False)
         d=r.json() if r.status_code==200 else {}
         telefone=re.sub(r'\D','',str(d.get('display_phone_number') or ''))
         # A Graph normalmente retorna +55, mas algumas respostas antigas trazem
@@ -204,7 +204,7 @@ def _numero_meta(n):
         if len(telefone) in (10,11): telefone='55'+telefone
         if str(d.get('id') or '')!=str(n['phone_number_id']) or len(telefone)<10:
             raise ValueError()
-        return '+'+telefone,str(d.get('verified_name') or '').strip()
+        return '+'+telefone,str(d.get('verified_name') or '').strip(),str(d.get('status') or '')
     except (requests.RequestException,ValueError,TypeError,AttributeError):
         raise HTTPException(400,'Não foi possível confirmar este número na Meta antes de criar a conexão.')
 
@@ -274,7 +274,9 @@ def criar(get_db,cfg,token,body):
                           (account,existente['inbox_id'],numero_id))
             return {'id':numero_id,'inbox_id':existente['inbox_id'],'novo':False}
 
-        telefone,nome_verificado=_numero_meta(n)
+        telefone,nome_verificado,status_meta=_numero_meta(n)
+        if status_meta and status_meta!='CONNECTED':
+            raise HTTPException(400,'Este número ainda não está conectado na Meta ('+status_meta+'). Aguarde a ativação antes de criar a conexão VendeAI.')
         nome=(nome_verificado or n['nome']).strip()
         if telefone not in nome:
             nome=(nome+' '+telefone).strip()
@@ -314,7 +316,9 @@ def conectar_da_waba(get_db,cfg,token,waba_id,phone_id):
         account,crm_token=normal.credenciais(cfg,token)
         remoto=next((i for i in listar_remoto(cfg,token) if i.get('provider')=='whatsapp_cloud' and i['phone_id']==str(phone_id) and i['waba_id']==str(waba_id)),None)
         if remoto:return {'inbox_id':remoto['inbox_id'],'novo':False}
-        telefone,nome_verificado=_numero_meta({'phone_number_id':str(phone_id),'access_token':row['access_token']})
+        telefone,nome_verificado,status_meta=_numero_meta({'phone_number_id':str(phone_id),'access_token':row['access_token']})
+        if status_meta and status_meta!='CONNECTED':
+            raise HTTPException(400,'Este número está em análise na Meta. Aguarde ficar Conectado antes de vincular à VendeAI.')
         nome=(nome_verificado or row['nome'] or ('WABA '+str(waba_id))).strip()
         if telefone not in nome:nome=(nome+' '+telefone).strip()
         inbox,aviso=_criar_inbox_crm(account,crm_token,nome,telefone,row['access_token'],str(phone_id),str(waba_id))

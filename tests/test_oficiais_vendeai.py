@@ -192,7 +192,7 @@ class OficiaisTests(unittest.TestCase):
         # Simula CRM ainda sem a inbox; a criação usa a identidade Meta local.
         self.inbox['provider_config']['phone_number_id']='778'
         anterior_get=self.get.side_effect
-        self.get.side_effect=lambda url,**kw:self.response({'id':'777','display_phone_number':'(11) 99999-9999','verified_name':'Empresa WABA'}) if url.endswith('/777') and kw.get('params',{}).get('fields')=='id,display_phone_number,verified_name' else anterior_get(url,**kw)
+        self.get.side_effect=lambda url,**kw:self.response({'id':'777','display_phone_number':'(11) 99999-9999','verified_name':'Empresa WABA','status':'CONNECTED'}) if url.endswith('/777') and str(kw.get('params',{}).get('fields','')).startswith('id,display_phone_number') else anterior_get(url,**kw)
         original=self.api.side_effect
         def post(url,**kw):
             if url.endswith('/inboxes'):
@@ -221,7 +221,7 @@ class OficiaisTests(unittest.TestCase):
         self.inbox['provider_config']['phone_number_id']='778'
         with test_db() as c:c.execute("INSERT OR REPLACE INTO wabas_salvas(waba_id,access_token,nome) VALUES('888','fake-token','Empresa WABA')")
         anterior_get=self.get.side_effect
-        self.get.side_effect=lambda url,**kw:self.response({'id':'777','display_phone_number':'+55 11 99999-9999','verified_name':'Empresa WABA'}) if url.endswith('/777') and kw.get('params',{}).get('fields')=='id,display_phone_number,verified_name' else anterior_get(url,**kw)
+        self.get.side_effect=lambda url,**kw:self.response({'id':'777','display_phone_number':'+55 11 99999-9999','verified_name':'Empresa WABA','status':'CONNECTED'}) if url.endswith('/777') and str(kw.get('params',{}).get('fields','')).startswith('id,display_phone_number') else anterior_get(url,**kw)
         original=self.api.side_effect
         self.api.side_effect=lambda url,**kw:self.response({'id':92}) if url.endswith('/inboxes') else original(url,**kw)
         r=oficial.conectar_da_waba(main.get_db,self.cfg,'','888','777')
