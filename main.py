@@ -3533,6 +3533,18 @@ def descobrir_oficiais_vendeai():
     return {'total':oficiais_vendeai.descobrir(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)}
 
 
+@app.get('/api/oficiais-vendeai/pendentes')
+def pendentes_oficiais_vendeai():
+    return oficiais_vendeai.pendentes(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)
+
+
+@app.post('/api/oficiais-vendeai/criar')
+async def criar_oficial_vendeai(request: Request):
+    body=await request.json()
+    if not isinstance(body,dict):raise HTTPException(400,'Envie um objeto.')
+    return await asyncio.to_thread(oficiais_vendeai.criar,get_db,carregar_configuracao(),VENDEAI_API_TOKEN,body)
+
+
 @app.post('/api/oficiais-vendeai/vincular')
 async def vincular_oficial_vendeai(request: Request):
     body=await request.json()

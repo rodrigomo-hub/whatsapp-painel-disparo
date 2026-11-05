@@ -12,6 +12,7 @@ class OficiaisTests(unittest.TestCase):
         self.inbox={'id':77,'name':'Oficial','phone_number':'+5511999999999','provider':'whatsapp_cloud','provider_config':{'phone_number_id':'777','business_account_id':'888','api_key':'secret-from-crm'}}
         with test_db() as c:c.execute("UPDATE numeros SET phone_number_id='777',waba_id='888',template_nome='oferta',template_idioma='pt_BR',template_status='APPROVED'")
         self.get_patch=patch.object(requests,'get',side_effect=self.get_response);self.get=self.get_patch.start();self.addCleanup(self.get_patch.stop)
+        self.patch_patch=patch.object(requests,'patch',return_value=self.response({}));self.patch_request=self.patch_patch.start();self.addCleanup(self.patch_patch.stop)
         self.api.side_effect=self.post_response
         self.cfg=main.carregar_configuracao()
     def response(self,d,status=200):return Mock(status_code=status,json=Mock(return_value=d))
@@ -186,6 +187,33 @@ class OficiaisTests(unittest.TestCase):
         oficial.descobrir(main.get_db,self.cfg,'')
         self.assertEqual(self.numero()['vendeai_inbox_id'],'')
         with test_db() as c:self.assertEqual(c.execute('SELECT count(*) FROM numeros').fetchone()[0],1)
+
+    def test_create_inbox_from_existing_panel_number_and_keep_meta_path(self):
+        # Simula CRM ainda sem a inbox; a criação usa a identidade Meta local.
+        self.inbox['provider_config']['phone_number_id']='778'
+        anterior_get=self.get.side_effect
+        self.get.side_effect=lambda url,**kw:self.response({'id':'777','display_phone_number':'(11) 99999-9999','verified_name':'Empresa WABA'}) if url.endswith('/777') and kw.get('params',{}).get('fields')=='id,display_phone_number,verified_name' else anterior_get(url,**kw)
+        original=self.api.side_effect
+        def post(url,**kw):
+            if url.endswith('/inboxes'):
+                return self.response({'id':91})
+            return original(url,**kw)
+        self.api.side_effect=post
+        r=oficial.criar(main.get_db,self.cfg,'',{'numero_id':1})
+        self.assertEqual(r,{'id':1,'inbox_id':'91','novo':True})
+        criado=[x for x in self.api.call_args_list if x.args[0].endswith('/inboxes')][0]
+        self.assertEqual(criado.kwargs['json']['channel']['provider_config']['phone_number_id'],'777')
+        self.assertEqual(criado.kwargs['json']['channel']['phone_number'],'+5511999999999')
+        self.assertEqual(self.numero()['vendeai_inbox_id'],'91')
+        self.assertEqual(self.numero()['via_envio'],'meta')
+        self.assertTrue(self.patch_request.called)
+        self.assertEqual(self.patch_request.call_args.kwargs['json']['inbox_id'],'91')
+
+    def test_create_is_idempotent_when_crm_already_has_number(self):
+        r=oficial.criar(main.get_db,self.cfg,'',{'numero_id':1})
+        self.assertEqual(r,{'id':1,'inbox_id':'77','novo':False})
+        self.assertFalse(any(x.args[0].endswith('/inboxes') for x in self.api.call_args_list))
+        self.assertEqual(self.numero()['vendeai_inbox_id'],'77')
     def test_ambiguous_remote_connections_not_auto_linked(self):
         original=oficial.listar_remoto(self.cfg,'');outro=copy.deepcopy(original[0]);outro['inbox_id']='78'
         with patch.object(oficial,'listar_remoto',return_value=original+[outro]):oficial.descobrir(main.get_db,self.cfg,'')
