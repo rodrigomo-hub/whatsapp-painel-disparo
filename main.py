@@ -3020,6 +3020,7 @@ def preparar_imagem_template(body, atual=None):
         header=next((c.get('format','') for c in t.get('components',[]) if c.get('type')=='HEADER'),'')
         body['template_sem_variaveis']=template_estatico(t)
         body['_template_status_confirmado']=t.get('status','UNKNOWN')
+        body['_template_categoria_confirmada']=t.get('category','UNKNOWN')
     elif mudou:
         header=''
     if body.get('imagem_base64'):
@@ -3060,6 +3061,7 @@ async def adicionar_numero(request: Request):
         ),
     )
     conn.execute("UPDATE numeros SET template_header=?,template_imagem=? WHERE id=?",(header,imagem,cursor.lastrowid))
+    conn.execute("UPDATE numeros SET template_categoria=?,template_status=? WHERE id=?",(body.get('_template_categoria_confirmada','UNKNOWN'),body.get('_template_status_confirmado','UNKNOWN'),cursor.lastrowid))
     if body['waba_id']:
         conn.execute('INSERT INTO wabas_salvas(waba_id,access_token) VALUES(?,?) ON CONFLICT(waba_id) DO UPDATE SET nome_consultado_em=CASE WHEN access_token!=excluded.access_token THEN 0 ELSE nome_consultado_em END,access_token=excluded.access_token',(body['waba_id'],body['access_token']))
     conn.commit()
@@ -3121,6 +3123,7 @@ def ativar_todos_numeros():
 async def atualizar_numero(numero_id: int, request: Request):
     body = await request.json()
     body.pop("_template_status_confirmado",None)
+    body.pop("_template_categoria_confirmada",None)
     if "template_sem_variaveis" in body and type(body["template_sem_variaveis"]) is not bool:
         raise HTTPException(400, "template_sem_variaveis deve ser booleano")
     with closing(get_db()) as consulta:
@@ -3152,6 +3155,7 @@ async def atualizar_numero(numero_id: int, request: Request):
         if imagem_config:previsto.update(template_header=imagem_config[0],template_imagem=imagem_config[1])
         t=await asyncio.to_thread(oficiais_vendeai.validar_via,get_db,previsto,carregar_configuracao(),VENDEAI_API_TOKEN,base_url)
         body['_template_status_confirmado']='APPROVED'
+        body['_template_categoria_confirmada']=t.get('category','UNKNOWN')
         body['template_sem_variaveis']=not bool(oficiais_vendeai.estrutura(t)[2])
     conn = get_db()
     conn.execute('UPDATE numeros SET via_envio=?,envio_base_url=? WHERE id=?',(via,base_url if via=='vendeai' else atual['envio_base_url'],numero_id))
@@ -3179,6 +3183,8 @@ async def atualizar_numero(numero_id: int, request: Request):
         conn.execute('UPDATE numeros SET template_status=? WHERE id=?',(body['_template_status_confirmado'],numero_id))
         if body['_template_status_confirmado']=='APPROVED':
             conn.execute('UPDATE numeros SET pausado_por_template=0 WHERE id=?',(numero_id,))
+    if body.get('_template_categoria_confirmada'):
+        conn.execute('UPDATE numeros SET template_categoria=? WHERE id=?',(body['_template_categoria_confirmada'],numero_id))
     if imagem_config:
         conn.execute("UPDATE numeros SET template_header=?,template_imagem=? WHERE id=?",(*imagem_config,numero_id))
     conn.commit()
