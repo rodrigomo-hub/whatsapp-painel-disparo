@@ -231,6 +231,11 @@ def varrer_falhas_crm(get_db,cfg,token,horas=24):
     with closing(get_db()) as c:
         locais={str(r['vendeai_inbox_id']):dict(r) for r in c.execute('''SELECT id,nome,vendeai_inbox_id,waba_id
             FROM numeros WHERE vendeai_conta=? AND vendeai_inbox_id!='' ''',(account,)).fetchall()}
+        # Mesmo uma inbox ainda não cadastrada como número do rodízio pode
+        # denunciar uma WABA bloqueada. Mantemos essa identidade para pausar
+        # todos os números locais da mesma WABA.
+        wabas_inbox={str(r['inbox_id']):str(r['waba_id']) for r in c.execute('''SELECT inbox_id,waba_id
+            FROM oficiais_vendeai WHERE account_id=? AND waba_id!='' ''',(account,)).fetchall()}
 
     def consultar_mensagens(conversa):
         conversa_id=str(conversa.get('id') or '')
@@ -269,15 +274,30 @@ def varrer_falhas_crm(get_db,cfg,token,horas=24):
         codigo=(re.match(r'\s*(\d{3,})\s*[:\-]',erro) or [None,''])[1]
         falhas.append({'conversa_id':str(conversa.get('id') or ''),'mensagem_id':str(mensagem.get('id') or ''),
                        'numero_id':numero.get('id'),'numero':numero.get('nome') or 'Número não localizado no painel',
-                       'waba_id':numero.get('waba_id') or '', 'inbox_id':inbox,
+                       'waba_id':numero.get('waba_id') or wabas_inbox.get(inbox,''), 'inbox_id':inbox,
                        'codigo':codigo,'erro':erro[:300],
-                       'bloqueio_meta':codigo in ('131031','131026') or 'business account locked' in erro.lower(),
+                       'bloqueio_meta':codigo=='131031' or 'business account locked' in erro.lower(),
                        'quando':quando.strftime('%d/%m/%Y, %H:%M:%S') if quando else 'Horário não informado',
                        '_ordem':quando.timestamp() if quando else 0})
     falhas.sort(key=lambda x:(not x['bloqueio_meta'],-x['_ordem']))
     for falha in falhas: falha.pop('_ordem',None)
+    # 131031 / Business Account locked é bloqueio da conta de mensagens, não
+    # de um único destinatário. A descoberta manual interrompe toda a WABA no
+    # painel imediatamente, antes que o próximo item do rodízio seja enviado.
+    wabas_bloqueadas={f['waba_id'] for f in falhas if f['bloqueio_meta'] and f['waba_id']}
+    numeros_pausados=0
+    if wabas_bloqueadas:
+        with closing(get_db()) as c,c:
+            for waba_id in wabas_bloqueadas:
+                rows=c.execute('SELECT id,nome FROM numeros WHERE waba_id=? AND ativo=1',(waba_id,)).fetchall()
+                c.execute("UPDATE numeros SET ativo=0,pausado_por_qualidade=0,status_envio_meta='BLOCKED' WHERE waba_id=?",(waba_id,))
+                numeros_pausados+=len(rows)
+                for row in rows:
+                    c.execute('INSERT INTO eventos(numero_id,tipo,detalhe,criado_em) VALUES(?,?,?,?)',
+                              (row['id'],'pausado_bloqueio_crm','Pausado automaticamente: CRM VendeAI retornou 131031 (Business Account locked) para esta WABA.',datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat()))
     return {'horas':horas,'conversas_analisadas':len(conversas),'falhas':falhas,
-            'atingiu_teto':atingiu_teto,'duracao_ms':round((time.monotonic()-inicio_execucao)*1000)}
+            'atingiu_teto':atingiu_teto,'wabas_bloqueadas':len(wabas_bloqueadas),'numeros_pausados':numeros_pausados,
+            'duracao_ms':round((time.monotonic()-inicio_execucao)*1000)}
 
 
 def pendentes(get_db,cfg,token):
