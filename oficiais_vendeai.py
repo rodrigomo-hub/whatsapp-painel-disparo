@@ -3,7 +3,10 @@ import json
 import re
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from urllib.parse import urlparse
 
 import requests
@@ -165,6 +168,116 @@ def listar(get_db,cfg):
             i['divergencia']=erro or ('' if i.get('provider')=='gupshup' and i.get('app_id') else '' if i['phone_id'].isdigit() and i['waba_id'].isdigit() else 'IDs Meta não confirmados.')
             result.append(i)
         return result
+
+
+def _data_crm(url, token, params=None):
+    """Consulta somente leitura ao CRM, com uma mensagem de erro segura."""
+    try:
+        r=requests.get(url,headers={'api_access_token':token},params=params,
+                       timeout=(5,16),allow_redirects=False)
+        if r.status_code != 200: raise ValueError()
+        d=r.json()
+        if not isinstance(d,dict): raise ValueError()
+        return d
+    except (requests.RequestException,ValueError,TypeError):
+        raise HTTPException(502,'Não foi possível concluir a consulta de falhas no CRM VendeAI.')
+
+
+def _quando_crm(valor):
+    """O CRM retorna timestamps Unix; aceita também ISO por segurança."""
+    try:
+        if isinstance(valor,(int,float)) or (isinstance(valor,str) and valor.strip().isdigit()):
+            return datetime.fromtimestamp(float(valor),ZoneInfo('America/Sao_Paulo'))
+        return datetime.fromisoformat(str(valor).replace('Z','+00:00')).astimezone(ZoneInfo('America/Sao_Paulo'))
+    except (ValueError,TypeError,OverflowError):
+        return None
+
+
+def varrer_falhas_crm(get_db,cfg,token,horas=24):
+    """Varredura manual, limitada às conversas atualizadas recentemente.
+
+    Não percorre o histórico inteiro e jamais retorna conteúdo de mensagens ou
+    dados de clientes. O objetivo é detectar o erro técnico que o CRM só
+    conhece depois de tentar um envio (por exemplo, código Meta 131031).
+    """
+    try: horas=max(1,min(int(horas),72))
+    except (TypeError,ValueError): horas=24
+    account,crm_token=normal.credenciais(cfg,token)
+    inicio=time.time()-horas*3600
+    base=normal.CRM+account
+    inicio_execucao=time.monotonic()
+
+    # A API devolve as conversas mais recentes primeiro. O teto impede que um
+    # clique manual se transforme em paginação do CRM inteiro em uma conta com
+    # muito histórico.
+    conversas=[]; atingiu_teto=False
+    for pagina in range(1,13):
+        dados=_data_crm(base+'/conversations',crm_token,{'status':'all','page':pagina})
+        bloco=(dados.get('data') or {}).get('payload') or dados.get('payload') or []
+        if not isinstance(bloco,list): break
+        for conversa in bloco:
+            if not isinstance(conversa,dict): continue
+            atualizado=_quando_crm(conversa.get('updated_at') or conversa.get('last_activity_at') or conversa.get('created_at'))
+            if atualizado and atualizado.timestamp()<inicio:
+                continue
+            conversas.append(conversa)
+            if len(conversas)>=300:
+                atingiu_teto=True;break
+        if atingiu_teto or len(bloco)<25: break
+        # Quando toda a página já ficou antiga, as próximas também estarão.
+        datas=[_quando_crm(x.get('updated_at') or x.get('last_activity_at') or x.get('created_at')) for x in bloco if isinstance(x,dict)]
+        if datas and all(d and d.timestamp()<inicio for d in datas): break
+
+    with closing(get_db()) as c:
+        locais={str(r['vendeai_inbox_id']):dict(r) for r in c.execute('''SELECT id,nome,vendeai_inbox_id,waba_id
+            FROM numeros WHERE vendeai_conta=? AND vendeai_inbox_id!='' ''',(account,)).fetchall()}
+
+    def consultar_mensagens(conversa):
+        conversa_id=str(conversa.get('id') or '')
+        if not conversa_id.isdigit(): return []
+        try:
+            dados=_data_crm(base+'/conversations/'+conversa_id+'/messages',crm_token)
+        except HTTPException:
+            return []
+        mensagens=(dados.get('payload') or (dados.get('data') or {}).get('payload') or [])
+        if not isinstance(mensagens,list): return []
+        resultado=[]
+        for mensagem in mensagens:
+            if not isinstance(mensagem,dict) or str(mensagem.get('status') or '').lower()!='failed': continue
+            if str(mensagem.get('message_type') or '')!='1': continue
+            atributos=mensagem.get('content_attributes') or {}
+            erro=str(atributos.get('external_error') or '').strip()
+            if not erro: continue
+            quando=_quando_crm(mensagem.get('created_at'))
+            if quando and quando.timestamp()<inicio: continue
+            resultado.append((conversa,mensagem,erro,quando))
+        return resultado
+
+    encontrados=[]
+    if conversas:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futuros=[executor.submit(consultar_mensagens,c) for c in conversas]
+            for futuro in as_completed(futuros): encontrados.extend(futuro.result())
+
+    falhas=[]; vistos=set()
+    for conversa,mensagem,erro,quando in encontrados:
+        chave=(str(conversa.get('id') or ''),str(mensagem.get('id') or ''))
+        if chave in vistos: continue
+        vistos.add(chave)
+        inbox=str(conversa.get('inbox_id') or '')
+        numero=locais.get(inbox,{})
+        codigo=(re.match(r'\s*(\d{3,})\s*[:\-]',erro) or [None,''])[1]
+        falhas.append({'conversa_id':str(conversa.get('id') or ''),'mensagem_id':str(mensagem.get('id') or ''),
+                       'numero_id':numero.get('id'),'numero':numero.get('nome') or 'Número não localizado no painel',
+                       'waba_id':numero.get('waba_id') or '', 'inbox_id':inbox,
+                       'codigo':codigo,'erro':erro[:300],
+                       'bloqueio_meta':codigo in ('131031','131026') or 'business account locked' in erro.lower(),
+                       'quando':quando.strftime('%d/%m/%Y, %H:%M:%S') if quando else 'Horário não informado',
+                       '_ordem':quando.timestamp() if quando else 0})
+    falhas.sort(key=lambda x:(not x['bloqueio_meta'],-x['_ordem']))
+    for falha in falhas: falha.pop('_ordem',None)
+    return {'horas':horas,'conversas_analisadas':len(conversas),'falhas':falhas,
+            'atingiu_teto':atingiu_teto,'duracao_ms':round((time.monotonic()-inicio_execucao)*1000)}
 
 
 def pendentes(get_db,cfg,token):

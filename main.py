@@ -3582,6 +3582,11 @@ def descobrir_oficiais_vendeai():
     return {'total':oficiais_vendeai.descobrir(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)}
 
 
+@app.get('/api/oficiais-vendeai/falhas-crm')
+async def verificar_falhas_crm(horas: int = 24):
+    return await asyncio.to_thread(oficiais_vendeai.varrer_falhas_crm,get_db,carregar_configuracao(),VENDEAI_API_TOKEN,horas)
+
+
 @app.get('/api/oficiais-vendeai/pendentes')
 def pendentes_oficiais_vendeai():
     return oficiais_vendeai.pendentes(get_db,carregar_configuracao(),VENDEAI_API_TOKEN)
