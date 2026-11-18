@@ -353,6 +353,11 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN presenca_meta TEXT NOT NULL DEFAULT 'nao_verificado'")
     if 'status_envio_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN status_envio_meta TEXT NOT NULL DEFAULT 'UNKNOWN'")
+    if 'bloqueado_por_crm' not in colunas_existentes:
+        # A Meta pode responder AVAILABLE mesmo após o CRM receber 131031.
+        # Esta trava só é criada por uma falha confirmada no CRM e nunca é
+        # limpa pela sincronização normal da Meta.
+        conn.execute("ALTER TABLE numeros ADD COLUMN bloqueado_por_crm INTEGER NOT NULL DEFAULT 0")
     if 'banimento_meta_ativo' not in colunas_existentes:
         conn.execute('ALTER TABLE numeros ADD COLUMN banimento_meta_ativo INTEGER NOT NULL DEFAULT 0')
         conn.execute("UPDATE numeros SET banimento_meta_ativo=1 WHERE status_envio_meta='BANNED'")
@@ -432,6 +437,8 @@ def disponivel_agora(numero: sqlite3.Row) -> bool:
     if conexoes_normais.normal(numero):
         return conexoes_normais.elegivel(get_db, numero) and contagem_hoje(numero["id"]) < numero["limite_diario"] and contagem_ultima_hora(numero["id"]) < numero["limite_hora"]
     if oficiais_vendeai.via(numero) and not oficiais_vendeai.elegivel(get_db,numero):
+        return False
+    if dict(numero).get('bloqueado_por_crm'):
         return False
     if dict(numero).get("status_envio_meta") != "AVAILABLE":
         return False
@@ -573,8 +580,8 @@ def enviar_whatsapp(numero, telefone_destino, variaveis_template):
     if not webhook_saude.consultar_pagamento(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN):
         return False,'Envio bloqueado: pendência de pagamento ou consulta financeira VendeAI não confirmada.',''
     with closing(get_db()) as conn:
-        atual = conn.execute('SELECT qualidade,status_envio_meta,ativo FROM numeros WHERE id=?', (numero['id'],)).fetchone()
-    if not atual or not atual['ativo'] or atual['status_envio_meta'] != 'AVAILABLE' or atual['qualidade'] not in ('GREEN', 'YELLOW'):
+        atual = conn.execute('SELECT qualidade,status_envio_meta,ativo,bloqueado_por_crm FROM numeros WHERE id=?', (numero['id'],)).fetchone()
+    if not atual or not atual['ativo'] or atual['bloqueado_por_crm'] or atual['status_envio_meta'] != 'AVAILABLE' or atual['qualidade'] not in ('GREEN', 'YELLOW'):
         return False, 'Envio bloqueado: numero inativo, qualidade ou status da Meta nao permitem envio.', ''
     if not webhook_saude.consultar(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN):
         return False,"Envio bloqueado: webhook VendeAI incorreto ou não confirmado.",""
@@ -1569,7 +1576,7 @@ def capacidade_lote(selecionados=None, descontar_fila=True):
             continue
         dia = max(0, n['limite_diario'] - contagem_hoje(n['id']))
         hora = max(0, n['limite_hora'] - contagem_ultima_hora(n['id']))
-        elegivel = n['status_envio_meta'] == 'AVAILABLE' and bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
+        elegivel = n['status_envio_meta'] == 'AVAILABLE' and not n['bloqueado_por_crm'] and bool(n['ativo']) and not n['pausado_por_template'] and n['qualidade'] in ('GREEN', 'YELLOW') and not (n['template_header']=='IMAGE' and not n['template_imagem'])
         if gupshup.via(n): elegivel = gupshup.elegivel(get_db,n)
         if gupshup_vendeai.via(n): elegivel = gupshup_vendeai.elegivel(get_db,n)
         if conexoes_normais.normal(n): elegivel = conexoes_normais.elegivel(get_db,n)
@@ -3095,6 +3102,7 @@ def motivo_nao_ativar(n, c):
     if n['template_header']=='IMAGE' and not n['template_imagem']:return 'Falta a imagem do template'
     if gupshup_vendeai.via(n):return '' if gupshup_vendeai.elegivel(get_db,n) else 'Atualize a conexão Gupshup na VendeAI'
     if gupshup.via(n):return '' if gupshup.elegivel(get_db,n) else 'Confira a conexão Gupshup'
+    if n.get('bloqueado_por_crm'):return 'Bloqueado pelo CRM: a WABA retornou Business Account locked'
     if n['status_envio_meta']!='AVAILABLE':return 'Envio bloqueado ou status não confirmado pela Meta'
     if n['qualidade'] not in ('GREEN','YELLOW'):return 'Qualidade baixa ou desconhecida'
     if 'webhook_saude' in globals() and not webhook_saude.permitido(n):return 'Confira a sincronização do webhook'
@@ -3141,6 +3149,8 @@ async def atualizar_numero(numero_id: int, request: Request):
         return {'status':'ok'}
     if conexoes_normais.normal(atual):
         return await asyncio.to_thread(conexoes_normais.editar,get_db,atual,body)
+    if body.get('ativo') and atual['bloqueado_por_crm']:
+        raise HTTPException(400,'Este número está bloqueado pelo CRM após Business Account locked. Não pode ser ativado até o bloqueio ser liberado manualmente.')
     # Permite pausar mesmo quando a imagem ainda não foi configurada.
     imagem_config=None
     if any(k in body for k in ('template_nome','template_idioma','imagem_base64')):

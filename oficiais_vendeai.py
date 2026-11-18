@@ -290,7 +290,7 @@ def varrer_falhas_crm(get_db,cfg,token,horas=24):
         with closing(get_db()) as c,c:
             for waba_id in wabas_bloqueadas:
                 rows=c.execute('SELECT id,nome FROM numeros WHERE waba_id=? AND ativo=1',(waba_id,)).fetchall()
-                c.execute("UPDATE numeros SET ativo=0,pausado_por_qualidade=0,status_envio_meta='BLOCKED' WHERE waba_id=?",(waba_id,))
+                c.execute("UPDATE numeros SET ativo=0,pausado_por_qualidade=0,bloqueado_por_crm=1,status_envio_meta='BLOCKED' WHERE waba_id=?",(waba_id,))
                 numeros_pausados+=len(rows)
                 for row in rows:
                     c.execute('INSERT INTO eventos(numero_id,tipo,detalhe,criado_em) VALUES(?,?,?,?)',
