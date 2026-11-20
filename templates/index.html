@@ -320,6 +320,7 @@
       <a href="#configuracoes-transbordo" data-config="transbordo">Transbordo<span>Encaminhar para outro painel</span></a>
       <a href="#configuracoes-sms" data-config="sms">SMS<span>Mensagem, link e fallback</span></a>
       <a href="#configuracoes-validador" data-config="validador">Validador WhatsApp<span>Saúde das conexões de consulta</span></a>
+      <a href="#configuracoes-contato-externo" data-config="contato-externo">Contato externo<span>Atualizar telefone no sistema de leads</span></a>
       <a href="#configuracoes-horario" data-config="horario">Horários<span>Dias e horários de envio</span></a>
     </nav>
     <div class="config-paineis">
@@ -344,6 +345,19 @@
     <button type="submit" class="btn-toggle">Salvar transbordo</button>
     <button type="button" class="btn-editar" onclick="testarTransbordo()">Testar conexão salva</button>
     <p id="transbordo-config-resultado" role="status"></p>
+  </form>
+</section>
+<section class="cartao config-conteudo" id="config-contato-externo" hidden>
+  <h2>Atualização do contato externo</h2>
+  <p>Depois que o WhatsApp for aceito para envio, atualiza o CPF e o telefone no sistema de leads. A atualização roda em segundo plano e nunca atrasa o disparo.</p>
+  <form onsubmit="salvarContatoExterno(event)">
+    <p><label><input type="checkbox" id="contato-externo-habilitado"> Atualizar contatos após disparo confirmado</label></p>
+    <p><label>URL <input id="contato-externo-url" type="url" readonly></label></p>
+    <p><label>Token de serviço <input id="contato-externo-token" type="password" autocomplete="new-password" placeholder="Vazio mantém o token atual"></label></p>
+    <p id="contato-externo-token-status" style="font-size:13px;"></p>
+    <p><label><input type="checkbox" id="contato-externo-remover-token"> Remover token salvo</label></p>
+    <button type="submit" class="btn-toggle">Salvar atualização</button>
+    <p id="contato-externo-resultado" role="status"></p>
   </form>
 </section>
 <section class="cartao config-conteudo" id="config-horario" hidden>
@@ -558,7 +572,7 @@
 <script>
 function mostrarPagina() {
   const categoria = location.hash.replace('#configuracoes-', '');
-  const configuracoes = ['vendeai', 'sms', 'horario', 'transbordo', 'validador'].includes(categoria);
+  const configuracoes = ['vendeai', 'sms', 'horario', 'transbordo', 'validador', 'contato-externo'].includes(categoria);
   document.getElementById('pagina-painel').hidden = configuracoes;
   document.getElementById('pagina-configuracoes').hidden = !configuracoes;
   for (const id of ['painel', 'configuracoes']) {
@@ -1009,6 +1023,25 @@ async function carregarConfiguracaoValidadorWhatsapp(){
 async function salvarValidadorWhatsapp(ev){
   ev.preventDefault();const status=document.getElementById('validador-config-status');status.textContent='Salvando…';
   try{const r=await fetch('/api/validador-whatsapp/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:document.getElementById('validador-url').value,token:document.getElementById('validador-token').value})});const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível salvar.');document.getElementById('validador-token').value='';await carregarConfiguracaoValidadorWhatsapp();const resultado=await carregarValidadorWhatsapp(true);status.textContent=resultado?.estado==='conectado'?'Configuração salva e conexão confirmada.':'Configuração salva. Confira o alerta acima.';}catch(e){status.textContent=e.message;}
+}
+
+async function carregarContatoExterno(){
+  try{const r=await fetch('/api/configuracao');const c=await r.json();if(!r.ok)throw Error(c.detail||'Não foi possível carregar.');
+    document.getElementById('contato-externo-habilitado').checked=Boolean(c.contato_externo_habilitado);
+    document.getElementById('contato-externo-url').value=c.contato_externo_url||'https://app.esteiradeleads.shop/webhook/contato-externo';
+    document.getElementById('contato-externo-token').value='';
+    document.getElementById('contato-externo-remover-token').checked=false;
+    document.getElementById('contato-externo-token-status').textContent=c.contato_externo_token_configurado?'Token salvo. Preencha somente para trocar.':'Token ainda não configurado.';
+  }catch(e){document.getElementById('contato-externo-resultado').textContent=e.message;}
+}
+async function salvarContatoExterno(ev){
+  ev.preventDefault();const aviso=document.getElementById('contato-externo-resultado');aviso.textContent='Salvando…';
+  try{const r=await fetch('/api/configuracao',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+    contato_externo_habilitado:document.getElementById('contato-externo-habilitado').checked,
+    contato_externo_token:document.getElementById('contato-externo-token').value,
+    contato_externo_remover_token:document.getElementById('contato-externo-remover-token').checked
+  })});const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível salvar.');await carregarContatoExterno();aviso.textContent='Configuração salva. Os próximos disparos confirmados serão atualizados.';
+  }catch(e){aviso.textContent=e.message;}
 }
 
 async function carregarSms() {
@@ -1782,6 +1815,7 @@ async function dispararLote() {
 carregarWabasSalvas();
 carregarHorario();
 carregarSms();
+carregarContatoExterno();
 carregarVendeai();
 carregarTransbordo();
 carregarValidadorWhatsapp();

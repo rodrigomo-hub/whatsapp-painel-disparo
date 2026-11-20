@@ -33,6 +33,7 @@ import qualidade_historico
 import optout
 import conexoes_normais
 import oficiais_vendeai
+import contatos_externos
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, quote
@@ -253,6 +254,12 @@ def init_db():
         conn.execute("ALTER TABLE configuracao ADD COLUMN vendeai_account_id TEXT NOT NULL DEFAULT ''")
     if "vendeai_inbox_id" not in colunas_config:
         conn.execute("ALTER TABLE configuracao ADD COLUMN vendeai_inbox_id TEXT NOT NULL DEFAULT ''")
+    if "contato_externo_habilitado" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN contato_externo_habilitado INTEGER NOT NULL DEFAULT 0")
+    if "contato_externo_url" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN contato_externo_url TEXT NOT NULL DEFAULT 'https://app.esteiradeleads.shop/webhook/contato-externo'")
+    if "contato_externo_token" not in colunas_config:
+        conn.execute("ALTER TABLE configuracao ADD COLUMN contato_externo_token TEXT NOT NULL DEFAULT ''")
 
     # linha unica de configuracao (id sempre 1) - cria com os defaults se ainda nao existir.
     # So roda depois das migracoes acima, garantindo que todas as colunas ja existem.
@@ -402,6 +409,7 @@ def init_db():
     gupshup_vendeai.migrar(conn)
     qualidade_historico.migrar(conn)
     webhook_saude.migrar(conn)
+    contatos_externos.migrar(conn)
     conn.commit()
     conn.close()
 
@@ -479,6 +487,7 @@ def carregar_configuracao() -> dict:
     cfg["vendeai_habilitado"] = bool(cfg["vendeai_habilitado"])
     cfg["fila_habilitada"] = bool(cfg["fila_habilitada"])
     cfg["transbordo_habilitado"] = bool(cfg["transbordo_habilitado"])
+    cfg["contato_externo_habilitado"] = bool(cfg.get("contato_externo_habilitado"))
     cfg["faixas_horario"] = json.loads(cfg["faixas_horario"])
     return cfg
 
@@ -859,6 +868,9 @@ def registrar_disparo(numero_id, cpf, nome_lead, telefone, status, erro="", wami
     disparo_id = cursor.lastrowid
     if status == "sucesso" and canal == "whatsapp":
         transbordo.agendar_compartilhado(conn,disparo_id,compartilhado)
+        # Integração assíncrona: não pode atrasar nem mudar o resultado do envio.
+        cfg_externo=dict(conn.execute('SELECT contato_externo_habilitado FROM configuracao WHERE id=1').fetchone())
+        contatos_externos.agendar(conn,disparo_id,cpf,telefone,agora_iso(),cfg_externo)
     conn.commit()
     disparo_id = cursor.lastrowid
     conn.close()
@@ -1396,6 +1408,15 @@ async def loop_etiquetas_disparo():
         await asyncio.sleep(0.1 if fez else 2)
 
 
+async def loop_contatos_externos():
+    while True:
+        try:
+            fez=await asyncio.to_thread(contatos_externos.processar_um,get_db,carregar_configuracao,agora_iso)
+        except Exception:
+            fez=False
+        await asyncio.sleep(0.2 if fez else 3)
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
@@ -1410,6 +1431,7 @@ async def startup():
     vendeai_eventos.recuperar_interrompidos(get_db)
     app.state.eventos_task = asyncio.create_task(loop_eventos_new())
     app.state.etiquetas_task = asyncio.create_task(loop_etiquetas_disparo())
+    app.state.contatos_externos_task = asyncio.create_task(loop_contatos_externos())
     asyncio.create_task(loop_verificar_qualidade())
     app.state.webhook_saude_task=asyncio.create_task(loop_webhook_saude())
     app.state.validador_whatsapp_task=asyncio.create_task(loop_validador_whatsapp())
@@ -2511,6 +2533,7 @@ def obter_configuracao():
     cfg["vendeai_token_configurado"] = bool(token_painel or VENDEAI_API_TOKEN)
     cfg["vendeai_token_origem"] = "painel" if token_painel else ("ambiente" if VENDEAI_API_TOKEN else "ausente")
     cfg['sms_token_configurado']=bool(token_sms())
+    cfg['contato_externo_token_configurado']=bool(cfg.pop('contato_externo_token',''))
     return cfg
 
 
@@ -2606,6 +2629,21 @@ async def atualizar_configuracao(request: Request):
         raise HTTPException(400, "vendeai_falha_modo deve ser bloquear ou continuar")
     if "vendeai_habilitado" in body and type(body["vendeai_habilitado"]) is not bool:
         raise HTTPException(400, "vendeai_habilitado deve ser booleano")
+    if 'contato_externo_habilitado' in body and type(body['contato_externo_habilitado']) is not bool:
+        raise HTTPException(400,'Ativação da atualização externa inválida')
+    for campo in ('contato_externo_url','contato_externo_token'):
+        if campo in body:
+            if not isinstance(body[campo],str): raise HTTPException(400,'Configuração do contato externo inválida')
+            body[campo]=body[campo].strip()
+    if body.get('contato_externo_token')=='': body.pop('contato_externo_token',None)
+    if body.get('contato_externo_remover_token') is True: body['contato_externo_token']=''
+    if body.get('contato_externo_url'):
+        url=urlparse(body['contato_externo_url'])
+        if url.scheme!='https' or url.hostname!='app.esteiradeleads.shop' or url.path!='/webhook/contato-externo' or url.query or url.fragment:
+            raise HTTPException(400,'A URL deve ser https://app.esteiradeleads.shop/webhook/contato-externo')
+    prevista_contato={**atual,**body}
+    if prevista_contato.get('contato_externo_habilitado') and not prevista_contato.get('contato_externo_token'):
+        raise HTTPException(400,'Informe o token de serviço antes de ativar a atualização externa')
     prevista = {**carregar_configuracao(), **body}
     if prevista["vendeai_habilitado"] and (not prevista["vendeai_account_id"] or not (prevista["vendeai_mailing_token"] or VENDEAI_API_TOKEN)):
         raise HTTPException(400, "Informe Account ID e token do CRM antes de habilitar a VendeAI")
@@ -2641,6 +2679,8 @@ async def atualizar_configuracao(request: Request):
 
     if "vendeai_habilitado" in body:
         body["vendeai_habilitado"] = 1 if body["vendeai_habilitado"] else 0
+    if 'contato_externo_habilitado' in body:
+        body['contato_externo_habilitado'] = 1 if body['contato_externo_habilitado'] else 0
 
     if "vendeai_url" in body and body["vendeai_url"] and not body["vendeai_url"].startswith(("http://", "https://")):
         raise HTTPException(400, "vendeai_url deve comecar com http:// ou https://")
@@ -2650,6 +2690,7 @@ async def atualizar_configuracao(request: Request):
         "sms_habilitado", "sms_modo", "sms_template", "whatsapp_destino",
         "whatsapp_mensagem_template", "link_base_url",
         "vendeai_habilitado", "vendeai_url", "vendeai_account_id", "vendeai_inbox_id",
+        'contato_externo_habilitado','contato_externo_url','contato_externo_token',
         *vendeai_mailing.CONFIG_COLUMNS, *fila_disparos.CONFIG_COLUMNS, *transbordo.CONFIG_COLUMNS,
     }
     atualizacoes = {k: v for k, v in body.items() if k in campos_validos}
