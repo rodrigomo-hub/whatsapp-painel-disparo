@@ -75,7 +75,9 @@ def processar_um(get_db, configuracao, agora_iso):
             conn.execute("UPDATE contatos_externos_pendentes SET estado='sucesso',http_status=?,erro='',enviado_em=? WHERE disparo_id=?", (status, agora_iso(), item['disparo_id']))
         else:
             tentativas = item['tentativas'] + 1
-            estado = 'erro' if tentativas >= MAX_TENTATIVAS else 'pendente'
+            # 409 da Esteira indica CPF ligado a mais de um lead: repetir não
+            # resolve e poderia deixar milhares de tentativas inúteis na fila.
+            estado = 'erro' if status == 409 or tentativas >= MAX_TENTATIVAS else 'pendente'
             # 1, 5, 20 e 60 min: falhas não interferem no próximo disparo.
             espera = (60,300,1200,3600)[min(tentativas-1,3)]
             conn.execute('''UPDATE contatos_externos_pendentes
