@@ -3156,7 +3156,8 @@ def preparar_imagem_template(body, atual=None):
                     WHERE id=? AND template_nome=? AND template_idioma=?
                     AND template_imagem!='' ''',
                     (int(reutilizar),previsto.get('template_nome',''),previsto.get('template_idioma','pt_BR'))).fetchone()
-            if origem: chave=origem['template_imagem']
+            if origem:
+                chave=imagens_template.reutilizar(get_db,previsto,origem['template_imagem'],somente_local=previsto.get('via_envio')=='vendeai')
         except (TypeError,ValueError):
             pass
     if header=='IMAGE' and not chave:

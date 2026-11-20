@@ -49,6 +49,23 @@ def salvar(get_db, numero, data_url, somente_local=False):
     return chave
 
 
+def reutilizar(get_db, numero, imagem_id, somente_local=False):
+    """Clona a arte para o número de destino e cria a mídia própria na Meta.
+
+    O media_id da Meta pertence ao Phone Number ID que fez o upload; portanto
+    compartilhar apenas a chave local entre números faria o envio falhar.
+    """
+    with closing(get_db()) as c:
+        origem=c.execute('SELECT dados,mime FROM imagens_template WHERE id=?',(imagem_id,)).fetchone()
+    if not origem:
+        raise HTTPException(400,'A imagem salva para reutilização não foi encontrada. Anexe o arquivo novamente.')
+    media='' if somente_local else upload(numero,origem['dados'],origem['mime'])
+    chave=uuid.uuid4().hex
+    with closing(get_db()) as c,c:
+        c.execute('INSERT INTO imagens_template VALUES(?,?,?,?,?,?)',(chave,numero['phone_number_id'],origem['dados'],origem['mime'],media,time.time()))
+    return chave
+
+
 def media_id(get_db,numero):
     with closing(get_db()) as c:
         row=c.execute('SELECT * FROM imagens_template WHERE id=? AND phone_id=?',(numero['template_imagem'],numero['phone_number_id'])).fetchone()
