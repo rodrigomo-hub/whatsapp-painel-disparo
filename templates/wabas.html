@@ -109,7 +109,15 @@ $('excluir-waba').onclick=async()=>{
   await contas();
  }catch(e){$('consulta').textContent=e.message;}finally{$('excluir-waba').disabled=!atual;}
 };
-$('copiar-token').onclick=async()=>{if(!atual)return;const b=$('copiar-token');b.disabled=true;b.textContent='Copiando…';try{const d=await api('/api/wabas-painel/'+encodeURIComponent(atual)+'/token');await navigator.clipboard.writeText(d.access_token);$('consulta').textContent='Token copiado para a área de transferência.';}catch(e){$('consulta').textContent='Não foi possível copiar o token: '+e.message;}finally{b.disabled=!atual;b.textContent='Copiar token';}};
+async function copiarTexto(texto){
+  // Alguns navegadores ou acessos via proxy não liberam navigator.clipboard.
+  // O campo temporário mantém a cópia funcionando sem mostrar o token na tela.
+  try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(texto);return;}}catch(e){}
+  const area=document.createElement('textarea');area.value=texto;area.setAttribute('readonly','');area.style.cssText='position:fixed;opacity:0;pointer-events:none;left:-9999px;top:-9999px';document.body.append(area);area.focus();area.select();
+  const copiado=document.execCommand('copy');area.remove();
+  if(!copiado)throw Error('O navegador bloqueou a cópia. Atualize a página e tente novamente.');
+}
+$('copiar-token').onclick=async()=>{if(!atual)return;const b=$('copiar-token');b.disabled=true;b.textContent='Copiando…';try{const d=await api('/api/wabas-painel/'+encodeURIComponent(atual)+'/token');await copiarTexto(d.access_token);$('consulta').textContent='Token copiado para a área de transferência.';}catch(e){$('consulta').textContent='Não foi possível copiar o token: '+e.message;}finally{b.disabled=!atual;b.textContent='Copiar token';}};
 $('form').onsubmit=async ev=>{ev.preventDefault();$('salvar').disabled=true;$('save-status').textContent='Validando e salvando…';try{const d=await api('/api/wabas-painel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({waba_id:$('id').value,access_token:$('token').value})});$('token').value='';$('save-status').textContent='WABA salva.';await contas();await abrir(d.id);}catch(e){$('save-status').textContent=e.message;}finally{$('salvar').disabled=false;}};
 $('atualizar').onclick=()=>{if(atual)abrir(atual);};$('pesquisa').oninput=renderTemplates;$('status').onchange=renderTemplates;setInterval(()=>{if(atual&&!document.hidden&&!$('atualizar').disabled&&!$('fixos-dialog').open)abrir(atual);},300000);contas();
 </script></body></html>
