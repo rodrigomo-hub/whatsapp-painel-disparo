@@ -1324,7 +1324,9 @@ async def loop_optout(prioritario=False):
             fez = await asyncio.to_thread(optout.processar_um,get_db,VENDEAI_API_TOKEN,prioritario)
         except Exception:
             fez = False
-        await asyncio.sleep(0 if fez else 0.1)
+        # Mantém o opt-out rápido, sem quatro workers disputando escrita quando
+        # não existe nenhuma conversa pendente para encerrar.
+        await asyncio.sleep(0 if fez else (0.5 if prioritario else 2))
 
 
 async def loop_campanhas_sms():
@@ -1352,7 +1354,7 @@ async def loop_link_conversa():
             fez=await asyncio.to_thread(link_conversa.processar_um,get_db,cfg['vendeai_account_id'],cfg.get('vendeai_mailing_token') or VENDEAI_API_TOKEN)
         except Exception:
             fez=False
-        await asyncio.sleep(0 if fez else 0.1)
+        await asyncio.sleep(0 if fez else 1)
 
 
 async def loop_oferta_interna():

@@ -74,6 +74,11 @@ def recuperar(get_db):
 
 def processar_um(get_db,conta,token):
     if str(conta)!=CONTA or not token:return False
+    # Não adquira escrita no SQLite a cada ciclo quando o teste estiver
+    # desativado ou não houver conversa pendente.
+    with closing(get_db()) as c:
+        if not c.execute('SELECT ativo FROM link_conversa_config WHERE id=1').fetchone()[0]:return False
+        if not c.execute("SELECT 1 FROM link_conversa_envios WHERE estado='PENDENTE' LIMIT 1").fetchone():return False
     with closing(get_db()) as c,c:
         c.execute('BEGIN IMMEDIATE')
         if not c.execute('SELECT ativo FROM link_conversa_config WHERE id=1').fetchone()[0]:return False

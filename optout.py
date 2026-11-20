@@ -93,9 +93,16 @@ def retry_after(value):
 
 def processar_um(get_db, token, somente_resolver=False):
     if not token: return False
+    condicao="estado='pendente' AND tentar_em<=?" + (" AND passo IN ('resolver','excluir_conversa')" if somente_resolver else "")
+    # Leitura barata antes do BEGIN IMMEDIATE: evita travar o banco em ciclos
+    # ociosos. A seleção é repetida dentro da transação para manter a operação
+    # atômica entre os workers.
+    with closing(get_db()) as c:
+        if not c.execute("SELECT 1 FROM optout_tarefas WHERE "+condicao+" LIMIT 1", (time.time(),)).fetchone():
+            return False
     with closing(get_db()) as c,c:
         c.execute('BEGIN IMMEDIATE')
-        row = c.execute("SELECT * FROM optout_tarefas WHERE estado='pendente' AND tentar_em<=?" + (" AND passo IN ('resolver','excluir_conversa')" if somente_resolver else "") + " ORDER BY CASE WHEN passo IN ('resolver','excluir_conversa') THEN 0 ELSE 1 END,criado_em LIMIT 1", (time.time(),)).fetchone()
+        row = c.execute("SELECT * FROM optout_tarefas WHERE "+condicao+" ORDER BY CASE WHEN passo IN ('resolver','excluir_conversa') THEN 0 ELSE 1 END,criado_em LIMIT 1", (time.time(),)).fetchone()
         if not row: return False
         t = dict(row)
         c.execute("UPDATE optout_tarefas SET estado='executando' WHERE id=?", (t['id'],))
