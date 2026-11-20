@@ -3486,6 +3486,9 @@ async def loop_fila():
             await asyncio.to_thread(obter_fila().processar, carregar_configuracao,
                                     cadastrar_base_vendeai, executar_disparo_preparado,
                                     dentro_do_horario_permitido, lambda: app.state.fila_parar, impedimento_fila)
+            # Usa o worker principal como garantia adicional: mesmo se uma
+            # tarefa auxiliar reiniciar, contatos externos continuam fluindo.
+            await asyncio.to_thread(contatos_externos.processar_um,get_db,carregar_configuracao,agora_iso)
         except Exception as erro:
             registrar_evento(None, "fila_worker_erro", type(erro).__name__)
         await asyncio.sleep(2)
