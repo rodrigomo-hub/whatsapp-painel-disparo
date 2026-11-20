@@ -98,6 +98,8 @@ sessoes_ativas = set()
 # (mais lento e arriscado se a API deles cair no meio de um lote grande).
 _cache_saldo_sms = {"valor": None, "expira_em": None, "atualizado_em": None, "erro": None}
 CACHE_SALDO_TTL_SEGUNDOS = 300  # 5 minutos
+_cache_validador_whatsapp = {"valor": None, "expira_em": 0}
+TTL_VALIDADOR_WHATSAPP = 60
 
 app = FastAPI()
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -374,6 +376,16 @@ def init_db():
     campanhas_sms.migrar(conn)
     lembretes_sms.migrar(conn)
     conn.execute('CREATE TABLE IF NOT EXISTS sms_credencial(id INTEGER PRIMARY KEY CHECK(id=1),token TEXT NOT NULL)')
+    # Credencial separada: este provedor apenas confirma se existe uma conexão
+    # WhatsApp livre para validação de número; ele não participa do rodízio.
+    conn.execute('''CREATE TABLE IF NOT EXISTS validador_whatsapp_config (
+        id INTEGER PRIMARY KEY CHECK(id=1), url TEXT NOT NULL,
+        token TEXT NOT NULL DEFAULT '')''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS validador_whatsapp_status (
+        id INTEGER PRIMARY KEY CHECK(id=1), estado TEXT NOT NULL,
+        conectadas INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
+        erro TEXT NOT NULL DEFAULT '', atualizado_em TEXT NOT NULL)''')
+    conn.execute("INSERT OR IGNORE INTO validador_whatsapp_config(id,url,token) VALUES(1,'https://izapflow.com.br/backend/whatsapp','')")
     textos_templates.migrar(conn)
     if 'limite_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN limite_meta TEXT NOT NULL DEFAULT ''")
@@ -1009,6 +1021,61 @@ def token_sms():
     return r['token'] if r else SMS_GTI_TOKEN
 
 
+def consultar_validador_whatsapp(forcar=False):
+    """Estado do IzapFlow somente para alerta visual; nunca decide o disparo."""
+    agora=time.time()
+    if not forcar and _cache_validador_whatsapp['valor'] and _cache_validador_whatsapp['expira_em']>agora:
+        return dict(_cache_validador_whatsapp['valor'])
+    with closing(get_db()) as c:
+        cfg=c.execute('SELECT url,token FROM validador_whatsapp_config WHERE id=1').fetchone()
+        anterior=c.execute('SELECT * FROM validador_whatsapp_status WHERE id=1').fetchone()
+    if not cfg or not cfg['token']:
+        resultado={'configurado':False,'estado':'nao_configurado','conectadas':0,'total':0,
+                   'erro':'Configure o token do validador de WhatsApp.','atualizado_em':anterior['atualizado_em'] if anterior else None}
+    else:
+        try:
+            resposta=requests.get(cfg['url'],headers={'accept':'application/json, text/plain, */*','authorization':cfg['token']},timeout=(5,15),allow_redirects=False)
+            dados=resposta.json()
+            if resposta.status_code!=200: raise ValueError('HTTP '+str(resposta.status_code))
+            if isinstance(dados,dict):
+                itens=next((dados.get(chave) for chave in ('data','payload','connections','whatsapps') if isinstance(dados.get(chave),list)),None)
+            else: itens=dados
+            if not isinstance(itens,list): raise ValueError('Resposta inesperada')
+            conectadas=[x for x in itens if isinstance(x,dict) and str(x.get('status') or '').upper()=='CONNECTED']
+            resultado={'configurado':True,'estado':'conectado' if conectadas else 'sem_conexao',
+                       'conectadas':len(conectadas),'total':len(itens),'erro':'',
+                       'atualizado_em':agora_iso()}
+        except (requests.RequestException,ValueError,TypeError,AttributeError):
+            resultado={'configurado':True,'estado':'indisponivel','conectadas':0,'total':0,
+                       'erro':'Não foi possível consultar o validador agora.','atualizado_em':agora_iso()}
+    if resultado['configurado'] and resultado['atualizado_em']:
+        with closing(get_db()) as c,c:
+            c.execute('''INSERT INTO validador_whatsapp_status(id,estado,conectadas,total,erro,atualizado_em)
+                VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET estado=excluded.estado,conectadas=excluded.conectadas,
+                total=excluded.total,erro=excluded.erro,atualizado_em=excluded.atualizado_em''',
+                (resultado['estado'],resultado['conectadas'],resultado['total'],resultado['erro'],resultado['atualizado_em']))
+    _cache_validador_whatsapp.update(valor=dict(resultado),expira_em=agora+TTL_VALIDADOR_WHATSAPP)
+    return resultado
+
+
+def configurar_validador_whatsapp(body):
+    url=body.get('url','')
+    token=body.get('token','')
+    if not isinstance(url,str) or not isinstance(token,str): raise HTTPException(400,'Configuração inválida.')
+    url=url.strip().rstrip('/')
+    parsed=urlparse(url)
+    if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise HTTPException(400,'Informe uma URL HTTPS válida para o validador.')
+    if token and (len(token)>4096 or any(c.isspace() for c in token)):
+        raise HTTPException(400,'Token inválido.')
+    with closing(get_db()) as c,c:
+        atual=c.execute('SELECT token FROM validador_whatsapp_config WHERE id=1').fetchone()
+        salvo=token.strip() if token.strip() else (atual['token'] if atual else '')
+        c.execute('INSERT INTO validador_whatsapp_config(id,url,token) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET url=excluded.url,token=excluded.token',(url,salvo))
+    _cache_validador_whatsapp.update(valor=None,expira_em=0)
+    return {'configurado':bool(salvo),'url':url}
+
+
 def consultar_saldo_sms(forcar=False) -> dict:
     """
     Consulta o saldo de creditos da GTI SMS, com cache de alguns minutos
@@ -1198,6 +1265,15 @@ async def loop_webhook_saude():
         await asyncio.sleep(300)
 
 
+async def loop_validador_whatsapp():
+    while True:
+        try:
+            await asyncio.to_thread(consultar_validador_whatsapp,True)
+        except Exception:
+            pass
+        await asyncio.sleep(300)
+
+
 async def loop_verificar_qualidade():
     while True:
         await asyncio.sleep(INTERVALO_CHECAGEM_QUALIDADE)
@@ -1330,6 +1406,7 @@ async def startup():
     app.state.etiquetas_task = asyncio.create_task(loop_etiquetas_disparo())
     asyncio.create_task(loop_verificar_qualidade())
     app.state.webhook_saude_task=asyncio.create_task(loop_webhook_saude())
+    app.state.validador_whatsapp_task=asyncio.create_task(loop_validador_whatsapp())
     app.state.fila_parar = False
     campanhas_sms.recuperar(get_db)
     app.state.sms_task=asyncio.create_task(loop_campanhas_sms())
@@ -2431,6 +2508,23 @@ def obter_configuracao():
     return cfg
 
 
+@app.get('/api/validador-whatsapp')
+def estado_validador_whatsapp(atualizar: bool = False):
+    return JSONResponse(consultar_validador_whatsapp(atualizar),headers={'Cache-Control':'no-store'})
+
+
+@app.get('/api/validador-whatsapp/config')
+def obter_configuracao_validador_whatsapp():
+    with closing(get_db()) as c:
+        row=c.execute('SELECT url,token FROM validador_whatsapp_config WHERE id=1').fetchone()
+    return {'url':row['url'] if row else 'https://izapflow.com.br/backend/whatsapp','token_configurado':bool(row and row['token'])}
+
+
+@app.put('/api/validador-whatsapp/config')
+def salvar_configuracao_validador_whatsapp(body: dict):
+    return configurar_validador_whatsapp(body)
+
+
 @app.patch("/api/configuracao")
 async def atualizar_configuracao(request: Request):
     body = await request.json()
@@ -3339,6 +3433,7 @@ async def loop_fila():
 async def parar_fila():
     app.state.fila_parar = True
     if getattr(app.state,"webhook_saude_task",None):app.state.webhook_saude_task.cancel()
+    if getattr(app.state,"validador_whatsapp_task",None):app.state.validador_whatsapp_task.cancel()
     if getattr(app.state,'sms_task',None):await app.state.sms_task
     if getattr(app.state,'lembretes_sms_task',None):await app.state.lembretes_sms_task
     if getattr(app.state,"etiquetas_task",None): app.state.etiquetas_task.cancel()

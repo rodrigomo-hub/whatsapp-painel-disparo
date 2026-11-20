@@ -103,6 +103,9 @@
 #config-transbordo form p {margin:14px 0;}
 #config-transbordo label {display:block;font-size:14px;}
 #config-transbordo input:not([type="checkbox"]) {display:block;width:100%;max-width:580px;box-sizing:border-box;margin-top:6px;}
+.validador-whatsapp {display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 20px;padding:16px 18px;border:1px solid #dbe4ee;border-radius:10px;background:#f8fafc;}
+.validador-whatsapp.ok {background:#ecfdf3;border-color:#86efac;color:#166534;}.validador-whatsapp.erro {background:#fff1f2;border-color:#fda4af;color:#b42318;}.validador-whatsapp.neutro {background:#f8fafc;color:#475569;}
+.validador-whatsapp strong {display:block;font-size:16px;}.validador-whatsapp small {display:block;margin-top:4px;color:inherit;opacity:.82;}
 </style>
 </head>
 <body>
@@ -132,6 +135,7 @@
     <strong>Importante:</strong> Antes de cadastrar um número, verifique se há uma forma de pagamento ativa no Business Manager. Este painel registra apenas os envios aceitos pela Meta. Acompanhe as entregas no Gerenciador de Mensagens da Meta.
   </div>
 </div>
+<div class="validador-whatsapp neutro" id="validador-whatsapp" role="status" aria-live="polite"><div><strong id="validador-whatsapp-titulo">Validador de WhatsApp</strong><small id="validador-whatsapp-detalhe">Consultando conexões…</small></div><button type="button" class="btn-editar" id="validador-whatsapp-atualizar" onclick="carregarValidadorWhatsapp(true)">Atualizar</button></div>
 
 <div class="cartao" style="text-align:center; padding:24px;">
   <div style="font-size:13px; color:#888; text-transform:uppercase; letter-spacing:0.5px;">Total enviado hoje</div>
@@ -315,6 +319,7 @@
       <a href="#configuracoes-vendeai" data-config="vendeai">Base de campanha<span>Cadastro de leads na VendeAI</span></a>
       <a href="#configuracoes-transbordo" data-config="transbordo">Transbordo<span>Encaminhar para outro painel</span></a>
       <a href="#configuracoes-sms" data-config="sms">SMS<span>Mensagem, link e fallback</span></a>
+      <a href="#configuracoes-validador" data-config="validador">Validador WhatsApp<span>Saúde das conexões de consulta</span></a>
       <a href="#configuracoes-horario" data-config="horario">Horários<span>Dias e horários de envio</span></a>
     </nav>
     <div class="config-paineis">
@@ -416,6 +421,20 @@
 
     <button type="submit" class="btn-toggle" style="margin-top:12px;">Salvar configuração de SMS</button>
     <span id="sms-salvo" style="color:#16a34a; font-size:13px; display:none;">✅ Salvo</span>
+  </form>
+</section>
+<section class="cartao config-conteudo" id="config-validador" hidden>
+  <h2>🟢 Validador de WhatsApp</h2>
+  <p>Este serviço é usado apenas como alerta: ele informa se existe pelo menos uma conexão <code>CONNECTED</code> disponível para validar números no IzapFlow. Não interfere nos disparos, na fila ou na liberação de consultas.</p>
+  <form id="form-validador" onsubmit="salvarValidadorWhatsapp(event)" style="display:block;max-width:760px">
+    <label for="validador-url">URL da consulta</label>
+    <input id="validador-url" type="url" value="https://izapflow.com.br/backend/whatsapp" required style="width:100%;box-sizing:border-box;margin:6px 0 14px">
+    <label for="validador-token">Token de autorização</label>
+    <input id="validador-token" type="password" autocomplete="new-password" placeholder="Vazio mantém o token atual" style="width:100%;box-sizing:border-box;margin:6px 0 8px">
+    <small id="validador-token-status" style="display:block;color:#64748b;margin-bottom:14px"></small>
+    <button type="submit" class="btn-toggle">Salvar e verificar</button>
+    <button type="button" class="btn-editar" onclick="carregarValidadorWhatsapp(true)">Verificar agora</button>
+    <p id="validador-config-status" role="status"></p>
   </form>
 </section>
 <section class="cartao config-conteudo" id="config-vendeai" hidden>
@@ -539,7 +558,7 @@
 <script>
 function mostrarPagina() {
   const categoria = location.hash.replace('#configuracoes-', '');
-  const configuracoes = ['vendeai', 'sms', 'horario', 'transbordo'].includes(categoria);
+  const configuracoes = ['vendeai', 'sms', 'horario', 'transbordo', 'validador'].includes(categoria);
   document.getElementById('pagina-painel').hidden = configuracoes;
   document.getElementById('pagina-configuracoes').hidden = !configuracoes;
   for (const id of ['painel', 'configuracoes']) {
@@ -953,6 +972,35 @@ async function carregarSaldoSms() {
   } else {
     el.textContent = `${dados.saldo} créditos (expira em ${dados.expira_em})`;
   }
+}
+
+function mostrarValidadorWhatsapp(dados){
+  const area=document.getElementById('validador-whatsapp'),titulo=document.getElementById('validador-whatsapp-titulo'),detalhe=document.getElementById('validador-whatsapp-detalhe');
+  area.className='validador-whatsapp '+(dados.estado==='conectado'?'ok':dados.estado==='nao_configurado'?'neutro':'erro');
+  if(dados.estado==='conectado'){
+    titulo.textContent='Validador WhatsApp conectado';
+    detalhe.textContent=dados.conectadas+' conexão(ões) CONNECTED de '+dados.total+' encontrada(s) · '+(dados.atualizado_em?'atualizado em '+new Date(dados.atualizado_em).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'');
+  }else if(dados.estado==='sem_conexao'){
+    titulo.textContent='Atenção: nenhum WhatsApp conectado no validador';
+    detalhe.textContent='O IzapFlow respondeu, mas não há nenhuma conexão CONNECTED. Verifique a conexão antes de usar o serviço de validação.';
+  }else if(dados.estado==='nao_configurado'){
+    titulo.textContent='Validador WhatsApp não configurado';
+    detalhe.textContent='Cadastre o token em Configurações › Validador WhatsApp para acompanhar as conexões.';
+  }else{
+    titulo.textContent='Atenção: não foi possível consultar o validador';
+    detalhe.textContent=dados.erro||'Confira o token, a URL e a disponibilidade do serviço.';
+  }
+}
+async function carregarValidadorWhatsapp(atualizar=false){
+  const b=document.getElementById('validador-whatsapp-atualizar');if(b)b.disabled=true;
+  try{const r=await fetch('/api/validador-whatsapp'+(atualizar?'?atualizar=true':''));if(r.redirected)throw Error('Sessão encerrada.');const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível consultar.');mostrarValidadorWhatsapp(d);return d;}catch(e){mostrarValidadorWhatsapp({estado:'indisponivel',erro:e.message});}finally{if(b)b.disabled=false;}
+}
+async function carregarConfiguracaoValidadorWhatsapp(){
+  try{const r=await fetch('/api/validador-whatsapp/config');const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível carregar.');document.getElementById('validador-url').value=d.url||'';document.getElementById('validador-token').value='';document.getElementById('validador-token-status').textContent=d.token_configurado?'Token configurado. Preencha somente para trocar.':'Token ainda não configurado.';}catch(e){document.getElementById('validador-config-status').textContent=e.message;}
+}
+async function salvarValidadorWhatsapp(ev){
+  ev.preventDefault();const status=document.getElementById('validador-config-status');status.textContent='Salvando…';
+  try{const r=await fetch('/api/validador-whatsapp/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:document.getElementById('validador-url').value,token:document.getElementById('validador-token').value})});const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível salvar.');document.getElementById('validador-token').value='';await carregarConfiguracaoValidadorWhatsapp();const resultado=await carregarValidadorWhatsapp(true);status.textContent=resultado?.estado==='conectado'?'Configuração salva e conexão confirmada.':'Configuração salva. Confira o alerta acima.';}catch(e){status.textContent=e.message;}
 }
 
 async function carregarSms() {
@@ -1710,11 +1758,13 @@ carregarHorario();
 carregarSms();
 carregarVendeai();
 carregarTransbordo();
+carregarValidadorWhatsapp();
+carregarConfiguracaoValidadorWhatsapp();
 let atualizandoPainel=false;
 async function atualizarPainel(){
   if(document.hidden||atualizandoPainel)return;
   atualizandoPainel=true;
-  try{await Promise.allSettled([carregarTotalHoje(),carregarNumeros(),carregarHistorico(),carregarSaldoSms(),carregarFila(),carregarTransbordosRecebidos()]);}
+  try{await Promise.allSettled([carregarTotalHoje(),carregarNumeros(),carregarHistorico(),carregarSaldoSms(),carregarFila(),carregarTransbordosRecebidos(),carregarValidadorWhatsapp()]);}
   finally{atualizandoPainel=false;}
 }
 atualizarPainel();
