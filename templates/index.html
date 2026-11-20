@@ -1445,6 +1445,7 @@ function renderizarNumeros() {
       <td><span class="badge ${n.ativo&&!n.bloqueado_por_crm ? 'badge-ativo' : 'badge-pausado'}">${n.nao_configurado?'Não configurado':n.bloqueado_por_crm?'Bloqueado':n.ativo ? 'Ativo' : 'Pausado'}</span>${n.nao_configurado?'<br><small>Não participa do rodízio</small>':(!['GREEN','YELLOW','RED'].includes(n.qualidade) ? '<br><small>Envio bloqueado: qualidade desconhecida</small>' : '')}${n.bloqueado_por_crm?'<br><small style="color:#b42318">Bloqueado pelo CRM: Business Account locked</small>':(n.status_envio_meta !== 'AVAILABLE' ? '<br><small style="color:#b42318">'+({BANNED:'Banido pela Meta',BLOCKED:n.pagamento_vendeai_bloqueado ? 'Pagamento pendente na VendeAI' : 'Envio bloqueado pela Meta',DISCONNECTED:'Número não conectado na Meta',UNKNOWN:'Status de envio não confirmado'}[n.status_envio_meta] || 'Status de envio não confirmado')+'</small>' : '')}${n.pausado_por_template ? '<br><small>Template pausado pela Meta</small>' : ''}${n.presenca_meta === 'ausente' ? '<br><small style="color:#b42318">Não listado na WABA da Meta</small>' : n.presenca_meta === 'indisponivel' ? '<br><small>Consulta à Meta indisponível</small>' : ''}</td>
       <td>
         <small style="display:block;color:#64748b;font-size:11px;margin-bottom:6px" title="Horário de Brasília da última consulta de qualidade e status do número, inclusive quando a Meta não respondeu. Recarregar a página não altera esse horário.">${ultimaConsultaMeta(n.meta_consultado_em)}</small>
+        <button class="btn-toggle" onclick="atualizarNumero(${n.id},this)">Atualizar</button>
         <button class="btn-editar" onclick="abrirModal(${n.id})">Editar</button>
         ${n.nao_configurado||n.bloqueado_por_crm?'':'<button class="btn-toggle" onclick="toggleNumero('+n.id+', '+(n.ativo ? 0 : 1)+')">'+(n.ativo ? 'Pausar' : 'Ativar')+'</button>'}
         <button class="btn-remover" onclick="removerNumero(${n.id})">Remover</button>
@@ -1535,6 +1536,21 @@ async function toggleNumero(id, novoStatus) {
   const r=await fetch(`/api/numeros/${id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ativo: Boolean(novoStatus)})});
   if(!r.ok){const erro=await r.json();alert(erro.detail || 'Não foi possível alterar o número.');}
   carregarNumeros();
+}
+
+async function atualizarNumero(id, botao) {
+  const texto=botao.textContent;
+  botao.disabled=true;botao.textContent='Consultando…';
+  try {
+    const r=await fetch(`/api/atualizar-status/${id}`,{method:'POST'});
+    const d=await r.json();
+    if(!r.ok)throw Error(d.detail||'Não foi possível consultar este número.');
+    await carregarNumeros();
+  } catch(e) {
+    alert(e.message);
+  } finally {
+    if(document.body.contains(botao)){botao.disabled=false;botao.textContent=texto;}
+  }
 }
 
 async function removerNumero(id) {
