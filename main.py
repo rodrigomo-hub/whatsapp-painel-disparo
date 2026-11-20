@@ -1049,11 +1049,15 @@ def consultar_validador_whatsapp(forcar=False):
             resultado={'configurado':True,'estado':'indisponivel','conectadas':0,'total':0,
                        'erro':'Não foi possível consultar o validador agora.','atualizado_em':agora_iso()}
     if resultado['configurado'] and resultado['atualizado_em']:
-        with closing(get_db()) as c,c:
-            c.execute('''INSERT INTO validador_whatsapp_status(id,estado,conectadas,total,erro,atualizado_em)
-                VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET estado=excluded.estado,conectadas=excluded.conectadas,
-                total=excluded.total,erro=excluded.erro,atualizado_em=excluded.atualizado_em''',
-                (resultado['estado'],resultado['conectadas'],resultado['total'],resultado['erro'],resultado['atualizado_em']))
+        try:
+            with closing(get_db()) as c,c:
+                c.execute('''INSERT INTO validador_whatsapp_status(id,estado,conectadas,total,erro,atualizado_em)
+                    VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET estado=excluded.estado,conectadas=excluded.conectadas,
+                    total=excluded.total,erro=excluded.erro,atualizado_em=excluded.atualizado_em''',
+                    (resultado['estado'],resultado['conectadas'],resultado['total'],resultado['erro'],resultado['atualizado_em']))
+        except sqlite3.Error:
+            # O alerta não pode falhar só porque outra rotina está gravando no SQLite.
+            pass
     _cache_validador_whatsapp.update(valor=dict(resultado),expira_em=agora+TTL_VALIDADOR_WHATSAPP)
     return resultado
 

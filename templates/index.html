@@ -1001,7 +1001,7 @@ function mostrarValidadorWhatsapp(dados){
 }
 async function carregarValidadorWhatsapp(atualizar=false){
   const b=document.getElementById('validador-whatsapp-atualizar');if(b)b.disabled=true;
-  try{const r=await fetch('/api/validador-whatsapp'+(atualizar?'?atualizar=true':''));if(r.redirected)throw Error('Sessão encerrada.');const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível consultar.');mostrarValidadorWhatsapp(d);return d;}catch(e){mostrarValidadorWhatsapp({estado:'indisponivel',erro:e.message});}finally{if(b)b.disabled=false;}
+  try{const r=await fetch('/api/validador-whatsapp'+(atualizar?'?atualizar=true':''));if(r.redirected)throw Error('Sessão encerrada.');const texto=await r.text();let d;try{d=JSON.parse(texto);}catch(e){throw Error(r.ok?'Resposta inválida do painel.':'O painel não conseguiu consultar agora. Tente novamente em instantes.');}if(!r.ok)throw Error(d.detail||'Não foi possível consultar.');mostrarValidadorWhatsapp(d);return d;}catch(e){mostrarValidadorWhatsapp({estado:'indisponivel',erro:e.message});}finally{if(b)b.disabled=false;}
 }
 async function carregarConfiguracaoValidadorWhatsapp(){
   try{const r=await fetch('/api/validador-whatsapp/config');const d=await r.json();if(!r.ok)throw Error(d.detail||'Não foi possível carregar.');document.getElementById('validador-url').value=d.url||'';document.getElementById('validador-token').value='';document.getElementById('validador-token-status').textContent=d.token_configurado?'Token configurado. Preencha somente para trocar.':'Token ainda não configurado.';}catch(e){document.getElementById('validador-config-status').textContent=e.message;}
