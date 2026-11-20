@@ -3139,6 +3139,20 @@ def preparar_imagem_template(body, atual=None):
     if body.get('imagem_base64'):
         if header!='IMAGE': raise HTTPException(400,'Selecione um template com cabeçalho de imagem na Meta.')
         chave=imagens_template.salvar(get_db,previsto,body['imagem_base64'],somente_local=previsto.get('via_envio')=='vendeai')
+    # Uma imagem já usada pelo mesmo template pode ser reaproveitada em outro
+    # número/WABA deste painel. A chave continua apontando para o arquivo
+    # imutável salvo em imagens_template, sem duplicar upload nem arquivo.
+    reutilizar=body.get('reutilizar_imagem_numero_id')
+    if header=='IMAGE' and not chave and reutilizar:
+        try:
+            with closing(get_db()) as c:
+                origem=c.execute('''SELECT template_imagem FROM numeros
+                    WHERE id=? AND template_nome=? AND template_idioma=?
+                    AND template_imagem!='' ''',
+                    (int(reutilizar),previsto.get('template_nome',''),previsto.get('template_idioma','pt_BR'))).fetchone()
+            if origem: chave=origem['template_imagem']
+        except (TypeError,ValueError):
+            pass
     if header=='IMAGE' and not chave:
         raise HTTPException(400,'Este template exige uma imagem. Anexe um arquivo JPEG ou PNG de até 5 MB.')
     return header,chave if header=='IMAGE' else ''
