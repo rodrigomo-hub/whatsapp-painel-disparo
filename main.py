@@ -2786,6 +2786,18 @@ def salvar_waba_painel(body: dict):
     return {'id': waba_id, 'nome': nome}
 
 
+@app.get('/api/wabas-painel/{waba_id}/token')
+def token_waba_painel(waba_id: str):
+    """Entrega a credencial apenas sob sessão autenticada e só para cópia local."""
+    if not waba_id.isdigit():
+        raise HTTPException(404,'WABA não encontrada.')
+    with closing(get_db()) as conn:
+        row=conn.execute('SELECT access_token FROM wabas_salvas WHERE waba_id=?',(waba_id,)).fetchone()
+    if not row or not row['access_token']:
+        raise HTTPException(404,'Token desta WABA não está salvo no painel.')
+    return {'access_token':row['access_token']}
+
+
 @app.delete('/api/wabas-painel/{waba_id}')
 def excluir_waba_painel(waba_id: str):
     with closing(get_db()) as conn, conn:
