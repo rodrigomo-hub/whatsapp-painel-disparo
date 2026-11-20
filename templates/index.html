@@ -1787,14 +1787,23 @@ carregarTransbordo();
 carregarValidadorWhatsapp();
 carregarConfiguracaoValidadorWhatsapp();
 let atualizandoPainel=false;
+let proximaAtualizacaoCompleta=0;
 async function atualizarPainel(){
   if(document.hidden||atualizandoPainel)return;
   atualizandoPainel=true;
-  try{await Promise.allSettled([carregarTotalHoje(),carregarNumeros(),carregarHistorico(),carregarSaldoSms(),carregarFila(),carregarTransbordosRecebidos(),carregarValidadorWhatsapp()]);}
+  try{
+    const agora=Date.now(),completa=agora>=proximaAtualizacaoCompleta;
+    const tarefas=[carregarTotalHoje(),carregarHistorico(),carregarFila()];
+    // A fila e o histórico continuam atualizando em tempo quase real. Dados
+    // pesados (números, saldo, transbordos e validador) são reaproveitados por
+    // um minuto para não sobrecarregar o painel nem o SQLite.
+    if(completa){tarefas.push(carregarNumeros(),carregarSaldoSms(),carregarTransbordosRecebidos(),carregarValidadorWhatsapp());proximaAtualizacaoCompleta=agora+60000;}
+    await Promise.allSettled(tarefas);
+  }
   finally{atualizandoPainel=false;}
 }
 atualizarPainel();
-setInterval(atualizarPainel,10000);
+setInterval(atualizarPainel,15000);
 </script>
 
 </body>

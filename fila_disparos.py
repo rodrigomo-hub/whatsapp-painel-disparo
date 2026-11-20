@@ -211,9 +211,17 @@ class Fila:
             if not obtida:
                 return
             # Com o lock exclusivo, itens em transito so podem ter vindo de um processo encerrado.
-            with closing(self.get_db()) as conn, conn:
-                conn.execute("UPDATE fila_disparos SET status='aguardando_cadastro',atualizado_em=? WHERE status='cadastrando'", (time.time(),))
-                conn.execute("UPDATE fila_disparos SET status='incerto',atualizado_em=?,resultado=? WHERE status='enviando'", (time.time(), serializar({"motivo": "Processo interrompido durante envio. Conferir historico antes de reenviar."})))
+            # Não abra uma transação de escrita a cada ciclo vazio (2 s). Isso
+            # disputava o SQLite com a tela e com os webhooks sem necessidade.
+            with closing(self.get_db()) as conn:
+                ha_cadastrando=conn.execute("SELECT 1 FROM fila_disparos WHERE status='cadastrando' LIMIT 1").fetchone()
+                ha_enviando=conn.execute("SELECT 1 FROM fila_disparos WHERE status='enviando' LIMIT 1").fetchone()
+                if ha_cadastrando or ha_enviando:
+                    with conn:
+                        if ha_cadastrando:
+                            conn.execute("UPDATE fila_disparos SET status='aguardando_cadastro',atualizado_em=? WHERE status='cadastrando'", (time.time(),))
+                        if ha_enviando:
+                            conn.execute("UPDATE fila_disparos SET status='incerto',atualizado_em=?,resultado=? WHERE status='enviando'", (time.time(), serializar({"motivo": "Processo interrompido durante envio. Conferir historico antes de reenviar."})))
             cfg = carregar_cfg()
             if not cfg["vendeai_habilitado"] or parar():
                 return
@@ -264,15 +272,19 @@ class Fila:
     def cadastrar_rodada(self, cfg, cadastrar):
         agora = time.time()
         intervalo = cfg["fila_intervalo_segundos"]
-        with closing(self.get_db()) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
+        with closing(self.get_db()) as conn:
             controle = conn.execute("SELECT * FROM fila_controle WHERE id=1").fetchone()
             if max(controle["proxima_rodada"], controle["bloqueado_ate"]) > agora:
                 return
             rows = conn.execute("SELECT * FROM fila_disparos WHERE status='aguardando_cadastro' AND tentar_em<=? AND destino=? ORDER BY criado_em LIMIT 20000", (agora, destino(cfg))).fetchall()
             if not rows:
-                conn.execute("UPDATE fila_controle SET proxima_rodada=0 WHERE id=1")
+                # Só grava se existe algo a limpar; nos demais ciclos a fila é
+                # exclusivamente leitura e não bloqueia o painel.
+                if controle["proxima_rodada"]:
+                    with conn:
+                        conn.execute("UPDATE fila_controle SET proxima_rodada=0 WHERE id=1")
                 return
+            conn.execute("BEGIN IMMEDIATE")
             # API faz upsert por telefone. Nao misturar campanhas diferentes do mesmo telefone no mesmo lote.
             selecionados = []
             telefones = {json.loads(r["payload"])["mailing"]["phone"] for r in conn.execute("SELECT payload FROM fila_disparos WHERE status IN ('pronto','enviando')")}
@@ -286,6 +298,7 @@ class Fila:
             for row in selecionados:
                 conn.execute("UPDATE fila_disparos SET status='cadastrando',tentativas=tentativas+1,atualizado_em=? WHERE id=?", (agora, row["id"]))
             conn.execute("UPDATE fila_controle SET proxima_rodada=? WHERE id=1", (agora + intervalo,))
+            conn.commit()
         try:
             resultados = cadastrar([json.loads(r["payload"])["mailing"] for r in selecionados], cfg)
             if len(resultados) != len(selecionados):
