@@ -124,8 +124,27 @@ def _mensagens_estaveis(cfg, token, ident):
     raise ultimo
 
 
+def _inteiro(valor, padrao=0):
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return padrao
+
+
+def _momento(valor, padrao):
+    """Aceita timestamp Unix e data ISO que aparecem misturados no CRM."""
+    try:
+        return float(valor)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return datetime.fromisoformat(str(valor).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return padrao
+
+
 def _publicas(mensagens):
-    return [m for m in mensagens if not m.get("private") and int(m.get("message_type", 2)) in (0, 1)]
+    return [m for m in mensagens if not m.get("private") and _inteiro(m.get("message_type", 2), 2) in (0, 1)]
 
 
 def _texto(m):
@@ -137,16 +156,17 @@ def _texto(m):
 
 
 def _calc(conversa, mensagens, agentes):
-    publicas = sorted(_publicas(mensagens), key=lambda m: int(m.get("id") or 0), reverse=True)
-    clientes = [m for m in publicas if int(m.get("message_type", 2)) == 0]
+    publicas = sorted(_publicas(mensagens), key=lambda m: _inteiro(m.get("id")), reverse=True)
+    clientes = [m for m in publicas if _inteiro(m.get("message_type", 2), 2) == 0]
     ultima_cliente = clientes[0] if clientes else None
     ultima = publicas[0] if publicas else None
     agora = time.time()
-    espera = int(agora - float(ultima_cliente.get("created_at") or agora)) if ultima_cliente and ultima is ultima_cliente else None
-    janela = int(float(ultima_cliente.get("created_at") or agora) + 86400 - agora) if ultima_cliente else None
+    horario_cliente = _momento((ultima_cliente or {}).get("created_at"), agora)
+    espera = int(agora - horario_cliente) if ultima_cliente and ultima is ultima_cliente else None
+    janela = int(horario_cliente + 86400 - agora) if ultima_cliente else None
     seguidas = 0
     for m in publicas:
-        if int(m.get("message_type", 2)) != 0: break
+        if _inteiro(m.get("message_type", 2), 2) != 0: break
         seguidas += 1
     ultimas_cliente = clientes[:3]
     textos = " ".join(_texto(m) for m in ultimas_cliente).lower()
@@ -154,7 +174,7 @@ def _calc(conversa, mensagens, agentes):
     risco = bool(re.search(r"cancel|golpe|procon|reclame|reclama[cç][aã]o|advogado|den[úu]ncia|n[aã]o autorizei|estorno", textos))
     a = _assignee(conversa)
     aid = int((a or {}).get("id") or 0)
-    contato_vendedora = any(int(m.get("message_type", 2)) == 1 and int((m.get("sender") or {}).get("id") or 0) == aid for m in publicas) if aid else False
+    contato_vendedora = any(_inteiro(m.get("message_type", 2), 2) == 1 and _inteiro((m.get("sender") or {}).get("id")) == aid for m in publicas) if aid else False
     sender = (conversa.get("meta") or {}).get("sender") or {}
     return {
         "id": conversa.get("id"), "nome": sender.get("name") or "Sem nome",
