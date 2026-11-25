@@ -32,6 +32,7 @@ COPY optout.py .
 COPY conexoes_normais.py .
 COPY oficiais_vendeai.py .
 COPY contatos_externos.py .
+COPY supervisor_milone.py .
 COPY templates ./templates
 
 EXPOSE 80

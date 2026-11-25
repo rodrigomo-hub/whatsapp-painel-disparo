@@ -34,6 +34,7 @@ import optout
 import conexoes_normais
 import oficiais_vendeai
 import contatos_externos
+import supervisor_milone
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, quote
@@ -136,6 +137,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         caminhos_livres = ["/login", "/static", "/webhook"]
         # O módulo tem autenticação própria e permissões por conversa.
         if request.url.path == '/dossies' or request.url.path.startswith('/dossies/api/'):
+            return await call_next(request)
+        # Área isolada do supervisor: possui login, cookie e regras próprias.
+        if request.url.path == '/supervisor' or request.url.path.startswith('/supervisor/') or request.url.path.startswith('/api/supervisor/'):
             return await call_next(request)
         if any(request.url.path.startswith(c) for c in caminhos_livres):
             return await call_next(request)
@@ -410,6 +414,7 @@ def init_db():
     qualidade_historico.migrar(conn)
     webhook_saude.migrar(conn)
     contatos_externos.migrar(conn)
+    supervisor_milone.migrar(conn)
     conn.commit()
     conn.close()
 
@@ -3833,3 +3838,4 @@ async def webhook_gupshup(app_id: str,request: Request):
 # Registrar depois das rotas e do startup principal.
 import sys as _sys
 dossies.instalar(_sys.modules[__name__])
+supervisor_milone.registrar_rotas(app, templates, carregar_configuracao, get_db, VENDEAI_API_TOKEN)

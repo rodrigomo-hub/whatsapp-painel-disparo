@@ -1,0 +1,237 @@
+"""Área isolada do supervisor Milone.
+
+O CRM nunca é exposto ao navegador. Toda conversa é filtrada no servidor antes
+de entrar no cache e antes de qualquer ação.
+"""
+import asyncio
+import bcrypt
+import os
+import re
+import secrets
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import closing
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import requests
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
+
+TZ = ZoneInfo("America/Sao_Paulo")
+CRM = "https://crm.vendeaitecnologia.com.br/api/v1/accounts/"
+CACHE_TTL = 60
+_cache = {"atualizado": 0, "conversas": [], "agentes": {}, "inboxes": {}}
+_lock = threading.Lock()
+_sessoes = set()
+
+
+def _ids(nome):
+    return {int(x) for x in os.getenv(nome, "").split(",") if x.strip().isdigit()}
+
+
+def agentes_milone():
+    return _ids("MILONE_AGENT_IDS")
+
+
+def somente_leitura():
+    return os.getenv("SUPERVISOR_READ_ONLY", "true").strip().lower() not in ("0", "false", "nao", "não")
+
+
+def migrar(conn):
+    conn.execute('''CREATE TABLE IF NOT EXISTS supervisor_milone_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        criado_em TEXT NOT NULL, usuario TEXT NOT NULL, acao TEXT NOT NULL,
+        conversa_id INTEGER NOT NULL, destino TEXT NOT NULL DEFAULT '', detalhe TEXT NOT NULL DEFAULT ''
+    )''')
+
+
+def _normalizar(v):
+    return re.sub(r"[^a-z0-9]", "", str(v or "").lower())
+
+
+def _crm(cfg, token, caminho, params=None):
+    conta = str(cfg.get("vendeai_account_id") or "33393")
+    r = requests.get(CRM + conta + caminho, headers={"api_access_token": token}, params=params,
+                     timeout=(5, 25), allow_redirects=False)
+    if r.status_code in (429, 500, 502, 503, 504):
+        time.sleep(0.8)
+        r = requests.get(CRM + conta + caminho, headers={"api_access_token": token}, params=params,
+                         timeout=(5, 25), allow_redirects=False)
+    if r.status_code != 200:
+        raise RuntimeError("CRM HTTP " + str(r.status_code))
+    return r.json()
+
+
+def _lista(dados):
+    if isinstance(dados, list): return dados
+    if not isinstance(dados, dict): return []
+    for k in ("data", "payload", "conversations", "messages"):
+        if isinstance(dados.get(k), list): return dados[k]
+    return []
+
+
+def _assignee(conversa):
+    meta = conversa.get("meta") or {}
+    a = meta.get("assignee") or conversa.get("assignee")
+    if not a: return None
+    if isinstance(a, dict): return a
+    return {"id": a}
+
+
+def _visivel(conversa):
+    a = _assignee(conversa)
+    return a is None or int(a.get("id") or 0) in agentes_milone()
+
+
+def _mensagens(cfg, token, ident):
+    return _lista(_crm(cfg, token, "/conversations/" + str(ident) + "/messages"))
+
+
+def _publicas(mensagens):
+    return [m for m in mensagens if not m.get("private") and int(m.get("message_type", 2)) in (0, 1)]
+
+
+def _texto(m):
+    text = (m.get("content") or "").strip()
+    if text: return text
+    a = m.get("attachments") or []
+    if a: return "[mídia]"
+    return ""
+
+
+def _calc(conversa, mensagens, agentes):
+    publicas = sorted(_publicas(mensagens), key=lambda m: int(m.get("id") or 0), reverse=True)
+    clientes = [m for m in publicas if int(m.get("message_type", 2)) == 0]
+    ultima_cliente = clientes[0] if clientes else None
+    ultima = publicas[0] if publicas else None
+    agora = time.time()
+    espera = int(agora - float(ultima_cliente.get("created_at") or agora)) if ultima_cliente and ultima is ultima_cliente else None
+    janela = int(float(ultima_cliente.get("created_at") or agora) + 86400 - agora) if ultima_cliente else None
+    seguidas = 0
+    for m in publicas:
+        if int(m.get("message_type", 2)) != 0: break
+        seguidas += 1
+    ultimas_cliente = clientes[:3]
+    textos = " ".join(_texto(m) for m in ultimas_cliente).lower()
+    dados = bool(re.search(r"ag[êe]ncia|conta|pix|chave|cpf|banco|nubank|caixa|ita[úu]|bradesco|santander|autorizad|c[oó]digo|\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b", textos))
+    risco = bool(re.search(r"cancel|golpe|procon|reclame|reclama[cç][aã]o|advogado|den[úu]ncia|n[aã]o autorizei|estorno", textos))
+    a = _assignee(conversa)
+    aid = int((a or {}).get("id") or 0)
+    contato_vendedora = any(int(m.get("message_type", 2)) == 1 and int((m.get("sender") or {}).get("id") or 0) == aid for m in publicas) if aid else False
+    sender = (conversa.get("meta") or {}).get("sender") or {}
+    return {
+        "id": conversa.get("id"), "nome": sender.get("name") or "Sem nome",
+        "telefone": sender.get("phone_number") or "", "inbox_id": conversa.get("inbox_id"),
+        "assignee_id": aid or None, "assignee_nome": (a or {}).get("name") or "Sem atribuição",
+        "espera_segundos": espera, "janela_segundos": janela, "sem_resposta": seguidas,
+        "dados_enviados": dados, "risco": risco, "ultima_mensagem": _texto(ultima_cliente)[:60],
+        "sem_contato": bool(aid and not contato_vendedora), "can_reply": bool(conversa.get("can_reply", True)),
+        "last_activity_at": conversa.get("last_activity_at"), "_mensagens": mensagens[-40:]
+    }
+
+
+def atualizar(get_cfg, token):
+    cfg = get_cfg()
+    if not token or not agentes_milone():
+        raise RuntimeError("Configure token e IDs Milone no servidor")
+    conversas = []
+    for status in ("open", "pending"):
+        for pagina in range(1, 100):
+            itens = _lista(_crm(cfg, token, "/conversations", {"status": status, "assignee_type": "all", "page": pagina}))
+            if not itens: break
+            conversas.extend(x for x in itens if _visivel(x) and x.get("can_reply", True))
+            if len(itens) < 25: break
+    agentes = {int(a.get("id")): a for a in _lista(_crm(cfg, token, "/agents")) if a.get("id")}
+    inboxes = {int(i.get("id")): i for i in _lista(_crm(cfg, token, "/inboxes")) if i.get("id")}
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futuros = {ex.submit(_mensagens, cfg, token, c["id"]): c for c in conversas}
+        resultado = []
+        for f in as_completed(futuros):
+            c = futuros[f]
+            try:
+                item = _calc(c, f.result(), agentes)
+                if item["can_reply"]: resultado.append(item)
+            except Exception: pass
+    resultado.sort(key=lambda x: (not x["risco"], not x["dados_enviados"], -(x["sem_resposta"] >= 3), -(x["espera_segundos"] or 0), x["janela_segundos"] or 999999))
+    with _lock:
+        _cache.update({"atualizado": time.time(), "conversas": resultado, "agentes": agentes, "inboxes": inboxes})
+    return _cache
+
+
+def cache(get_cfg, token):
+    if time.time() - _cache["atualizado"] > CACHE_TTL:
+        atualizar(get_cfg, token)
+    return _cache
+
+
+def _autenticado(request):
+    return request.cookies.get("supervisor_session") in _sessoes
+
+
+def _exigir(request):
+    if not _autenticado(request): raise HTTPException(401, "Não autenticado")
+
+
+def registrar_rotas(app, templates, get_cfg, get_db, token):
+    @app.get("/supervisor")
+    def pagina(request: Request):
+        if not _autenticado(request): return RedirectResponse("/supervisor/login")
+        return templates.TemplateResponse(request, "supervisor_milone.html", {"somente_leitura": somente_leitura()})
+
+    @app.get("/supervisor/login")
+    def login_tela(request: Request):
+        if _autenticado(request): return RedirectResponse("/supervisor")
+        return templates.TemplateResponse(request, "supervisor_login.html", {"erro": ""})
+
+    @app.post("/supervisor/login")
+    async def login(request: Request):
+        form = await request.form()
+        usuario = str(form.get("usuario") or "")
+        senha = str(form.get("senha") or "")
+        correto = os.getenv("SUPERVISOR_USER", "")
+        hash_ = os.getenv("SUPERVISOR_PASSWORD_HASH", "")
+        if not correto or not hash_ or usuario != correto or not bcrypt.checkpw(senha.encode(), hash_.encode()):
+            return templates.TemplateResponse(request, "supervisor_login.html", {"erro": "Usuário ou senha inválidos."}, status_code=401)
+        sessao = secrets.token_urlsafe(32); _sessoes.add(sessao)
+        r = RedirectResponse("/supervisor", status_code=303)
+        r.set_cookie("supervisor_session", sessao, httponly=True, samesite="strict", secure=True, max_age=28800)
+        return r
+
+    @app.post("/supervisor/sair")
+    def sair(request: Request):
+        _sessoes.discard(request.cookies.get("supervisor_session", ""))
+        r = RedirectResponse("/supervisor/login", status_code=303); r.delete_cookie("supervisor_session"); return r
+
+    @app.get("/api/supervisor/painel")
+    def painel(request: Request):
+        _exigir(request)
+        d = cache(get_cfg, token)
+        cards = {"sem_atribuicao": {"abertas": 0, "esperando": 0, "sem_contato": 0}}
+        for aid in agentes_milone(): cards[str(aid)] = {"abertas": 0, "esperando": 0, "sem_contato": 0, "nome": (d["agentes"].get(aid) or {}).get("name", "Vendedora"), "status": (d["agentes"].get(aid) or {}).get("availability_status", "offline")}
+        saida=[]
+        for x in d["conversas"]:
+            chave = str(x["assignee_id"]) if x["assignee_id"] else "sem_atribuicao"; card=cards.get(chave)
+            if card:
+                card["abertas"] += 1; card["esperando"] += bool(x["espera_segundos"] is not None); card["sem_contato"] += bool(x["sem_contato"])
+            saida.append({k:v for k,v in x.items() if k != "_mensagens"})
+        return {"atualizado_em": d["atualizado"], "somente_leitura": somente_leitura(), "cards": cards, "conversas": saida}
+
+    @app.get("/api/supervisor/conversas/{ident}")
+    def conversa(ident: int, request: Request):
+        _exigir(request); d=cache(get_cfg, token); item=next((x for x in d["conversas"] if int(x["id"])==ident),None)
+        if not item: raise HTTPException(404, "Conversa não autorizada ou não está aberta")
+        return {"conversa": item, "inbox": (d["inboxes"].get(int(item["inbox_id"] or 0)) or {}).get("name", "")}
+
+    @app.post("/api/supervisor/conversas/{ident}/atribuir")
+    async def atribuir(ident: int, request: Request):
+        _exigir(request)
+        if somente_leitura(): raise HTTPException(403, "Modo de teste: atribuição desabilitada")
+        raise HTTPException(501, "Ative as ações depois de validar o modo de teste")
+
+    @app.post("/api/supervisor/conversas/{ident}/nota")
+    async def nota(ident: int, request: Request):
+        _exigir(request)
+        if somente_leitura(): raise HTTPException(403, "Modo de teste: notas desabilitadas")
+        raise HTTPException(501, "Ative as ações depois de validar o modo de teste")
