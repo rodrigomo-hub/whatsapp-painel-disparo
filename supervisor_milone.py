@@ -174,7 +174,9 @@ def atualizar(get_cfg, token):
     # histórico completo. As buscas ocorrem em paralelo, sem alterar o CRM.
     resultado = []
     falhas_historico = 0
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    # Seis chamadas simultâneas mantêm a leitura rápida sem acionar o limite
+    # do CRM white-label.
+    with ThreadPoolExecutor(max_workers=6) as ex:
         futuros = {ex.submit(_mensagens, cfg, token, c["id"]): c for c in conversas}
         for futuro in as_completed(futuros):
             c = futuros[futuro]
@@ -183,7 +185,14 @@ def atualizar(get_cfg, token):
                 if item["can_reply"]:
                     resultado.append(item)
             except Exception:
-                falhas_historico += 1
+                # Uma tentativa final, fora do pico paralelo, recupera falhas
+                # transitórias do CRM (429/5xx) sem esconder a conversa.
+                try:
+                    item = _calc(c, _mensagens(cfg, token, c["id"]), agentes)
+                    if item["can_reply"]:
+                        resultado.append(item)
+                except Exception:
+                    falhas_historico += 1
     # Nunca troque uma visão íntegra por outra parcial. A visão já existente
     # no cache continua sendo usada até o CRM responder todos os históricos.
     if falhas_historico:
