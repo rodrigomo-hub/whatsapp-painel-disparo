@@ -148,6 +148,8 @@ def _publicas(mensagens):
 
 
 def _texto(m):
+    if not isinstance(m, dict):
+        return ""
     text = (m.get("content") or "").strip()
     if text: return text
     a = m.get("attachments") or []
