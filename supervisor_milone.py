@@ -174,6 +174,9 @@ def _calc(conversa, mensagens, agentes):
     textos = " ".join(_texto(m) for m in ultimas_cliente).lower()
     dados = bool(re.search(r"ag[êe]ncia|conta|pix|chave|cpf|banco|nubank|caixa|ita[úu]|bradesco|santander|autorizad|c[oó]digo|\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b", textos))
     risco = bool(re.search(r"cancel|golpe|procon|reclame|reclama[cç][aã]o|advogado|den[úu]ncia|n[aã]o autorizei|estorno", textos))
+    etiquetas = conversa.get("labels") or []
+    nomes_etiquetas = {_normalizar(e.get("title") if isinstance(e, dict) else e) for e in etiquetas}
+    ticket_alto = "ticketalto" in nomes_etiquetas
     a = _assignee(conversa)
     aid = int((a or {}).get("id") or 0)
     contato_vendedora = any(_inteiro(m.get("message_type", 2), 2) == 1 and _inteiro((m.get("sender") or {}).get("id")) == aid for m in publicas) if aid else False
@@ -183,7 +186,7 @@ def _calc(conversa, mensagens, agentes):
         "telefone": sender.get("phone_number") or "", "inbox_id": conversa.get("inbox_id"),
         "assignee_id": aid or None, "assignee_nome": (a or {}).get("name") or "Sem atribuição",
         "espera_segundos": espera, "janela_segundos": janela, "sem_resposta": seguidas,
-        "dados_enviados": dados, "risco": risco, "ultima_mensagem": _texto(ultima_cliente)[:60],
+        "dados_enviados": dados, "risco": risco, "ticket_alto": ticket_alto, "ultima_mensagem": _texto(ultima_cliente)[:60],
         "sem_contato": bool(aid and not contato_vendedora), "can_reply": bool(conversa.get("can_reply", True)),
         "last_activity_at": conversa.get("last_activity_at"), "_mensagens": mensagens[-40:]
     }
