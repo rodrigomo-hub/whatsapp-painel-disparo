@@ -10,7 +10,6 @@ import re
 import secrets
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -149,15 +148,16 @@ def atualizar(get_cfg, token):
             if len(itens) < 25: break
     agentes = {int(a.get("id")): a for a in _lista(_crm(cfg, token, "/agents")) if a.get("id")}
     inboxes = {int(i.get("id")): i for i in _lista(_crm(cfg, token, "/inboxes")) if i.get("id")}
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        futuros = {ex.submit(_mensagens, cfg, token, c["id"]): c for c in conversas}
-        resultado = []
-        for f in as_completed(futuros):
-            c = futuros[f]
-            try:
-                item = _calc(c, f.result(), agentes)
-                if item["can_reply"]: resultado.append(item)
-            except Exception: pass
+    # A listagem já traz a última mensagem de cada conversa. Usamos esse
+    # resumo para a grade ficar imediata; o histórico completo é buscado só
+    # quando a supervisora abre uma conversa específica.
+    resultado = []
+    for c in conversas:
+        try:
+            item = _calc(c, c.get("messages") or [], agentes)
+            if item["can_reply"]: resultado.append(item)
+        except Exception:
+            pass
     resultado.sort(key=lambda x: (not x["risco"], not x["dados_enviados"], -(x["sem_resposta"] >= 3), -(x["espera_segundos"] or 0), x["janela_segundos"] or 999999))
     with _lock:
         _cache.update({"atualizado": time.time(), "conversas": resultado, "agentes": agentes, "inboxes": inboxes})
@@ -226,6 +226,13 @@ def registrar_rotas(app, templates, get_cfg, get_db, token):
     def conversa(ident: int, request: Request):
         _exigir(request); d=cache(get_cfg, token); item=next((x for x in d["conversas"] if int(x["id"])==ident),None)
         if not item: raise HTTPException(404, "Conversa não autorizada ou não está aberta")
+        # Histórico sob demanda: evita dezenas de chamadas ao CRM na carga da
+        # grade e só expõe mensagens depois da conversa ter passado no filtro.
+        try:
+            item = dict(item)
+            item["_mensagens"] = _mensagens(get_cfg(), token, ident)[-80:]
+        except Exception:
+            pass
         return {"conversa": item, "inbox": (d["inboxes"].get(int(item["inbox_id"] or 0)) or {}).get("name", "")}
 
     @app.post("/api/supervisor/conversas/{ident}/atribuir")
