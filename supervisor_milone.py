@@ -67,8 +67,12 @@ def _crm(cfg, token, caminho, params=None):
 def _lista(dados):
     if isinstance(dados, list): return dados
     if not isinstance(dados, dict): return []
-    for k in ("data", "payload", "conversations", "messages"):
+    # O white-label devolve conversas em {"data": {"meta": ..., "payload": [...]}}
+    # enquanto outros endpoints podem devolver diretamente uma destas listas.
+    for k in ("payload", "conversations", "messages", "data"):
         if isinstance(dados.get(k), list): return dados[k]
+    if isinstance(dados.get("data"), dict):
+        return _lista(dados["data"])
     return []
 
 
