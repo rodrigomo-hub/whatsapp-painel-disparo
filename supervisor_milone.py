@@ -287,13 +287,13 @@ def registrar_rotas(app, templates, get_cfg, get_db, token):
     def painel(request: Request):
         _exigir(request)
         d = cache(get_cfg, token)
-        cards = {"sem_atribuicao": {"abertas": 0, "esperando": 0, "sem_contato": 0}}
-        for aid in agentes_milone(): cards[str(aid)] = {"abertas": 0, "esperando": 0, "sem_contato": 0, "nome": (d["agentes"].get(aid) or {}).get("name", "Vendedora"), "status": (d["agentes"].get(aid) or {}).get("availability_status", "offline")}
+        cards = {"sem_atribuicao": {"abertas": 0, "esperando": 0, "sem_contato": 0, "ticket_alto": 0}}
+        for aid in agentes_milone(): cards[str(aid)] = {"abertas": 0, "esperando": 0, "sem_contato": 0, "ticket_alto": 0, "nome": (d["agentes"].get(aid) or {}).get("name", "Vendedora"), "status": (d["agentes"].get(aid) or {}).get("availability_status", "offline")}
         saida=[]
         for x in d["conversas"]:
             chave = str(x["assignee_id"]) if x["assignee_id"] else "sem_atribuicao"; card=cards.get(chave)
             if card:
-                card["abertas"] += 1; card["esperando"] += bool(x["espera_segundos"] is not None); card["sem_contato"] += bool(x["sem_contato"])
+                card["abertas"] += 1; card["esperando"] += bool(x["espera_segundos"] is not None); card["sem_contato"] += bool(x["sem_contato"]); card["ticket_alto"] += bool(x["ticket_alto"])
             saida.append({k:v for k,v in x.items() if k != "_mensagens"})
         return {"atualizado_em": d["atualizado"], "somente_leitura": somente_leitura(), "cards": cards, "conversas": saida}
 
