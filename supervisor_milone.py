@@ -169,16 +169,25 @@ def atualizar(get_cfg, token):
             conversas.extend(x for x in futuro.result() if _visivel(x) and x.get("can_reply", True))
     agentes = {int(a.get("id")): a for a in _lista(_crm(cfg, token, "/agents")) if a.get("id")}
     inboxes = {int(i.get("id")): i for i in _lista(_crm(cfg, token, "/inboxes")) if i.get("id")}
-    # A listagem já traz a última mensagem de cada conversa. Usamos esse
-    # resumo para a grade ficar imediata; o histórico completo é buscado só
-    # quando a supervisora abre uma conversa específica.
+    # O resumo da conversa contém só a última mensagem. Para alertas, janela
+    # de 24h e mensagens sequenciais corretos, a grade é calculada pelo
+    # histórico completo. As buscas ocorrem em paralelo, sem alterar o CRM.
     resultado = []
-    for c in conversas:
-        try:
-            item = _calc(c, c.get("messages") or [], agentes)
-            if item["can_reply"]: resultado.append(item)
-        except Exception:
-            pass
+    falhas_historico = 0
+    with ThreadPoolExecutor(max_workers=12) as ex:
+        futuros = {ex.submit(_mensagens, cfg, token, c["id"]): c for c in conversas}
+        for futuro in as_completed(futuros):
+            c = futuros[futuro]
+            try:
+                item = _calc(c, futuro.result(), agentes)
+                if item["can_reply"]:
+                    resultado.append(item)
+            except Exception:
+                falhas_historico += 1
+    # Nunca troque uma visão íntegra por outra parcial. A visão já existente
+    # no cache continua sendo usada até o CRM responder todos os históricos.
+    if falhas_historico:
+        raise RuntimeError(f"CRM não retornou {falhas_historico} histórico(s)")
     resultado.sort(key=lambda x: (not x["risco"], not x["dados_enviados"], -(x["sem_resposta"] >= 3), -(x["espera_segundos"] or 0), x["janela_segundos"] or 999999))
     with _lock:
         _cache.update({"atualizado": time.time(), "conversas": resultado, "agentes": agentes, "inboxes": inboxes})
