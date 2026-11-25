@@ -10,6 +10,7 @@ import re
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -73,6 +74,26 @@ def _lista(dados):
     if isinstance(dados.get("data"), dict):
         return _lista(dados["data"])
     return []
+
+
+def _paginas_conversas(cfg, token, status):
+    """Busca todas as páginas em paralelo depois de conhecer o total da 1ª."""
+    primeira = _crm(cfg, token, "/conversations", {"status": status, "assignee_type": "all", "page": 1})
+    itens = _lista(primeira)
+    dados = primeira.get("data") if isinstance(primeira, dict) else {}
+    meta = dados.get("meta") if isinstance(dados, dict) else {}
+    try:
+        total = int((meta or {}).get("all_count") or len(itens))
+    except (TypeError, ValueError):
+        total = len(itens)
+    paginas = max(1, (total + 24) // 25)
+    if paginas == 1:
+        return itens
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futuros = [ex.submit(_crm, cfg, token, "/conversations", {"status": status, "assignee_type": "all", "page": p}) for p in range(2, paginas + 1)]
+        for futuro in as_completed(futuros):
+            itens.extend(_lista(futuro.result()))
+    return itens
 
 
 def _assignee(conversa):
@@ -140,12 +161,12 @@ def atualizar(get_cfg, token):
     if not token or not agentes_milone():
         raise RuntimeError("Configure token e IDs Milone no servidor")
     conversas = []
-    for status in ("open", "pending"):
-        for pagina in range(1, 100):
-            itens = _lista(_crm(cfg, token, "/conversations", {"status": status, "assignee_type": "all", "page": pagina}))
-            if not itens: break
-            conversas.extend(x for x in itens if _visivel(x) and x.get("can_reply", True))
-            if len(itens) < 25: break
+    # Os dois estados também são independentes; assim a primeira abertura não
+    # fica esperando uma sequência longa de páginas do CRM.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futuros = [ex.submit(_paginas_conversas, cfg, token, status) for status in ("open", "pending")]
+        for futuro in as_completed(futuros):
+            conversas.extend(x for x in futuro.result() if _visivel(x) and x.get("can_reply", True))
     agentes = {int(a.get("id")): a for a in _lista(_crm(cfg, token, "/agents")) if a.get("id")}
     inboxes = {int(i.get("id")): i for i in _lista(_crm(cfg, token, "/inboxes")) if i.get("id")}
     # A listagem já traz a última mensagem de cada conversa. Usamos esse
