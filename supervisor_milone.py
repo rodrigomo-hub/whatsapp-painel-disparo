@@ -113,6 +113,17 @@ def _mensagens(cfg, token, ident):
     return _lista(_crm(cfg, token, "/conversations/" + str(ident) + "/messages"))
 
 
+def _mensagens_estaveis(cfg, token, ident):
+    ultimo = None
+    for tentativa in range(3):
+        try:
+            return _mensagens(cfg, token, ident)
+        except Exception as exc:
+            ultimo = exc
+            time.sleep(0.7 * (tentativa + 1))
+    raise ultimo
+
+
 def _publicas(mensagens):
     return [m for m in mensagens if not m.get("private") and int(m.get("message_type", 2)) in (0, 1)]
 
@@ -174,10 +185,10 @@ def atualizar(get_cfg, token):
     # histórico completo. As buscas ocorrem em paralelo, sem alterar o CRM.
     resultado = []
     falhas_historico = 0
-    # Seis chamadas simultâneas mantêm a leitura rápida sem acionar o limite
-    # do CRM white-label.
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        futuros = {ex.submit(_mensagens, cfg, token, c["id"]): c for c in conversas}
+    # Quatro chamadas simultâneas é o ritmo validado sem falhas pelo CRM
+    # white-label. Cada histórico ainda possui três tentativas graduais.
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futuros = {ex.submit(_mensagens_estaveis, cfg, token, c["id"]): c for c in conversas}
         for futuro in as_completed(futuros):
             c = futuros[futuro]
             try:
@@ -188,7 +199,7 @@ def atualizar(get_cfg, token):
                 # Uma tentativa final, fora do pico paralelo, recupera falhas
                 # transitórias do CRM (429/5xx) sem esconder a conversa.
                 try:
-                    item = _calc(c, _mensagens(cfg, token, c["id"]), agentes)
+                    item = _calc(c, _mensagens_estaveis(cfg, token, c["id"]), agentes)
                     if item["can_reply"]:
                         resultado.append(item)
                 except Exception:
