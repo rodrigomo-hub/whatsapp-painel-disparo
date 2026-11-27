@@ -666,7 +666,8 @@ function imagemReutilizavel(tipo) {
   const opt=document.getElementById(tipo+'-template').selectedOptions[0];
   if(opt?.dataset.header!=='IMAGE')return null;
   const idioma=opt?.dataset.idioma||'pt_BR';
-  return numerosCache.find(n=>n.template_imagem&&n.template_nome===opt.value&&(n.template_idioma||'pt_BR')===idioma)||null;
+  const candidatas=numerosCache.filter(n=>n.template_imagem&&n.template_nome===opt.value&&(n.template_idioma||'pt_BR')===idioma);
+  return candidatas.find(n=>n.imagem_padrao)||candidatas[0]||null;
 }
 async function lerImagemTemplate(tipo) {
   const file=document.getElementById(tipo+'-imagem').files[0];

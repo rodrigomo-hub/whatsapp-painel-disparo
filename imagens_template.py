@@ -11,6 +11,8 @@ def migrar(c):
     cols={r['name'] for r in c.execute('PRAGMA table_info(numeros)')}
     for name in ('template_header','template_imagem'):
         if name not in cols: c.execute(f"ALTER TABLE numeros ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+    if 'imagem_padrao' not in cols:
+        c.execute("ALTER TABLE numeros ADD COLUMN imagem_padrao INTEGER NOT NULL DEFAULT 0")
     c.execute('''CREATE TABLE IF NOT EXISTS imagens_template (
         id TEXT PRIMARY KEY, phone_id TEXT NOT NULL, dados BLOB NOT NULL,
         mime TEXT NOT NULL, media_id TEXT NOT NULL, enviado_em REAL NOT NULL)''')
