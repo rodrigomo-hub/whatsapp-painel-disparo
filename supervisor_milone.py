@@ -301,13 +301,9 @@ def registrar_rotas(app, templates, get_cfg, get_db, token):
     def conversa(ident: int, request: Request):
         _exigir(request); d=cache(get_cfg, token); item=next((x for x in d["conversas"] if int(x["id"])==ident),None)
         if not item: raise HTTPException(404, "Conversa não autorizada ou não está aberta")
-        # Histórico sob demanda: evita dezenas de chamadas ao CRM na carga da
-        # grade e só expõe mensagens depois da conversa ter passado no filtro.
-        try:
-            item = dict(item)
-            item["_mensagens"] = _mensagens(get_cfg(), token, ident)[-80:]
-        except Exception:
-            pass
+        # O histórico completo já foi conferido para montar os indicadores da
+        # grade. Reutilizá-lo aqui evita uma segunda chamada lenta ao CRM ao
+        # abrir a conversa; o cache é renovado a cada minuto.
         return {"conversa": item, "inbox": (d["inboxes"].get(int(item["inbox_id"] or 0)) or {}).get("name", "")}
 
     @app.post("/api/supervisor/conversas/{ident}/atribuir")
