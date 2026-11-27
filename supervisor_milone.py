@@ -64,6 +64,30 @@ def _crm(cfg, token, caminho, params=None):
     return r.json()
 
 
+def _crm_post(cfg, token, caminho, corpo):
+    conta = str(cfg.get("vendeai_account_id") or "33393")
+    r = requests.post(CRM + conta + caminho,
+                      headers={"api_access_token": token, "Content-Type": "application/json"},
+                      json=corpo, timeout=(5, 25), allow_redirects=False)
+    if r.status_code in (429, 500, 502, 503, 504):
+        time.sleep(0.8)
+        r = requests.post(CRM + conta + caminho,
+                          headers={"api_access_token": token, "Content-Type": "application/json"},
+                          json=corpo, timeout=(5, 25), allow_redirects=False)
+    if r.status_code not in (200, 201):
+        raise RuntimeError("CRM HTTP " + str(r.status_code))
+    return r.json() if r.content else {}
+
+
+def _objeto(dados):
+    if not isinstance(dados, dict):
+        return {}
+    valor = dados.get("data")
+    if isinstance(valor, dict):
+        return valor.get("payload") if isinstance(valor.get("payload"), dict) else valor
+    return dados.get("payload") if isinstance(dados.get("payload"), dict) else dados
+
+
 def _lista(dados):
     if isinstance(dados, list): return dados
     if not isinstance(dados, dict): return []
@@ -316,4 +340,26 @@ def registrar_rotas(app, templates, get_cfg, get_db, token):
     async def nota(ident: int, request: Request):
         _exigir(request)
         if somente_leitura(): raise HTTPException(403, "Modo de teste: notas desabilitadas")
-        raise HTTPException(501, "Ative as ações depois de validar o modo de teste")
+        try:
+            corpo = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Texto da anotação inválido")
+        texto = str(corpo.get("texto") or "").strip()
+        if not texto or len(texto) > 1000:
+            raise HTTPException(400, "A anotação deve ter entre 1 e 1000 caracteres")
+        # Revalida no CRM imediatamente antes de gravar: nunca anota conversa
+        # de outro agente nem conversa já resolvida.
+        atual = _objeto(_crm(get_cfg(), token, "/conversations/" + str(ident)))
+        if not atual or not _visivel(atual) or atual.get("status") not in ("open", "pending"):
+            raise HTTPException(403, "Conversa não está mais disponível para a equipe Milone")
+        try:
+            _crm_post(get_cfg(), token, "/conversations/" + str(ident) + "/messages", {
+                "content": texto, "message_type": "outgoing", "private": True
+            })
+        except RuntimeError:
+            raise HTTPException(502, "Não foi possível salvar a anotação no CRM")
+        with closing(get_db()) as c, c:
+            c.execute("""INSERT INTO supervisor_milone_log
+                (criado_em,usuario,acao,conversa_id,destino,detalhe) VALUES(?,?,?,?,?,?)""",
+                (datetime.now(TZ).isoformat(), os.getenv("SUPERVISOR_USER", "supervisor"), "nota", ident, "crm", "nota interna"))
+        return {"ok": True}
