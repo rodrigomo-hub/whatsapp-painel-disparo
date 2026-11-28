@@ -366,6 +366,8 @@ def init_db():
         conn.execute("ALTER TABLE numeros ADD COLUMN presenca_meta TEXT NOT NULL DEFAULT 'nao_verificado'")
     if 'status_envio_meta' not in colunas_existentes:
         conn.execute("ALTER TABLE numeros ADD COLUMN status_envio_meta TEXT NOT NULL DEFAULT 'UNKNOWN'")
+    if 'meta_bloqueio_motivo' not in colunas_existentes:
+        conn.execute("ALTER TABLE numeros ADD COLUMN meta_bloqueio_motivo TEXT NOT NULL DEFAULT ''")
     if 'bloqueado_por_crm' not in colunas_existentes:
         # A Meta pode responder AVAILABLE mesmo após o CRM receber 131031.
         # Esta trava só é criada por uma falha confirmada no CRM e nunca é
@@ -724,6 +726,28 @@ def estado_saude_waba(health):
     return 'AVAILABLE' if health.get('can_send_message')=='AVAILABLE' else 'UNKNOWN'
 
 
+def motivo_saude_waba(health):
+    """Resumo seguro e compreensível do bloqueio retornado pela Meta."""
+    if not isinstance(health,dict): return ''
+    entities=[e for e in (health.get('entities') or []) if isinstance(e,dict)]
+    erros=[e for item in entities+[health] for e in (item.get('errors') or []) if isinstance(e,dict)]
+    # Dá prioridade ao erro da entidade efetivamente bloqueada.
+    for erro in erros:
+        codigo=str(erro.get('error_code',erro.get('code','')))
+        if codigo=='141015':
+            return 'Limite de conversas iniciadas pela empresa atingido nas últimas 24 horas. Aguarde a janela móvel liberar capacidade.'
+        if codigo in ('141006','131042'):
+            return 'Pagamento pendente na conta do WhatsApp Business.'
+        if codigo=='141014':
+            return 'Conta do WhatsApp Business banida ou restrita pela Meta.'
+    for erro in erros:
+        texto=str(erro.get('error_description') or erro.get('message') or '').strip()
+        if texto:return texto[:500]
+    if health.get('can_send_message')=='BLOCKED' or any(e.get('can_send_message')=='BLOCKED' for e in entities):
+        return 'A Meta bloqueou temporariamente o envio desta conta.'
+    return ''
+
+
 def conferir_wabas_periodicamente():
     with closing(get_db()) as c:
         rows=c.execute("SELECT waba_id,access_token FROM numeros WHERE tipo_envio='meta' AND waba_id!='' AND access_token!='' ORDER BY ativo DESC,id").fetchall()
@@ -749,12 +773,13 @@ def bloquear_numeros_waba(waba_id, health):
     banida=estado=='BANNED'
     bloqueada=estado=='BLOCKED'
     if banida or bloqueada:
+        motivo=motivo_saude_waba(health)
         with closing(get_db()) as conn, conn:
             if banida:
                 for n in conn.execute('SELECT id FROM numeros WHERE waba_id=?',(waba_id,)).fetchall():
                     registrar_banimento_meta(conn,n['id'],'BANNED')
-            conn.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0,status_envio_meta=? WHERE waba_id=?',
-                         ('BANNED' if banida else 'BLOCKED', waba_id))
+            conn.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0,status_envio_meta=?,meta_bloqueio_motivo=? WHERE waba_id=?',
+                         ('BANNED' if banida else 'BLOCKED',motivo,waba_id))
 
 
 def verificar_qualidade(numero) -> str:
@@ -786,9 +811,12 @@ def verificar_qualidade(numero) -> str:
     webhook_saude.consultar_pagamento(get_db,numero,carregar_configuracao(),VENDEAI_API_TOKEN)
     if webhook_saude.pagamento_bloqueado(get_db,numero['waba_id']):
         estado='BLOCKED' if estado!='BANNED' else estado
+    motivo=motivo_saude_waba(health) if 'health' in locals() else ''
+    if estado=='DISCONNECTED':motivo='Número não está conectado na Meta.'
+    if estado=='AVAILABLE':motivo=''
     with closing(get_db()) as conn, conn:
         registrar_banimento_meta(conn,numero['id'],estado)
-        conn.execute('UPDATE numeros SET status_envio_meta=?,limite_meta=?,meta_consultado_em=? WHERE id=?', (estado, limite, agora_iso(), numero['id']))
+        conn.execute('UPDATE numeros SET status_envio_meta=?,limite_meta=?,meta_consultado_em=?,meta_bloqueio_motivo=? WHERE id=?', (estado, limite, agora_iso(),motivo, numero['id']))
         if estado in ('BANNED', 'BLOCKED', 'DISCONNECTED'):
             conn.execute('UPDATE numeros SET ativo=0,pausado_por_qualidade=0 WHERE id=?', (numero['id'],))
     return qualidade
